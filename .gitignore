@@ -19,3 +19,6 @@ sbom.json
 Cargo.lock.bak
 apps/web/tsconfig.tsbuildinfo
 .tomorrowci/
+
+fixtures/**/target/
+
