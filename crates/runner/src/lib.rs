@@ -12,6 +12,7 @@ use tomorrowci_core::backtest::{
 };
 use tomorrowci_core::compare::{compare_horizons, HorizonCompare};
 use tomorrowci_core::ddmin::reduce_axes;
+use tomorrowci_core::policy::{evaluate_policy, PolicyConfig, PolicyReport};
 use tomorrowci_core::{
     authorize_frontier, classify_scenario, truncate_log, BreakageFrontier, Config, Ecosystem,
     EvidenceGrade, EvidenceReference, ExecutionResult, HostInfo, Planner, ProjectDetection,
@@ -1112,6 +1113,52 @@ pub fn explain_run(output_root: &Path, run_id: &str) -> Result<String> {
         "Note: signatures are evidence-backed correlations, not guaranteed root-cause proofs.\n",
     );
     Ok(out)
+}
+
+/// Load verdicts for a run and evaluate policy (optional base compare).
+pub fn policy_check_run(
+    output_root: &Path,
+    run_id: &str,
+    policy: &PolicyConfig,
+    base_run_id: Option<&str>,
+) -> Result<PolicyReport> {
+    let store =
+        EvidenceStore::open(output_root, run_id).map_err(|e| RunnerError::Msg(e.to_string()))?;
+    let verdicts = store
+        .load_verdicts()
+        .map_err(|e| RunnerError::Msg(e.to_string()))?;
+    let compare = if let Some(base) = base_run_id {
+        Some(compare_runs(output_root, base, run_id)?)
+    } else {
+        None
+    };
+    Ok(evaluate_policy(policy, &verdicts, compare.as_ref()))
+}
+
+pub fn format_policy_report(report: &PolicyReport) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("TomorrowCI policy: {:?}\n", report.decision));
+    out.push_str(&format!(
+        "stats: scenarios={} baseline_invalid={} future_fail={} blocked_like={} ratio={:.2} horizon_regression={}\n",
+        report.stats.scenario_count,
+        report.stats.baseline_invalid,
+        report.stats.future_fail_count,
+        report.stats.blocked_like_count,
+        report.stats.blocked_ratio,
+        report.stats.horizon_regression
+    ));
+    if report.violations.is_empty() {
+        out.push_str("No policy violations.\n");
+    } else {
+        out.push_str("Violations:\n");
+        for v in &report.violations {
+            out.push_str(&format!("  - {}: {}\n", v.rule, v.detail));
+        }
+    }
+    out.push_str(
+        "Note: BLOCKED/UNSUPPORTED/INCONCLUSIVE are never converted to PASS; high blocked ratio may FAIL if configured.\n",
+    );
+    out
 }
 
 /// Compare two completed runs' frontiers (base → head).

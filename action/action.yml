@@ -24,6 +24,10 @@ inputs:
     description: Fail the job when head horizon regresses vs base
     required: false
     default: "false"
+  run-policy:
+    description: Run tomorrowci policy on head (optional base) after scan
+    required: false
+    default: "true"
   advisory:
     description: If true, scan failures do not fail the step (evidence still uploaded)
     required: false
@@ -124,6 +128,24 @@ runs:
         fi
         exit 0
 
+    - name: Policy gate
+      if: ${{ inputs.run-policy == 'true' && steps.scan_head.outputs.head_run != '' }}
+      shell: bash
+      run: |
+        set +e
+        HEAD="${{ steps.scan_head.outputs.head_run }}"
+        BASE="${{ steps.scan_base.outputs.base_run }}"
+        EXTRA=()
+        if [ -n "$BASE" ]; then EXTRA+=(--base "$BASE"); fi
+        ./target/release/tomorrowci policy "$HEAD" --evidence-root "${{ inputs.evidence-root }}" "${EXTRA[@]}"
+        code=$?
+        {
+          echo "## Policy"
+          echo "exit=$code (6 = policy FAIL)"
+        } >> "$GITHUB_STEP_SUMMARY"
+        if [ "${{ inputs.advisory }}" = "true" ]; then exit 0; fi
+        exit "$code"
+
     - name: Upload evidence
       if: always()
       uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
@@ -132,3 +154,4 @@ runs:
         path: |
           ${{ inputs.evidence-root }}/runs/
           ${{ inputs.evidence-root }}/compare-*.json
+          ${{ inputs.evidence-root }}/policy-*.json

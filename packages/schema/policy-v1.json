@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tomorrowci.dev/schema/policy-v1.json",
+  "title": "TomorrowCI Policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "fail_if": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "baseline_invalid": { "type": "boolean" },
+        "new_future_failure": { "type": "boolean" },
+        "horizon_regression": { "type": "boolean" },
+        "blocked_ratio_above": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }
+      }
+    }
+  }
+}

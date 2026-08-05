@@ -65,6 +65,14 @@ Build instruments first — never trust unverified green:
 # → .tomorrowci/measure/{bench,suite,claim-ledger,summary}.json + CLAIM_LEDGER.md
 ```
 
+### Policy gate
+
+```bash
+tomorrowci policy <run-id>
+tomorrowci policy <head-run-id> --base <base-run-id>
+# exit 6 on FAIL — see docs/policy.md
+```
+
 ### Compare horizons (PR / base vs head)
 
 ```bash

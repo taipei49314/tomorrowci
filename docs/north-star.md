@@ -7,6 +7,7 @@
 | Measurement harness | `tomorrowci measure all` | Live — PASS/FAIL/BLOCKED ledger |
 | Bounded parallel scenarios | config `execution.max_parallel` | Live — baseline serial, futures `buffer_unordered` |
 | Horizon compare (base→head) | `tomorrowci compare <base> <head>` | Live — regression exit 5 |
+| Policy fail-if gate | `tomorrowci policy <run>` | Live — exit 6 on FAIL |
 | Backtest skeleton | `tomorrowci backtest --at --until` | Live — commit sampling only |
 
 ## Honest limits

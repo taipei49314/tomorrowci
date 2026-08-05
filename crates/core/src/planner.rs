@@ -126,6 +126,7 @@ impl Planner {
         let plan = ExecutionPlan {
             run_id: self.run_id.clone(),
             max_scenarios: budget,
+            max_parallel: self.config.execution.max_parallel.max(1),
             decisions: decisions
                 .iter()
                 .map(|d| PlanDecisionRecord {

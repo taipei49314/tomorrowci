@@ -3,13 +3,14 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use tomorrowci_core::backtest::BacktestRequest;
+use tomorrowci_core::policy::PolicyConfig;
 use tomorrowci_core::Config;
 use tomorrowci_measure::{
     default_catalog, run_benches, run_fixture_suite, ClaimStatus, SuiteOptions,
 };
 use tomorrowci_runner::{
-    backtest_repo, compare_runs, doctor, explain_run, format_compare, replay, scan, show_run,
-    ScanRequest, TOOL_VERSION,
+    backtest_repo, compare_runs, doctor, explain_run, format_compare, format_policy_report,
+    policy_check_run, replay, scan, show_run, ScanRequest, TOOL_VERSION,
 };
 
 #[derive(Parser, Debug)]
@@ -82,6 +83,20 @@ enum Commands {
         /// Exit 5 when head regresses the horizon earlier
         #[arg(long)]
         fail_on_regression: bool,
+    },
+    /// Evaluate fail-if policy against a completed run (optional base for regression)
+    Policy {
+        /// Run id to evaluate (head)
+        run_id: String,
+        /// Optional base run id for horizon_regression rule
+        #[arg(long)]
+        base: Option<String>,
+        /// Policy YAML (default: built-in advisory-safe defaults)
+        #[arg(long)]
+        policy: Option<PathBuf>,
+        /// Write JSON report path
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Historical commit sampling backtest (M2 skeleton — honest limitations)
     Backtest {
@@ -265,6 +280,30 @@ async fn main() -> anyhow::Result<()> {
             println!(
                 "Default permissions: contents: read only. No secrets forwarded to untrusted code."
             );
+        }
+        Commands::Policy {
+            run_id,
+            base,
+            policy,
+            out,
+        } => {
+            let pol = if let Some(p) = policy {
+                let raw = std::fs::read_to_string(&p)?;
+                serde_yaml::from_str::<PolicyConfig>(&raw)?
+            } else {
+                PolicyConfig::default()
+            };
+            let report = policy_check_run(&evidence_root, &run_id, &pol, base.as_deref())?;
+            print!("{}", format_policy_report(&report));
+            let dest = out.unwrap_or_else(|| evidence_root.join(format!("policy-{run_id}.json")));
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&dest, serde_json::to_string_pretty(&report)?)?;
+            println!("Wrote {}", dest.display());
+            if report.decision == tomorrowci_core::PolicyDecision::Fail {
+                std::process::exit(6);
+            }
         }
         Commands::Compare {
             base,

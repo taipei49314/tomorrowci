@@ -237,8 +237,15 @@ pub struct ExecutionPlan {
     pub run_id: RunId,
     pub scenarios: Vec<Scenario>,
     pub max_scenarios: usize,
+    /// Bound on concurrent future-scenario execution (baseline remains serial).
+    #[serde(default = "default_max_parallel")]
+    pub max_parallel: usize,
     pub decisions: Vec<PlanDecisionRecord>,
     pub untested: Vec<UntestedArea>,
+}
+
+fn default_max_parallel() -> usize {
+    2
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
