@@ -9,8 +9,11 @@ Today’s green build is not evidence of tomorrow’s compatibility.
 TomorrowCI turns future-facing compatibility into an executable, replayable claim.
 ```
 
+[![CI](https://github.com/taipei49314/tomorrowci/actions/workflows/ci.yml/badge.svg)](https://github.com/taipei49314/tomorrowci/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](apps/cli)
+
+**Public repo:** https://github.com/taipei49314/tomorrowci
 
 ---
 
