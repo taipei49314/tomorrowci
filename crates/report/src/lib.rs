@@ -2,6 +2,8 @@
 //!
 //! HTML embeds real run data (never mocked). XSS-safe via HTML escaping.
 
+pub mod backtest_html;
+
 use serde::Serialize;
 use std::fs;
 use std::path::Path;
@@ -9,6 +11,8 @@ use thiserror::Error;
 use tomorrowci_core::{
     safety::escape_html, BreakageFrontier, RunManifest, ScenarioVerdict, Verdict,
 };
+
+pub use backtest_html::write_backtest_html;
 
 #[derive(Debug, Error)]
 pub enum ReportError {

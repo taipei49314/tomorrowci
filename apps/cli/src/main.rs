@@ -311,6 +311,12 @@ async fn main() -> anyhow::Result<()> {
                 std::fs::create_dir_all(parent)?;
             }
             std::fs::write(&out, serde_json::to_string_pretty(&report)?)?;
+            let html_path = out.with_extension("html");
+            if let Err(e) = tomorrowci_report::write_backtest_html(&html_path, &report) {
+                eprintln!("warning: backtest html: {e}");
+            } else {
+                println!("Wrote {}", html_path.display());
+            }
             println!("{}", report.note);
             println!("points={}", report.points.len());
             for p in &report.points {

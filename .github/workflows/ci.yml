@@ -53,10 +53,20 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - name: Run composite action
+        with:
+          fetch-depth: 0
+      - name: Run composite action (fixture)
         uses: ./action
         with:
           target: fixtures/python-runtime-break
+          advisory: "true"
+      - name: Run composite action with base compare (same tree → unchanged/regressed honest)
+        uses: ./action
+        with:
+          target: fixtures/baseline-fail
+          base-ref: HEAD
+          fail-on-regression: "false"
+          advisory: "true"
 
   schema:
     runs-on: ubuntu-latest

@@ -1,4 +1,4 @@
-﻿[workspace]
+[workspace]
 resolver = "2"
 members = [
   "apps/cli",
@@ -22,7 +22,7 @@ exclude = [
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/tomorrowci/tomorrowci"
+repository = "https://github.com/taipei49314/tomorrowci"
 authors = ["TomorrowCI Contributors"]
 rust-version = "1.75"
 

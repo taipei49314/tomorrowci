@@ -291,6 +291,11 @@ pub async fn execute_scenario(
     }
 
     let cleanup = |engine: EngineInfo, name: String| async move {
+        // Best-effort terminate then remove (cancellation / crash safety).
+        let _ = Command::new(&engine.path)
+            .args(["kill", &name])
+            .output()
+            .await;
         let _ = Command::new(&engine.path)
             .args(["rm", "-f", &name])
             .output()

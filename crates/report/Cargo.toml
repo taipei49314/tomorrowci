@@ -17,6 +17,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+chrono.workspace = true
 
 [[example]]
 name = "gen_demo"
