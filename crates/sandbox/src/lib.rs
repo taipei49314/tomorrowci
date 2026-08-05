@@ -171,8 +171,11 @@ pub struct SandboxExecOptions {
     pub allowlist_env: Vec<String>,
 }
 
-/// Execute commands inside an isolated container.
-/// Fetch-phase commands may use network; test/build phases use network=none by default.
+/// Execute commands inside **one** isolated container session.
+///
+/// Install/fetch state must persist across commands (pip install then pytest).
+/// Network policy: start with bridge for fetch; disconnect before test/build when
+/// `network_mode` is `fetch-only` or `none`.
 pub async fn execute_scenario(
     opts: &SandboxExecOptions,
     commands: &[CommandSpec],
@@ -187,12 +190,119 @@ pub async fn execute_scenario(
             "refusing to mount docker.sock into target container".into(),
         ));
     }
+    if opts.workspace_host.to_string_lossy().contains("docker.sock")
+        || opts.workspace_container.contains("docker.sock")
+    {
+        return Err(SandboxError::Blocked(
+            "refusing workspace path that references docker.sock".into(),
+        ));
+    }
+
+    let engine = &opts.engine;
+    let name = format!(
+        "tomorrowci-{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    );
+
+    // Create long-lived container (sleep) so package installs persist.
+    let mut create_args: Vec<String> = vec![
+        "create".into(),
+        "--name".into(),
+        name.clone(),
+        "--network".into(),
+        "bridge".into(),
+        "--memory".into(),
+        format!("{}m", opts.env.memory_mb),
+        "--cpus".into(),
+        opts.env.cpus.to_string(),
+        "--pids-limit".into(),
+        opts.env.pids_limit.to_string(),
+        "--security-opt".into(),
+        "no-new-privileges".into(),
+        "--env".into(),
+        "HOME=/tmp".into(),
+        "--env".into(),
+        "PYTHONUNBUFFERED=1".into(),
+        "--env".into(),
+        "CI=1".into(),
+        "--env".into(),
+        "TOMORROWCI=1".into(),
+        "-v".into(),
+        format!(
+            "{}:{}:{}",
+            host_path_for_docker(&opts.workspace_host),
+            opts.workspace_container,
+            if opts.env.read_only_root { "ro" } else { "rw" }
+        ),
+        "-w".into(),
+        opts.workspace_container.clone(),
+    ];
+
+    if opts.env.read_only_root {
+        create_args.push("--read-only".into());
+        create_args.push("--tmpfs".into());
+        create_args.push("/tmp:rw,exec,nosuid,size=512m".into());
+        create_args.push("--tmpfs".into());
+        create_args.push("/var/tmp:rw,exec,nosuid,size=256m".into());
+    }
+    if let Some(user) = &opts.env.user {
+        create_args.push("--user".into());
+        create_args.push(user.clone());
+    }
+    for (k, v) in &opts.env.env {
+        if is_forbidden_env(k) {
+            continue;
+        }
+        if opts.allowlist_env.is_empty() || opts.allowlist_env.iter().any(|a| a == k) {
+            create_args.push("--env".into());
+            create_args.push(format!("{k}={v}"));
+        }
+    }
+
+    create_args.push(opts.env.image_ref.clone());
+    // Keep container alive for docker exec sessions.
+    create_args.push("sleep".into());
+    create_args.push("infinity".into());
+
+    let create = Command::new(&engine.path)
+        .args(&create_args)
+        .output()
+        .await?;
+    if !create.status.success() {
+        return Err(SandboxError::Blocked(format!(
+            "docker create failed: {}",
+            String::from_utf8_lossy(&create.stderr)
+        )));
+    }
+
+    let start_out = Command::new(&engine.path)
+        .args(["start", &name])
+        .output()
+        .await?;
+    if !start_out.status.success() {
+        let _ = Command::new(&engine.path)
+            .args(["rm", "-f", &name])
+            .output()
+            .await;
+        return Err(SandboxError::Blocked(format!(
+            "docker start failed: {}",
+            String::from_utf8_lossy(&start_out.stderr)
+        )));
+    }
+
+    let cleanup = |engine: EngineInfo, name: String| async move {
+        let _ = Command::new(&engine.path)
+            .args(["rm", "-f", &name])
+            .output()
+            .await;
+    };
 
     let mut combined_stdout = String::new();
     let mut combined_stderr = String::new();
     let mut last_exit = Some(0);
     let mut network_used = false;
     let mut timed_out = false;
+    let mut network_connected = true; // created with bridge
     let start = Instant::now();
     let wall = Duration::from_secs(opts.env.timeout_seconds.max(1));
 
@@ -212,27 +322,53 @@ pub async fn execute_scenario(
             network_used = true;
         }
 
-        let result = run_in_container(opts, cmd, use_net, remaining).await?;
-        combined_stdout.push_str(&result.stdout);
-        combined_stderr.push_str(&result.stderr);
-        last_exit = result.exit_code;
-        if result.timed_out {
-            timed_out = true;
-            break;
+        // Toggle network for fetch-only / none policies.
+        if use_net && !network_connected {
+            let _ = Command::new(&engine.path)
+                .args(["network", "connect", "bridge", &name])
+                .output()
+                .await;
+            network_connected = true;
+        } else if !use_net && network_connected {
+            let _ = Command::new(&engine.path)
+                .args(["network", "disconnect", "-f", "bridge", &name])
+                .output()
+                .await;
+            network_connected = false;
         }
-        if result.exit_code.unwrap_or(1) != 0 {
-            return Ok(RawExecutionResult {
-                exit_code: result.exit_code,
-                signal: result.signal,
-                stdout: combined_stdout,
-                stderr: combined_stderr,
-                duration_ms: start.elapsed().as_millis() as u64,
-                timed_out,
-                network_used,
-                error: result.error,
-            });
+
+        let result = exec_in_container(engine, &name, cmd, use_net, remaining).await;
+        match result {
+            Ok(raw) => {
+                combined_stdout.push_str(&raw.stdout);
+                combined_stderr.push_str(&raw.stderr);
+                last_exit = raw.exit_code;
+                if raw.timed_out {
+                    timed_out = true;
+                    break;
+                }
+                if raw.exit_code.unwrap_or(1) != 0 {
+                    cleanup(engine.clone(), name.clone()).await;
+                    return Ok(RawExecutionResult {
+                        exit_code: raw.exit_code,
+                        signal: raw.signal,
+                        stdout: combined_stdout,
+                        stderr: combined_stderr,
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        timed_out,
+                        network_used,
+                        error: raw.error,
+                    });
+                }
+            }
+            Err(e) => {
+                cleanup(engine.clone(), name.clone()).await;
+                return Err(e);
+            }
         }
     }
+
+    cleanup(engine.clone(), name).await;
 
     Ok(RawExecutionResult {
         exit_code: if timed_out { None } else { last_exit },
@@ -246,91 +382,53 @@ pub async fn execute_scenario(
     })
 }
 
-async fn run_in_container(
-    opts: &SandboxExecOptions,
+/// Docker Desktop on Windows expects Linux-style paths for -v mounts when using
+/// the linux engine context (//c/Users/...).
+fn host_path_for_docker(path: &Path) -> String {
+    let s = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string();
+    // Strip Windows \\?\ prefix
+    let s = s.strip_prefix(r"\\?\").unwrap_or(&s).to_string();
+    if cfg!(windows) {
+        // C:\foo\bar -> /c/foo/bar
+        if s.len() >= 2 && s.as_bytes()[1] == b':' {
+            let drive = s.chars().next().unwrap().to_ascii_lowercase();
+            let rest = s[2..].replace('\\', "/");
+            return format!("/{drive}{rest}");
+        }
+        s.replace('\\', "/")
+    } else {
+        s
+    }
+}
+
+async fn exec_in_container(
+    engine: &EngineInfo,
+    name: &str,
     cmd: &CommandSpec,
     network: bool,
     timeout: Duration,
 ) -> Result<RawExecutionResult> {
-    let engine = &opts.engine;
-    let mut args: Vec<String> = vec![
-        "run".into(),
-        "--rm".into(),
-        "--network".into(),
-        if network { "bridge".into() } else { "none".into() },
-        "--memory".into(),
-        format!("{}m", opts.env.memory_mb),
-        "--cpus".into(),
-        opts.env.cpus.to_string(),
-        "--pids-limit".into(),
-        opts.env.pids_limit.to_string(),
-        // never privileged
-        "--security-opt".into(),
-        "no-new-privileges".into(),
-        // do not pass host env
-        "--env".into(),
-        "HOME=/tmp".into(),
-        "--env".into(),
-        "PYTHONUNBUFFERED=1".into(),
-        "--env".into(),
-        "CI=1".into(),
-        "--env".into(),
-        "TOMORROWCI=1".into(),
-        "-v".into(),
-        format!(
-            "{}:{}:{}",
-            opts.workspace_host.display(),
-            opts.workspace_container,
-            if opts.env.read_only_root {
-                "ro"
-            } else {
-                "rw"
-            }
-        ),
-        "-w".into(),
-        if cmd.workdir.is_empty() {
-            opts.workspace_container.clone()
-        } else {
-            cmd.workdir.clone()
-        },
-    ];
-
-    if opts.env.read_only_root {
-        args.push("--read-only".into());
-        args.push("--tmpfs".into());
-        args.push("/tmp:rw,exec,nosuid,size=512m".into());
-        args.push("--tmpfs".into());
-        args.push("/var/tmp:rw,exec,nosuid,size=256m".into());
+    let mut args: Vec<String> = vec!["exec".into()];
+    // Workdir for this command
+    if !cmd.workdir.is_empty() {
+        args.push("-w".into());
+        args.push(cmd.workdir.clone());
     }
-
-    if let Some(user) = &opts.env.user {
-        args.push("--user".into());
-        args.push(user.clone());
-    }
-
-    // Explicit command env only (not host env)
     for (k, v) in &cmd.env {
         if is_forbidden_env(k) {
             continue;
         }
-        args.push("--env".into());
+        args.push("-e".into());
         args.push(format!("{k}={v}"));
     }
-    for (k, v) in &opts.env.env {
-        if is_forbidden_env(k) {
-            continue;
-        }
-        if opts.allowlist_env.is_empty() || opts.allowlist_env.iter().any(|a| a == k) {
-            args.push("--env".into());
-            args.push(format!("{k}={v}"));
-        }
-    }
-
-    args.push(opts.env.image_ref.clone());
+    args.push(name.to_string());
     args.push(cmd.program.clone());
     args.extend(cmd.args.iter().cloned());
 
-    // Refuse docker.sock in args
     let joined = args.join(" ");
     if joined.contains("docker.sock") {
         return Err(SandboxError::Blocked(
@@ -360,19 +458,16 @@ async fn run_in_container(
             error: None,
         }),
         Ok(Err(e)) => Err(SandboxError::Io(e)),
-        Err(_elapsed) => {
-            // best-effort kill is handled by kill_on_drop
-            Ok(RawExecutionResult {
-                exit_code: None,
-                signal: None,
-                stdout: String::new(),
-                stderr: "tomorrowci: container wall-clock timeout".into(),
-                duration_ms: start.elapsed().as_millis() as u64,
-                timed_out: true,
-                network_used: network,
-                error: Some("timeout".into()),
-            })
-        }
+        Err(_elapsed) => Ok(RawExecutionResult {
+            exit_code: None,
+            signal: None,
+            stdout: String::new(),
+            stderr: "tomorrowci: container wall-clock timeout".into(),
+            duration_ms: start.elapsed().as_millis() as u64,
+            timed_out: true,
+            network_used: network,
+            error: Some("timeout".into()),
+        }),
     }
 }
 

@@ -1,25 +1,68 @@
 {
   "run": {
-    "run_id": "demo-py-runtime",
+    "run_id": "16210890999f",
     "tool_version": "0.1.0",
-    "started_at": "2026-08-05T08:06:19.645280Z",
-    "finished_at": "2026-08-05T08:06:19.645302100Z",
+    "started_at": "2026-08-05T08:36:14.876530Z",
+    "finished_at": "2026-08-05T08:40:05.750063900Z",
     "repository": {
-      "source": "fixtures/python-runtime-break",
-      "path": "fixtures/python-runtime-break",
-      "commit_sha": "fixture",
+      "source": "C:\\Users\\1\\Desktop\\tomorrowci\\.\\fixtures\\python-runtime-break",
+      "path": "C:\\Users\\1\\Desktop\\tomorrowci\\.\\fixtures\\python-runtime-break",
+      "commit_sha": "7094125ca08bb629bbff096a36522dec85a78d5b",
       "branch": null,
       "is_remote": false,
-      "workspace_copy": "fixtures/python-runtime-break",
-      "captured_at": "2026-08-05T08:06:19.645305300Z"
+      "workspace_copy": ".tomorrowci\\work\\workspaces\\16210890999f",
+      "captured_at": "2026-08-05T08:36:14.876530Z"
     },
-    "detection": null,
-    "baseline": null,
-    "config_hash": "demo",
+    "detection": {
+      "ecosystem": "python",
+      "package_manager": "pip",
+      "manifests": [
+        "pyproject.toml",
+        "requirements.txt"
+      ],
+      "confidence": 0.95,
+      "notes": [
+        "Python package manager for v0.1: pip",
+        "Runtime images: official docker.io/library/python:<major.minor>"
+      ],
+      "supported": true,
+      "unsupported_reason": null
+    },
+    "baseline": {
+      "ecosystem": "python",
+      "runtime_label": "Python 3.9",
+      "runtime_version": "3.9",
+      "dependency_mode": "locked",
+      "image_ref": "python:3.9-bookworm",
+      "notes": [
+        "baseline uses locked/pinned requirements when present"
+      ]
+    },
+    "config_hash": "d52c6083a2ba63dd",
     "sandbox_engine": "docker",
     "status": "COMPLETED",
-    "frontier": null,
-    "scenario_count": 2,
+    "frontier": {
+      "observed": true,
+      "horizon_label": "Python 3.10 + locked dependencies",
+      "scenario_id": "py310-locked",
+      "axis": "runtime",
+      "from_label": "Python 3.9 + locked dependencies",
+      "to_label": "Python 3.10 + locked dependencies",
+      "failure_signature": {
+        "kind": "Error",
+        "summary": "Error: cannot import name 'MutableMapping' from 'collections' (/usr/local/lib/python3.10/collections/__init__.py)",
+        "primary_error": "Error: cannot import name 'MutableMapping' from 'collections' (/usr/local/lib/python3.10/collections/__init__.py)",
+        "fingerprint": "511714f24bf1b062",
+        "framework_hints": [
+          "node"
+        ],
+        "evidence_grade": "OBSERVED"
+      },
+      "evidence_grade": "OBSERVED",
+      "replay_command": "tomorrowci replay 16210890999f --scenario py310-locked",
+      "explanation": "Observed breakage horizon at 'Python 3.10 + locked dependencies'. Minimal changed axis relative to prior passing environment. Evidence grade: Observed. Suspected cause correlates with failure signature (correlation, not proven root cause)."
+    },
+    "scenario_count": 7,
     "host": {
       "os": "windows",
       "arch": "x86_64",
@@ -34,28 +77,147 @@
       "evidence_grade": "OBSERVED",
       "attempts": 1,
       "failure_signature": null,
-      "evidence": null,
-      "notes": [
-        "demo report shaped like a real fixture run; container e2e BLOCKED on hosts without Docker"
-      ]
+      "evidence": {
+        "run_id": "16210890999f",
+        "scenario_id": "baseline",
+        "directory": ".tomorrowci\\runs\\16210890999f\\scenarios\\baseline",
+        "replay_command": "tomorrowci replay 16210890999f --scenario baseline"
+      },
+      "notes": []
     },
     {
       "scenario_id": "py310-locked",
       "label": "Python 3.10 + locked dependencies",
       "verdict": "FUTURE_FAIL",
       "evidence_grade": "OBSERVED",
-      "attempts": 2,
+      "attempts": 3,
       "failure_signature": {
-        "kind": "ImportError",
-        "summary": "ImportError: cannot import name 'MutableMapping'",
-        "primary_error": "ImportError: cannot import name 'MutableMapping'",
-        "fingerprint": "a12d8731f70a24ba",
+        "kind": "Error",
+        "summary": "Error: cannot import name 'MutableMapping' from 'collections' (/usr/local/lib/python3.10/collections/__init__.py)",
+        "primary_error": "Error: cannot import name 'MutableMapping' from 'collections' (/usr/local/lib/python3.10/collections/__init__.py)",
+        "fingerprint": "511714f24bf1b062",
         "framework_hints": [
-          "python"
+          "node"
         ],
         "evidence_grade": "OBSERVED"
       },
-      "evidence": null,
+      "evidence": {
+        "run_id": "16210890999f",
+        "scenario_id": "py310-locked",
+        "directory": ".tomorrowci\\runs\\16210890999f\\scenarios\\py310-locked",
+        "replay_command": "tomorrowci replay 16210890999f --scenario py310-locked"
+      },
+      "notes": []
+    },
+    {
+      "scenario_id": "py311-locked",
+      "label": "Python 3.11 + locked dependencies",
+      "verdict": "FUTURE_FAIL",
+      "evidence_grade": "OBSERVED",
+      "attempts": 3,
+      "failure_signature": {
+        "kind": "Error",
+        "summary": "Error: cannot import name 'MutableMapping' from 'collections' (/usr/local/lib/python3.11/collections/__init__.py)",
+        "primary_error": "Error: cannot import name 'MutableMapping' from 'collections' (/usr/local/lib/python3.11/collections/__init__.py)",
+        "fingerprint": "bdfe0885377fad2b",
+        "framework_hints": [
+          "node"
+        ],
+        "evidence_grade": "OBSERVED"
+      },
+      "evidence": {
+        "run_id": "16210890999f",
+        "scenario_id": "py311-locked",
+        "directory": ".tomorrowci\\runs\\16210890999f\\scenarios\\py311-locked",
+        "replay_command": "tomorrowci replay 16210890999f --scenario py311-locked"
+      },
+      "notes": []
+    },
+    {
+      "scenario_id": "py312-locked",
+      "label": "Python 3.12 + locked dependencies",
+      "verdict": "FUTURE_FAIL",
+      "evidence_grade": "OBSERVED",
+      "attempts": 3,
+      "failure_signature": {
+        "kind": "Error",
+        "summary": "Error: cannot import name 'MutableMapping' from 'collections' (/usr/local/lib/python3.12/collections/__init__.py)",
+        "primary_error": "Error: cannot import name 'MutableMapping' from 'collections' (/usr/local/lib/python3.12/collections/__init__.py)",
+        "fingerprint": "b84a31b28f97609c",
+        "framework_hints": [
+          "node"
+        ],
+        "evidence_grade": "OBSERVED"
+      },
+      "evidence": {
+        "run_id": "16210890999f",
+        "scenario_id": "py312-locked",
+        "directory": ".tomorrowci\\runs\\16210890999f\\scenarios\\py312-locked",
+        "replay_command": "tomorrowci replay 16210890999f --scenario py312-locked"
+      },
+      "notes": []
+    },
+    {
+      "scenario_id": "py313-locked",
+      "label": "Python 3.13 + locked dependencies",
+      "verdict": "FUTURE_FAIL",
+      "evidence_grade": "OBSERVED",
+      "attempts": 3,
+      "failure_signature": {
+        "kind": "Error",
+        "summary": "Error: cannot import name 'MutableMapping' from 'collections' (/usr/local/lib/python3.13/collections/__init__.py)",
+        "primary_error": "Error: cannot import name 'MutableMapping' from 'collections' (/usr/local/lib/python3.13/collections/__init__.py)",
+        "fingerprint": "9bda825d6fa5b344",
+        "framework_hints": [
+          "node"
+        ],
+        "evidence_grade": "OBSERVED"
+      },
+      "evidence": {
+        "run_id": "16210890999f",
+        "scenario_id": "py313-locked",
+        "directory": ".tomorrowci\\runs\\16210890999f\\scenarios\\py313-locked",
+        "replay_command": "tomorrowci replay 16210890999f --scenario py313-locked"
+      },
+      "notes": []
+    },
+    {
+      "scenario_id": "py314rc-locked",
+      "label": "Python 3.14-rc + locked dependencies",
+      "verdict": "FUTURE_FAIL",
+      "evidence_grade": "OBSERVED",
+      "attempts": 3,
+      "failure_signature": {
+        "kind": "Error",
+        "summary": "Error: cannot import name 'MutableMapping' from 'collections' (/usr/local/lib/python3.14/collections/__init__.py)",
+        "primary_error": "Error: cannot import name 'MutableMapping' from 'collections' (/usr/local/lib/python3.14/collections/__init__.py)",
+        "fingerprint": "7d870204fb777535",
+        "framework_hints": [
+          "node"
+        ],
+        "evidence_grade": "OBSERVED"
+      },
+      "evidence": {
+        "run_id": "16210890999f",
+        "scenario_id": "py314rc-locked",
+        "directory": ".tomorrowci\\runs\\16210890999f\\scenarios\\py314rc-locked",
+        "replay_command": "tomorrowci replay 16210890999f --scenario py314rc-locked"
+      },
+      "notes": []
+    },
+    {
+      "scenario_id": "py39-latest",
+      "label": "Python 3.9 + latest allowed dependencies",
+      "verdict": "FUTURE_PASS",
+      "evidence_grade": "SIMULATED",
+      "attempts": 1,
+      "failure_signature": null,
+      "evidence": {
+        "run_id": "16210890999f",
+        "scenario_id": "py39-latest",
+        "directory": ".tomorrowci\\runs\\16210890999f\\scenarios\\py39-latest",
+        "replay_command": "tomorrowci replay 16210890999f --scenario py39-latest"
+      },
       "notes": []
     }
   ],
@@ -67,28 +229,236 @@
     "from_label": "Python 3.9 + locked dependencies",
     "to_label": "Python 3.10 + locked dependencies",
     "failure_signature": {
-      "kind": "ImportError",
-      "summary": "ImportError: cannot import name 'MutableMapping'",
-      "primary_error": "ImportError",
-      "fingerprint": "demo",
-      "framework_hints": [],
+      "kind": "Error",
+      "summary": "Error: cannot import name 'MutableMapping' from 'collections' (/usr/local/lib/python3.10/collections/__init__.py)",
+      "primary_error": "Error: cannot import name 'MutableMapping' from 'collections' (/usr/local/lib/python3.10/collections/__init__.py)",
+      "fingerprint": "511714f24bf1b062",
+      "framework_hints": [
+        "node"
+      ],
       "evidence_grade": "OBSERVED"
     },
     "evidence_grade": "OBSERVED",
-    "replay_command": "tomorrowci replay demo-py-runtime --scenario py310-locked",
-    "explanation": "Observed breakage horizon at Python 3.10 (demo artifact). On CI with Docker this is produced from a real fixture run."
+    "replay_command": "tomorrowci replay 16210890999f --scenario py310-locked",
+    "explanation": "Observed breakage horizon at 'Python 3.10 + locked dependencies'. Minimal changed axis relative to prior passing environment. Evidence grade: Observed. Suspected cause correlates with failure signature (correlation, not proven root cause)."
   },
   "plan": {
     "decisions": [
       {
         "action": "select",
-        "reason": "baseline"
+        "reason": "baseline must pass before future comparisons are authorized",
+        "scenario_id": "baseline"
       },
       {
         "action": "select",
-        "reason": "runtime candidate"
+        "reason": "single-axis runtime candidate in order",
+        "scenario_id": "py310-locked"
+      },
+      {
+        "action": "select",
+        "reason": "single-axis runtime candidate in order",
+        "scenario_id": "py311-locked"
+      },
+      {
+        "action": "select",
+        "reason": "single-axis runtime candidate in order",
+        "scenario_id": "py312-locked"
+      },
+      {
+        "action": "select",
+        "reason": "single-axis runtime candidate in order",
+        "scenario_id": "py313-locked"
+      },
+      {
+        "action": "select",
+        "reason": "single-axis runtime candidate in order",
+        "scenario_id": "py314rc-locked"
+      },
+      {
+        "action": "select",
+        "reason": "single-axis dependency candidate",
+        "scenario_id": "py39-latest"
       }
-    ]
+    ],
+    "max_scenarios": 24,
+    "run_id": "16210890999f",
+    "scenarios": [
+      {
+        "axes_changed": [],
+        "dependency_mode": "locked",
+        "ecosystem": "python",
+        "evidence_grade": "OBSERVED",
+        "id": "baseline",
+        "image_ref": "python:3.9-bookworm",
+        "is_baseline": true,
+        "kind": "baseline",
+        "label": "Python 3.9 + locked dependencies",
+        "runtime_version": "3.9",
+        "selection_reason": "repository baseline"
+      },
+      {
+        "axes_changed": [
+          "runtime"
+        ],
+        "dependency_mode": "locked",
+        "ecosystem": "python",
+        "evidence_grade": "OBSERVED",
+        "id": "py310-locked",
+        "image_ref": "python:3.10-bookworm",
+        "is_baseline": false,
+        "kind": "single_axis",
+        "label": "Python 3.10 + locked dependencies",
+        "runtime_version": "3.10",
+        "selection_reason": "candidate on axis runtime"
+      },
+      {
+        "axes_changed": [
+          "runtime"
+        ],
+        "dependency_mode": "locked",
+        "ecosystem": "python",
+        "evidence_grade": "OBSERVED",
+        "id": "py311-locked",
+        "image_ref": "python:3.11-bookworm",
+        "is_baseline": false,
+        "kind": "single_axis",
+        "label": "Python 3.11 + locked dependencies",
+        "runtime_version": "3.11",
+        "selection_reason": "candidate on axis runtime"
+      },
+      {
+        "axes_changed": [
+          "runtime"
+        ],
+        "dependency_mode": "locked",
+        "ecosystem": "python",
+        "evidence_grade": "OBSERVED",
+        "id": "py312-locked",
+        "image_ref": "python:3.12-bookworm",
+        "is_baseline": false,
+        "kind": "single_axis",
+        "label": "Python 3.12 + locked dependencies",
+        "runtime_version": "3.12",
+        "selection_reason": "candidate on axis runtime"
+      },
+      {
+        "axes_changed": [
+          "runtime"
+        ],
+        "dependency_mode": "locked",
+        "ecosystem": "python",
+        "evidence_grade": "OBSERVED",
+        "id": "py313-locked",
+        "image_ref": "python:3.13-bookworm",
+        "is_baseline": false,
+        "kind": "single_axis",
+        "label": "Python 3.13 + locked dependencies",
+        "runtime_version": "3.13",
+        "selection_reason": "candidate on axis runtime"
+      },
+      {
+        "axes_changed": [
+          "runtime"
+        ],
+        "dependency_mode": "locked",
+        "ecosystem": "python",
+        "evidence_grade": "OBSERVED",
+        "id": "py314rc-locked",
+        "image_ref": "python:3.14-rc-bookworm",
+        "is_baseline": false,
+        "kind": "single_axis",
+        "label": "Python 3.14-rc + locked dependencies",
+        "runtime_version": "3.14-rc",
+        "selection_reason": "candidate on axis runtime"
+      },
+      {
+        "axes_changed": [
+          "dependencies"
+        ],
+        "dependency_mode": "latest_allowed",
+        "ecosystem": "python",
+        "evidence_grade": "SIMULATED",
+        "id": "py39-latest",
+        "image_ref": "python:3.9-bookworm",
+        "is_baseline": false,
+        "kind": "single_axis",
+        "label": "Python 3.9 + latest allowed dependencies",
+        "runtime_version": "3.9",
+        "selection_reason": "candidate on axis dependencies"
+      }
+    ],
+    "untested": []
   },
-  "candidates": []
+  "candidates": [
+    {
+      "axis": "runtime",
+      "channel": "stable",
+      "dependency_mode": "locked",
+      "evidence_grade": "OBSERVED",
+      "id": "py310-locked",
+      "image_ref": "python:3.10-bookworm",
+      "label": "Python 3.10 + locked dependencies",
+      "notes": [
+        "concrete official python image tag"
+      ],
+      "order_key": "3.10",
+      "runtime_version": "3.10"
+    },
+    {
+      "axis": "runtime",
+      "channel": "stable",
+      "dependency_mode": "locked",
+      "evidence_grade": "OBSERVED",
+      "id": "py311-locked",
+      "image_ref": "python:3.11-bookworm",
+      "label": "Python 3.11 + locked dependencies",
+      "notes": [
+        "concrete official python image tag"
+      ],
+      "order_key": "3.11",
+      "runtime_version": "3.11"
+    },
+    {
+      "axis": "runtime",
+      "channel": "stable",
+      "dependency_mode": "locked",
+      "evidence_grade": "OBSERVED",
+      "id": "py312-locked",
+      "image_ref": "python:3.12-bookworm",
+      "label": "Python 3.12 + locked dependencies",
+      "notes": [
+        "concrete official python image tag"
+      ],
+      "order_key": "3.12",
+      "runtime_version": "3.12"
+    },
+    {
+      "axis": "runtime",
+      "channel": "stable",
+      "dependency_mode": "locked",
+      "evidence_grade": "OBSERVED",
+      "id": "py313-locked",
+      "image_ref": "python:3.13-bookworm",
+      "label": "Python 3.13 + locked dependencies",
+      "notes": [
+        "concrete official python image tag"
+      ],
+      "order_key": "3.13",
+      "runtime_version": "3.13"
+    },
+    {
+      "axis": "runtime",
+      "channel": "preview",
+      "dependency_mode": "locked",
+      "evidence_grade": "OBSERVED",
+      "id": "py314rc-locked",
+      "image_ref": "python:3.14-rc-bookworm",
+      "label": "Python 3.14-rc + locked dependencies",
+      "notes": [
+        "preview/RC image; may be BLOCKED if tag is unavailable"
+      ],
+      "order_key": "3.14-rc",
+      "runtime_version": "3.14-rc"
+    }
+  ]
 }
