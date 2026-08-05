@@ -1,0 +1,19 @@
+version: 1
+project:
+  ecosystem: node
+  test_command: npm test
+baseline:
+  runtime: "20"
+  dependencies: locked
+candidates:
+  runtime:
+    channels: [stable]
+    max_versions: 3
+  dependencies:
+    latest_allowed: true
+    prerelease: false
+execution:
+  max_scenarios: 8
+  timeout_seconds: 600
+  reruns_on_failure: 2
+  max_parallel: 1

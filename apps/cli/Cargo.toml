@@ -1,0 +1,25 @@
+[package]
+name = "tomorrowci"
+description = "Continuous Integration Against the Future — CLI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "tomorrowci"
+path = "src/main.rs"
+
+[dependencies]
+tomorrowci-core = { path = "../../crates/core" }
+tomorrowci-runner = { path = "../../crates/runner" }
+tomorrowci-evidence = { path = "../../crates/evidence" }
+tomorrowci-report = { path = "../../crates/report" }
+clap.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true

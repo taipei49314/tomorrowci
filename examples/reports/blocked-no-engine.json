@@ -1,0 +1,82 @@
+{
+  "run": {
+    "run_id": "41b270775798",
+    "tool_version": "0.1.0",
+    "started_at": "2026-08-05T08:05:38.878932300Z",
+    "finished_at": "2026-08-05T08:05:38.917625700Z",
+    "repository": {
+      "source": "C:\\Users\\1\\Desktop\\tomorrowci\\fixtures/python-runtime-break",
+      "path": "C:\\Users\\1\\Desktop\\tomorrowci\\fixtures/python-runtime-break",
+      "commit_sha": null,
+      "branch": null,
+      "is_remote": false,
+      "workspace_copy": ".tomorrowci\\work\\workspaces\\41b270775798",
+      "captured_at": "2026-08-05T08:05:38.878932300Z"
+    },
+    "detection": {
+      "ecosystem": "python",
+      "package_manager": "pip",
+      "manifests": [
+        "pyproject.toml",
+        "requirements.txt"
+      ],
+      "confidence": 0.95,
+      "notes": [
+        "Python package manager for v0.1: pip",
+        "Runtime images: official docker.io/library/python:<major.minor>"
+      ],
+      "supported": true,
+      "unsupported_reason": null
+    },
+    "baseline": null,
+    "config_hash": "d52c6083a2ba63dd",
+    "sandbox_engine": null,
+    "status": "BLOCKED",
+    "frontier": {
+      "observed": false,
+      "horizon_label": null,
+      "scenario_id": null,
+      "axis": null,
+      "from_label": null,
+      "to_label": null,
+      "failure_signature": null,
+      "evidence_grade": null,
+      "replay_command": null,
+      "explanation": "BLOCKED: no container engine available (install Docker or Podman). doctor: tomorrowci doctor. No observed breakage horizon (execution could not complete)."
+    },
+    "scenario_count": 0,
+    "host": {
+      "os": "windows",
+      "arch": "x86_64",
+      "tomorrowci_version": "0.1.0"
+    }
+  },
+  "verdicts": [
+    {
+      "scenario_id": "sandbox",
+      "label": "sandbox",
+      "verdict": "BLOCKED",
+      "evidence_grade": "INCONCLUSIVE",
+      "attempts": 0,
+      "failure_signature": null,
+      "evidence": null,
+      "notes": [
+        "no container engine available (install Docker or Podman). doctor: tomorrowci doctor"
+      ]
+    }
+  ],
+  "frontier": {
+    "observed": false,
+    "horizon_label": null,
+    "scenario_id": null,
+    "axis": null,
+    "from_label": null,
+    "to_label": null,
+    "failure_signature": null,
+    "evidence_grade": null,
+    "replay_command": null,
+    "explanation": "BLOCKED: no container engine available (install Docker or Podman). doctor: tomorrowci doctor. No observed breakage horizon (execution could not complete)."
+  },
+  "plan": {},
+  "candidates": []
+}

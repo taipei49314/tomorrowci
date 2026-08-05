@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>TomorrowCI Report — 41b270775798</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --panel: #121a2b;
+      --text: #e8eefc;
+      --muted: #9db0d0;
+      --pass: #1f9d55;
+      --fail: #e53e3e;
+      --flaky: #d69e2e;
+      --blocked: #718096;
+      --accent: #63b3ed;
+      --border: #243049;
+      --focus: #f6e05e;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; transition: none !important; }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.5;
+    }
+    a { color: var(--accent); }
+    a:focus, button:focus, [tabindex]:focus { outline: 3px solid var(--focus); outline-offset: 2px; }
+    header, main, footer { max-width: 1100px; margin: 0 auto; padding: 1.25rem; }
+    header { border-bottom: 1px solid var(--border); }
+    h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
+    .muted { color: var(--muted); }
+    .panel {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 12px; padding: 1rem; margin: 1rem 0;
+    }
+    .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 0.6rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; }
+    .badge {
+      display: inline-block; min-width: 5.5rem; text-align: center;
+      padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.75rem;
+      font-weight: 700; letter-spacing: 0.03em;
+      border: 1px solid transparent;
+    }
+    .badge-pass { background: rgba(31,157,85,0.15); color: #68d391; border-color: var(--pass); }
+    .badge-fail { background: rgba(229,62,62,0.15); color: #fc8181; border-color: var(--fail); }
+    .badge-flaky { background: rgba(214,158,46,0.15); color: #f6e05e; border-color: var(--flaky); }
+    .badge-blocked { background: rgba(113,128,150,0.15); color: #cbd5e0; border-color: var(--blocked); }
+    .timeline { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .chip {
+      border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.75rem;
+      background: #0f1726; min-width: 8rem;
+    }
+    .chip strong { display: block; font-size: 0.8rem; }
+    pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre {
+      background: #0a0f18; border: 1px solid var(--border); border-radius: 8px;
+      padding: 0.75rem; overflow: auto; max-height: 320px; white-space: pre-wrap;
+    }
+    nav.toc ul { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.75rem; }
+    nav.toc a { text-decoration: none; border-bottom: 1px dotted var(--accent); }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0,0,0,0); border: 0;
+    }
+  </style>
+</head>
+<body>
+  <a class="sr-only" href="#main">Skip to content</a>
+  <header>
+    <p class="muted">TomorrowCI — Continuous Integration Against the Future</p>
+    <h1>Run 41b270775798</h1>
+    <p>Repository: <strong>C:\Users\1\Desktop\tomorrowci\fixtures/python-runtime-break</strong> @ <code>unknown</code></p>
+    <nav class="toc" aria-label="Report sections">
+      <ul>
+        <li><a href="#horizon">Horizon</a></li>
+        <li><a href="#matrix">Scenario matrix</a></li>
+        <li><a href="#evidence">Failure evidence</a></li>
+        <li><a href="#graph">Execution graph</a></li>
+      </ul>
+    </nav>
+  </header>
+  <main id="main">
+    <section id="horizon" class="panel" aria-labelledby="horizon-title">
+      <h2 id="horizon-title">Breakage horizon timeline</h2>
+      <p><strong>Observed horizon:</strong> No observed breakage horizon within tested candidates.</p>
+      <p class="muted">BLOCKED: no container engine available (install Docker or Podman). doctor: tomorrowci doctor. No observed breakage horizon (execution could not complete).</p>
+      <div class="timeline" role="list" aria-label="Scenario timeline">
+        <div class="chip" role="listitem">
+              <strong>sandbox</strong>
+              <span class="badge badge-blocked">BLOCKED</span>
+              <span class="muted">Inconclusive</span>
+            </div>
+      </div>
+    </section>
+
+    <section id="matrix" class="panel" aria-labelledby="matrix-title">
+      <h2 id="matrix-title">Scenario matrix</h2>
+      <table>
+        <caption class="sr-only">Scenarios and verdicts</caption>
+        <thead>
+          <tr>
+            <th scope="col">Scenario</th>
+            <th scope="col">Verdict</th>
+            <th scope="col">Evidence grade</th>
+            <th scope="col">Signature</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+              <td>sandbox</td>
+              <td><span class="badge badge-blocked" aria-label="BLOCKED">BLOCKED</span></td>
+              <td>Inconclusive</td>
+              <td><code>—</code></td>
+            </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="evidence" class="panel" aria-labelledby="evidence-title">
+      <h2 id="evidence-title">Failure evidence</h2>
+      <div class="grid">
+        <div>
+          <h3>Signature</h3>
+          <pre>No failure signature</pre>
+        </div>
+        <div>
+          <h3>Replay</h3>
+          <pre>n/a</pre>
+          <p class="muted">Evidence grade and correlation only — not a proven root cause unless stated.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="graph" class="panel" aria-labelledby="graph-title">
+      <h2 id="graph-title">Execution graph / planner decisions</h2>
+      <pre id="plan-view"></pre>
+    </section>
+  </main>
+  <footer class="muted">
+    <p>Generated by TomorrowCI 0.1.0. No telemetry. Local-first.</p>
+  </footer>
+  <script id="tomorrowci-data" type="application/json">{"run":{"run_id":"41b270775798","tool_version":"0.1.0","started_at":"2026-08-05T08:05:38.878932300Z","finished_at":"2026-08-05T08:05:38.917625700Z","repository":{"source":"C:\\Users\\1\\Desktop\\tomorrowci\\fixtures/python-runtime-break","path":"C:\\Users\\1\\Desktop\\tomorrowci\\fixtures/python-runtime-break","commit_sha":null,"branch":null,"is_remote":false,"workspace_copy":".tomorrowci\\work\\workspaces\\41b270775798","captured_at":"2026-08-05T08:05:38.878932300Z"},"detection":{"ecosystem":"python","package_manager":"pip","manifests":["pyproject.toml","requirements.txt"],"confidence":0.95,"notes":["Python package manager for v0.1: pip","Runtime images: official docker.io/library/python:\u003cmajor.minor\u003e"],"supported":true,"unsupported_reason":null},"baseline":null,"config_hash":"d52c6083a2ba63dd","sandbox_engine":null,"status":"BLOCKED","frontier":{"observed":false,"horizon_label":null,"scenario_id":null,"axis":null,"from_label":null,"to_label":null,"failure_signature":null,"evidence_grade":null,"replay_command":null,"explanation":"BLOCKED: no container engine available (install Docker or Podman). doctor: tomorrowci doctor. No observed breakage horizon (execution could not complete)."},"scenario_count":0,"host":{"os":"windows","arch":"x86_64","tomorrowci_version":"0.1.0"}},"verdicts":[{"scenario_id":"sandbox","label":"sandbox","verdict":"BLOCKED","evidence_grade":"INCONCLUSIVE","attempts":0,"failure_signature":null,"evidence":null,"notes":["no container engine available (install Docker or Podman). doctor: tomorrowci doctor"]}],"frontier":{"observed":false,"horizon_label":null,"scenario_id":null,"axis":null,"from_label":null,"to_label":null,"failure_signature":null,"evidence_grade":null,"replay_command":null,"explanation":"BLOCKED: no container engine available (install Docker or Podman). doctor: tomorrowci doctor. No observed breakage horizon (execution could not complete)."},"plan":{},"candidates":[]}</script>
+  <script>
+    (function() {
+      var el = document.getElementById('tomorrowci-data');
+      var data = JSON.parse(el.textContent);
+      var plan = document.getElementById('plan-view');
+      plan.textContent = JSON.stringify(data.plan, null, 2);
+    })();
+  </script>
+</body>
+</html>

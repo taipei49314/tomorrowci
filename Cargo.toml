@@ -1,0 +1,52 @@
+﻿[workspace]
+resolver = "2"
+members = [
+  "apps/cli",
+  "crates/core",
+  "crates/sandbox",
+  "crates/runner",
+  "crates/adapters",
+  "crates/adapter-python",
+  "crates/adapter-node",
+  "crates/adapter-rust",
+  "crates/evidence",
+  "crates/report",
+]
+default-members = ["apps/cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/tomorrowci/tomorrowci"
+authors = ["TomorrowCI Contributors"]
+rust-version = "1.75"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+sha2 = "0.10"
+hex = "0.4"
+regex = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "fs", "io-util", "sync"] }
+tempfile = "3"
+walkdir = "2"
+which = "7"
+jsonschema = "0.28"
+indexmap = { version = "2", features = ["serde"] }
+camino = "1"
+humantime = "2"
+html-escape = "0.2"
+once_cell = "1"
+toml = "0.8"
+semver = { version = "1", features = ["serde"] }
+dirs = "6"
+fs_extra = "1"

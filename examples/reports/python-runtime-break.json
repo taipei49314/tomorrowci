@@ -1,0 +1,94 @@
+{
+  "run": {
+    "run_id": "demo-py-runtime",
+    "tool_version": "0.1.0",
+    "started_at": "2026-08-05T08:06:19.645280Z",
+    "finished_at": "2026-08-05T08:06:19.645302100Z",
+    "repository": {
+      "source": "fixtures/python-runtime-break",
+      "path": "fixtures/python-runtime-break",
+      "commit_sha": "fixture",
+      "branch": null,
+      "is_remote": false,
+      "workspace_copy": "fixtures/python-runtime-break",
+      "captured_at": "2026-08-05T08:06:19.645305300Z"
+    },
+    "detection": null,
+    "baseline": null,
+    "config_hash": "demo",
+    "sandbox_engine": "docker",
+    "status": "COMPLETED",
+    "frontier": null,
+    "scenario_count": 2,
+    "host": {
+      "os": "windows",
+      "arch": "x86_64",
+      "tomorrowci_version": "0.1.0"
+    }
+  },
+  "verdicts": [
+    {
+      "scenario_id": "baseline",
+      "label": "Python 3.9 + locked dependencies",
+      "verdict": "BASELINE_PASS",
+      "evidence_grade": "OBSERVED",
+      "attempts": 1,
+      "failure_signature": null,
+      "evidence": null,
+      "notes": [
+        "demo report shaped like a real fixture run; container e2e BLOCKED on hosts without Docker"
+      ]
+    },
+    {
+      "scenario_id": "py310-locked",
+      "label": "Python 3.10 + locked dependencies",
+      "verdict": "FUTURE_FAIL",
+      "evidence_grade": "OBSERVED",
+      "attempts": 2,
+      "failure_signature": {
+        "kind": "ImportError",
+        "summary": "ImportError: cannot import name 'MutableMapping'",
+        "primary_error": "ImportError: cannot import name 'MutableMapping'",
+        "fingerprint": "a12d8731f70a24ba",
+        "framework_hints": [
+          "python"
+        ],
+        "evidence_grade": "OBSERVED"
+      },
+      "evidence": null,
+      "notes": []
+    }
+  ],
+  "frontier": {
+    "observed": true,
+    "horizon_label": "Python 3.10 + locked dependencies",
+    "scenario_id": "py310-locked",
+    "axis": "runtime",
+    "from_label": "Python 3.9 + locked dependencies",
+    "to_label": "Python 3.10 + locked dependencies",
+    "failure_signature": {
+      "kind": "ImportError",
+      "summary": "ImportError: cannot import name 'MutableMapping'",
+      "primary_error": "ImportError",
+      "fingerprint": "demo",
+      "framework_hints": [],
+      "evidence_grade": "OBSERVED"
+    },
+    "evidence_grade": "OBSERVED",
+    "replay_command": "tomorrowci replay demo-py-runtime --scenario py310-locked",
+    "explanation": "Observed breakage horizon at Python 3.10 (demo artifact). On CI with Docker this is produced from a real fixture run."
+  },
+  "plan": {
+    "decisions": [
+      {
+        "action": "select",
+        "reason": "baseline"
+      },
+      {
+        "action": "select",
+        "reason": "runtime candidate"
+      }
+    ]
+  },
+  "candidates": []
+}

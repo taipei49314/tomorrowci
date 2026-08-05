@@ -1,0 +1,95 @@
+:root {
+  --bg: #0b1220;
+  --panel: #121a2b;
+  --text: #e8eefc;
+  --muted: #9db0d0;
+  --pass: #68d391;
+  --fail: #fc8181;
+  --flaky: #f6e05e;
+  --blocked: #cbd5e0;
+  --accent: #63b3ed;
+  --border: #243049;
+  --focus: #f6e05e;
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+a {
+  color: var(--accent);
+}
+a:focus,
+button:focus,
+[tabindex]:focus {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1.25rem;
+}
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem;
+  margin: 1rem 0;
+}
+.badge {
+  display: inline-block;
+  min-width: 5.5rem;
+  text-align: center;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  border: 1px solid currentColor;
+}
+.badge-pass {
+  color: var(--pass);
+}
+.badge-fail {
+  color: var(--fail);
+}
+.badge-flaky {
+  color: var(--flaky);
+}
+.badge-blocked {
+  color: var(--blocked);
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th,
+td {
+  text-align: left;
+  padding: 0.6rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+.muted {
+  color: var(--muted);
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}

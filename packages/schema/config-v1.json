@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tomorrowci.dev/schema/config-v1.json",
+  "title": "TomorrowCI Config v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version"],
+  "properties": {
+    "version": { "const": 1 },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ecosystem": { "type": "string", "enum": ["auto", "python", "node", "rust"] },
+        "test_command": { "type": "string" },
+        "build_command": { "type": "string" }
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runtime": { "type": "string" },
+        "dependencies": { "type": "string", "enum": ["locked", "latest"] }
+      }
+    },
+    "candidates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "channels": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "max_versions": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "dependencies": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "latest_allowed": { "type": "boolean" },
+            "prerelease": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_scenarios": { "type": "integer", "minimum": 1 },
+        "timeout_seconds": { "type": "integer", "minimum": 1 },
+        "reruns_on_failure": { "type": "integer", "minimum": 0 },
+        "max_parallel": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "sandbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "engine": { "type": "string", "enum": ["auto", "docker", "podman"] },
+        "network": { "type": "string", "enum": ["none", "fetch-only", "full"] },
+        "memory_mb": { "type": "integer", "minimum": 128 },
+        "cpus": { "type": "number", "minimum": 0.1 },
+        "pids_limit": { "type": "integer", "minimum": 32 }
+      }
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "html": { "type": "boolean" },
+        "json": { "type": "boolean" },
+        "sarif": { "type": "boolean" }
+      }
+    },
+    "extensions": { "type": "object" }
+  }
+}

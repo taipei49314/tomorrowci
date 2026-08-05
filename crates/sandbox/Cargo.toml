@@ -1,0 +1,25 @@
+[package]
+name = "tomorrowci-sandbox"
+description = "Docker/Podman isolation and resource controls for TomorrowCI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tomorrowci-core = { path = "../core" }
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+which.workspace = true
+tempfile.workspace = true
+sha2.workspace = true
+hex.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
