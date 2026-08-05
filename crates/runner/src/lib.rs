@@ -1,12 +1,16 @@
 //! Orchestrates detection → planning → sandboxed execution → evidence → reports.
 
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tomorrowci_adapter_node::{baseline_scenario as node_baseline_scenario, NodeAdapter};
 use tomorrowci_adapter_python::{baseline_scenario as py_baseline_scenario, PythonAdapter};
 use tomorrowci_adapter_rust::{baseline_scenario as rust_baseline_scenario, RustAdapter};
 use tomorrowci_adapters::{detect_ecosystem, EcosystemAdapter};
+use tomorrowci_core::backtest::{
+    BacktestPoint, BacktestPointStatus, BacktestReport, BacktestRequest,
+};
+use tomorrowci_core::compare::{compare_horizons, HorizonCompare};
 use tomorrowci_core::ddmin::reduce_axes;
 use tomorrowci_core::{
     authorize_frontier, classify_scenario, truncate_log, BreakageFrontier, Config, Ecosystem,
@@ -193,7 +197,14 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
     let mut executed_pass: Vec<(Scenario, bool, Option<tomorrowci_core::FailureSignature>)> =
         Vec::new();
 
-    for scenario in &plan.scenarios {
+    // Baseline always first (serial) — future work is unauthorized without it.
+    let (baseline_scenarios, future_scenarios): (Vec<_>, Vec<_>) = plan
+        .scenarios
+        .iter()
+        .cloned()
+        .partition(|s| s.is_baseline);
+
+    for scenario in &baseline_scenarios {
         let (verdict, passed, sig) = run_scenario_with_reruns(
             adapter,
             &engine,
@@ -205,80 +216,101 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
         .await?;
         executed_pass.push((scenario.clone(), passed, sig));
         verdicts.push(verdict);
-
-        // Stop authorizing further future work if baseline invalid
-        if scenario.is_baseline && !passed {
+        if !passed {
+            // No parallel futures when baseline fails.
             break;
         }
     }
 
-    // Combined pairwise if single-axis all pass and budget remains
     let baseline_ok = verdicts
         .iter()
         .find(|v| v.scenario_id.0 == "baseline")
         .map(|v| v.verdict == Verdict::BaselinePass)
         .unwrap_or(false);
 
-    if baseline_ok {
-        let single_axis_all_pass = verdicts
-            .iter()
-            .filter(|v| v.scenario_id.0 != "baseline")
-            .all(|v| v.verdict == Verdict::FuturePass || v.verdict == Verdict::Blocked);
+    if baseline_ok && !future_scenarios.is_empty() {
+        let max_p = req.config.execution.max_parallel.max(1);
+        tracing::info!(max_parallel = max_p, n = future_scenarios.len(), "running future scenarios");
+        let results = run_scenarios_bounded(
+            adapter,
+            &engine,
+            &req.config,
+            &workspace,
+            &store,
+            &future_scenarios,
+            max_p,
+        )
+        .await?;
+        // Preserve plan order for deterministic terminal output.
+        for scenario in &future_scenarios {
+            if let Some((verdict, passed, sig)) = results.get(&scenario.id.0) {
+                executed_pass.push((scenario.clone(), *passed, sig.clone()));
+                verdicts.push(verdict.clone());
+            }
+        }
+    }
 
-        // Still try combined for dependency × one runtime if budget
+    // Combined pairwise if budget remains
+    if baseline_ok {
         let remaining = req
             .config
             .execution
             .max_scenarios
             .saturating_sub(verdicts.len());
         if remaining > 0 && !runtime_cands.is_empty() && !dep_cands.is_empty() {
-            // Only if we want reduction demo: run one combined failing path for dep+runtime
-            // when single-axis didn't exhaust. Prefer real combinations.
-            if single_axis_all_pass || true {
-                let rt_pass: Vec<_> = executed_pass
-                    .iter()
-                    .filter(|(s, p, _)| !s.is_baseline && *p && s.axes_changed.iter().any(|a| matches!(a, tomorrowci_core::EnvironmentAxis::Runtime)))
-                    .map(|(s, _, _)| (s.id.0.clone(), s.runtime_version.clone()))
-                    .collect();
-                let dep_modes: Vec<_> = dep_cands
-                    .iter()
-                    .map(|c| (c.id.clone(), c.dependency_mode.clone()))
-                    .collect();
-                let mut combined = planner.propose_combined(&rt_pass, &dep_modes, remaining);
-                for s in &mut combined {
-                    s.ecosystem = detection.ecosystem;
-                    if s.image_ref.is_empty() {
-                        s.image_ref = format_image(detection.ecosystem, &s.runtime_version);
-                    }
+            let rt_pass: Vec<_> = executed_pass
+                .iter()
+                .filter(|(s, p, _)| {
+                    !s.is_baseline
+                        && *p
+                        && s.axes_changed.iter().any(|a| {
+                            matches!(a, tomorrowci_core::EnvironmentAxis::Runtime)
+                        })
+                })
+                .map(|(s, _, _)| (s.id.0.clone(), s.runtime_version.clone()))
+                .collect();
+            let dep_modes: Vec<_> = dep_cands
+                .iter()
+                .map(|c| (c.id.clone(), c.dependency_mode.clone()))
+                .collect();
+            let mut combined = planner.propose_combined(&rt_pass, &dep_modes, remaining);
+            for s in &mut combined {
+                s.ecosystem = detection.ecosystem;
+                if s.image_ref.is_empty() {
+                    s.image_ref = format_image(detection.ecosystem, &s.runtime_version);
                 }
-                // ddmin preparation: execute combined then reduce axes labels if fail
-                for scenario in combined.into_iter().take(remaining) {
-                    let (verdict, passed, sig) = run_scenario_with_reruns(
-                        adapter,
-                        &engine,
-                        &req.config,
-                        &workspace,
-                        &scenario,
-                        &store,
-                    )
-                    .await?;
-                    if !passed && verdict.verdict == Verdict::FutureFail {
-                        let axes = scenario
-                            .axes_changed
-                            .iter()
-                            .map(|a| a.to_string())
-                            .collect::<Vec<_>>();
-                        let reduced = reduce_axes(&axes, |subset| {
-                            // Prefer subset that still includes the known failing combination marker
-                            !subset.is_empty()
-                                && subset.iter().any(|x| x == "dependencies" || x == "runtime")
-                        });
-                        tracing::info!(?reduced, "ddmin reduced axes");
-                    }
-                    verdicts.push(verdict);
-                    executed_pass.push((scenario, passed, sig));
-                    if verdicts.len() >= req.config.execution.max_scenarios {
-                        break;
+            }
+            let combined: Vec<_> = combined.into_iter().take(remaining).collect();
+            if !combined.is_empty() {
+                let max_p = req.config.execution.max_parallel.max(1);
+                let results = run_scenarios_bounded(
+                    adapter,
+                    &engine,
+                    &req.config,
+                    &workspace,
+                    &store,
+                    &combined,
+                    max_p,
+                )
+                .await?;
+                for scenario in &combined {
+                    if let Some((verdict, passed, sig)) = results.get(&scenario.id.0) {
+                        if !passed && verdict.verdict == Verdict::FutureFail {
+                            let axes = scenario
+                                .axes_changed
+                                .iter()
+                                .map(|a| a.to_string())
+                                .collect::<Vec<_>>();
+                            let reduced = reduce_axes(&axes, |subset| {
+                                !subset.is_empty()
+                                    && subset
+                                        .iter()
+                                        .any(|x| x == "dependencies" || x == "runtime")
+                            });
+                            tracing::info!(?reduced, "ddmin reduced axes");
+                        }
+                        executed_pass.push((scenario.clone(), *passed, sig.clone()));
+                        verdicts.push(verdict.clone());
                     }
                 }
             }
@@ -403,6 +435,49 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
         manifest,
         terminal_summary,
     })
+}
+
+/// Run scenarios with bounded concurrency. Results keyed by scenario id.
+/// Ordering of execution is not guaranteed; callers should re-sort by plan order.
+async fn run_scenarios_bounded(
+    adapter: &dyn EcosystemAdapter,
+    engine: &EngineInfo,
+    config: &Config,
+    workspace: &Path,
+    store: &EvidenceStore,
+    scenarios: &[Scenario],
+    max_parallel: usize,
+) -> Result<
+    std::collections::HashMap<
+        String,
+        (
+            ScenarioVerdict,
+            bool,
+            Option<tomorrowci_core::FailureSignature>,
+        ),
+    >,
+> {
+    use futures::stream::{self, StreamExt};
+    let limit = max_parallel.max(1);
+    let results: Vec<Result<(String, (ScenarioVerdict, bool, Option<tomorrowci_core::FailureSignature>))>> =
+        stream::iter(scenarios.iter())
+            .map(|scenario| async move {
+                let (verdict, passed, sig) = run_scenario_with_reruns(
+                    adapter, engine, config, workspace, scenario, store,
+                )
+                .await?;
+                Ok((scenario.id.0.clone(), (verdict, passed, sig)))
+            })
+            .buffer_unordered(limit)
+            .collect()
+            .await;
+
+    let mut map = std::collections::HashMap::new();
+    for r in results {
+        let (id, triple) = r?;
+        map.insert(id, triple);
+    }
+    Ok(map)
 }
 
 async fn run_scenario_with_reruns(
@@ -1046,3 +1121,252 @@ pub fn explain_run(output_root: &Path, run_id: &str) -> Result<String> {
     );
     Ok(out)
 }
+
+/// Compare two completed runs' frontiers (base → head).
+pub fn compare_runs(
+    output_root: &Path,
+    base_run_id: &str,
+    head_run_id: &str,
+) -> Result<HorizonCompare> {
+    let base_store = EvidenceStore::open(output_root, base_run_id)
+        .map_err(|e| RunnerError::Msg(format!("base run: {e}")))?;
+    let head_store = EvidenceStore::open(output_root, head_run_id)
+        .map_err(|e| RunnerError::Msg(format!("head run: {e}")))?;
+    let base_f = base_store
+        .load_frontier()
+        .map_err(|e| RunnerError::Msg(format!("base frontier: {e}")))?;
+    let head_f = head_store
+        .load_frontier()
+        .map_err(|e| RunnerError::Msg(format!("head frontier: {e}")))?;
+    Ok(compare_horizons(&base_f, &head_f))
+}
+
+pub fn format_compare(cmp: &HorizonCompare, base_id: &str, head_id: &str) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("TomorrowCI compare  base={base_id}  head={head_id}\n"));
+    out.push_str(&format!("Movement: {:?}\n", cmp.movement));
+    out.push_str(&format!(
+        "Base horizon: {}\n",
+        if cmp.base_observed {
+            cmp.base_label.as_deref().unwrap_or("?")
+        } else {
+            "(none)"
+        }
+    ));
+    out.push_str(&format!(
+        "Head horizon: {}\n",
+        if cmp.head_observed {
+            cmp.head_label.as_deref().unwrap_or("?")
+        } else {
+            "(none)"
+        }
+    ));
+    out.push_str(&format!("{}\n", cmp.explanation));
+    if cmp.is_regression {
+        out.push_str("Policy signal: HORIZON_REGRESSION\n");
+    }
+    out
+}
+
+/// Sample commits in [at, until] and scan each (honest M2 skeleton).
+pub async fn backtest_repo(
+    req: BacktestRequest,
+    evidence_root: PathBuf,
+    work_root: PathBuf,
+) -> Result<BacktestReport> {
+    let mut points = Vec::new();
+    let target_path = PathBuf::from(&req.target);
+    if !target_path.exists() {
+        return Err(RunnerError::Msg(format!(
+            "backtest target missing: {}",
+            target_path.display()
+        )));
+    }
+
+    let commits = list_commits_in_range(&target_path, req.at, req.until, req.max_commits)?;
+    if commits.is_empty() {
+        points.push(BacktestPoint {
+            commit_sha: String::new(),
+            committed_at: None,
+            run_id: None,
+            frontier_observed: false,
+            horizon_label: None,
+            status: BacktestPointStatus::Skipped,
+            detail: format!(
+                "no commits found in {}..{} (git log)",
+                req.at, req.until
+            ),
+        });
+        return Ok(BacktestReport {
+            request: req,
+            points,
+            note: BacktestReport::skeleton_note().into(),
+        });
+    }
+
+    for (sha, committed_at) in commits {
+        let worktree = work_root.join("backtest").join(&sha[..12.min(sha.len())]);
+        if let Err(e) = materialize_commit_worktree(&target_path, &sha, &worktree) {
+            points.push(BacktestPoint {
+                commit_sha: sha,
+                committed_at,
+                run_id: None,
+                frontier_observed: false,
+                horizon_label: None,
+                status: BacktestPointStatus::Blocked,
+                detail: e,
+            });
+            continue;
+        }
+
+        let mut cfg = Config::default();
+        cfg.execution.max_scenarios = req.max_scenarios_per_point.max(1);
+        cfg.execution.reruns_on_failure = 1;
+        cfg.candidates.runtime.max_versions = 3;
+
+        match scan(ScanRequest {
+            target: worktree.display().to_string(),
+            config: cfg,
+            config_path: None,
+            output_root: evidence_root.clone(),
+            work_root: work_root.join("backtest-workspaces"),
+        })
+        .await
+        {
+            Ok(out) => {
+                points.push(BacktestPoint {
+                    commit_sha: sha,
+                    committed_at,
+                    run_id: Some(out.run_id.0.clone()),
+                    frontier_observed: out.frontier.observed,
+                    horizon_label: out.frontier.horizon_label.clone(),
+                    status: if out.manifest.status == RunStatus::Blocked {
+                        BacktestPointStatus::Blocked
+                    } else {
+                        BacktestPointStatus::Ok
+                    },
+                    detail: out.frontier.explanation,
+                });
+            }
+            Err(e) => {
+                points.push(BacktestPoint {
+                    commit_sha: sha,
+                    committed_at,
+                    run_id: None,
+                    frontier_observed: false,
+                    horizon_label: None,
+                    status: BacktestPointStatus::Failed,
+                    detail: e.to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(BacktestReport {
+        request: req,
+        points,
+        note: BacktestReport::skeleton_note().into(),
+    })
+}
+
+fn list_commits_in_range(
+    repo: &Path,
+    at: NaiveDate,
+    until: NaiveDate,
+    max: usize,
+) -> Result<Vec<(String, Option<chrono::DateTime<Utc>>)>> {
+    let after = format!("{at} 00:00:00");
+    let before = format!("{until} 23:59:59");
+    let out = std::process::Command::new("git")
+        .args([
+            "log",
+            "--format=%H %cI",
+            &format!("--after={after}"),
+            &format!("--before={before}"),
+            "-n",
+            &max.to_string(),
+        ])
+        .current_dir(repo)
+        .output()
+        .map_err(|e| RunnerError::Msg(format!("git log: {e}")))?;
+    if !out.status.success() {
+        return Err(RunnerError::Msg(format!(
+            "git log failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )));
+    }
+    let mut rows = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut parts = line.split_whitespace();
+        let Some(sha) = parts.next() else { continue };
+        let ts = parts.next().and_then(|s| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .ok()
+                .map(|d| d.with_timezone(&Utc))
+        });
+        rows.push((sha.to_string(), ts));
+    }
+    // Oldest first for timeline readability
+    rows.reverse();
+    Ok(rows)
+}
+
+fn materialize_commit_worktree(repo: &Path, sha: &str, dest: &Path) -> std::result::Result<(), String> {
+    if dest.exists() {
+        let _ = std::fs::remove_dir_all(dest);
+    }
+    std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+    // Export tree without .git via archive
+    let archive = std::process::Command::new("git")
+        .args(["archive", sha])
+        .current_dir(repo)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("git archive spawn: {e}"))?;
+    // Prefer tar extraction via git archive | tar -x
+    let tar = std::process::Command::new("tar")
+        .args(["-x", "-C"])
+        .arg(dest)
+        .stdin(archive.stdout.ok_or_else(|| "git archive stdout".to_string())?)
+        .output();
+    match tar {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => {
+            // Windows fallback: git checkout-index via worktree
+            let _ = o;
+            let wt = std::process::Command::new("git")
+                .args(["worktree", "add", "--detach"])
+                .arg(dest)
+                .arg(sha)
+                .current_dir(repo)
+                .output()
+                .map_err(|e| e.to_string())?;
+            if wt.status.success() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "git worktree add failed: {}",
+                    String::from_utf8_lossy(&wt.stderr)
+                ))
+            }
+        }
+        Err(_) => {
+            let wt = std::process::Command::new("git")
+                .args(["worktree", "add", "--detach"])
+                .arg(dest)
+                .arg(sha)
+                .current_dir(repo)
+                .output()
+                .map_err(|e| e.to_string())?;
+            if wt.status.success() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "git worktree add failed: {}",
+                    String::from_utf8_lossy(&wt.stderr)
+                ))
+            }
+        }
+    }
+}
+

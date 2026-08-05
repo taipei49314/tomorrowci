@@ -3,11 +3,13 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use tomorrowci_core::Config;
+use tomorrowci_core::backtest::BacktestRequest;
 use tomorrowci_measure::{
     default_catalog, run_benches, run_fixture_suite, ClaimStatus, SuiteOptions,
 };
 use tomorrowci_runner::{
-    doctor, explain_run, replay, scan, show_run, ScanRequest, TOOL_VERSION,
+    backtest_repo, compare_runs, doctor, explain_run, format_compare, replay, scan, show_run,
+    ScanRequest, TOOL_VERSION,
 };
 
 #[derive(Parser, Debug)]
@@ -70,6 +72,36 @@ enum Commands {
     Measure {
         #[command(subcommand)]
         cmd: MeasureCmd,
+    },
+    /// Compare breakage horizons of two completed runs (base → head)
+    Compare {
+        /// Base run id (e.g. main branch scan)
+        base: String,
+        /// Head run id (e.g. PR scan)
+        head: String,
+        /// Exit 5 when head regresses the horizon earlier
+        #[arg(long)]
+        fail_on_regression: bool,
+    },
+    /// Historical commit sampling backtest (M2 skeleton — honest limitations)
+    Backtest {
+        /// Local git repository path
+        target: String,
+        /// Start date (YYYY-MM-DD)
+        #[arg(long)]
+        at: String,
+        /// End date (YYYY-MM-DD)
+        #[arg(long)]
+        until: String,
+        /// Max commits to sample
+        #[arg(long, default_value_t = 5)]
+        max_commits: usize,
+        /// Max scenarios per commit scan
+        #[arg(long, default_value_t = 8)]
+        max_scenarios: usize,
+        /// Write report JSON here
+        #[arg(long, default_value = ".tomorrowci/backtest-report.json")]
+        out: PathBuf,
     },
 }
 
@@ -233,6 +265,64 @@ async fn main() -> anyhow::Result<()> {
             std::fs::write(&output, GITHUB_ACTION_WORKFLOW)?;
             println!("Wrote safe GitHub Actions workflow to {}", output.display());
             println!("Default permissions: contents: read only. No secrets forwarded to untrusted code.");
+        }
+        Commands::Compare {
+            base,
+            head,
+            fail_on_regression,
+        } => {
+            let cmp = compare_runs(&evidence_root, &base, &head)?;
+            print!("{}", format_compare(&cmp, &base, &head));
+            let path = evidence_root.join(format!("compare-{}-{}.json", base, head));
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&path, serde_json::to_string_pretty(&cmp)?)?;
+            println!("Wrote {}", path.display());
+            if fail_on_regression && cmp.is_regression {
+                std::process::exit(5);
+            }
+        }
+        Commands::Backtest {
+            target,
+            at,
+            until,
+            max_commits,
+            max_scenarios,
+            out,
+        } => {
+            let at = chrono::NaiveDate::parse_from_str(&at, "%Y-%m-%d")
+                .map_err(|e| anyhow::anyhow!("--at date: {e}"))?;
+            let until = chrono::NaiveDate::parse_from_str(&until, "%Y-%m-%d")
+                .map_err(|e| anyhow::anyhow!("--until date: {e}"))?;
+            let report = backtest_repo(
+                BacktestRequest {
+                    target,
+                    at,
+                    until,
+                    max_commits,
+                    max_scenarios_per_point: max_scenarios,
+                },
+                evidence_root,
+                work_root,
+            )
+            .await?;
+            if let Some(parent) = out.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&out, serde_json::to_string_pretty(&report)?)?;
+            println!("{}", report.note);
+            println!("points={}", report.points.len());
+            for p in &report.points {
+                println!(
+                    "  {} {:?} horizon={:?} run={:?}",
+                    &p.commit_sha[..8.min(p.commit_sha.len())],
+                    p.status,
+                    p.horizon_label,
+                    p.run_id
+                );
+            }
+            println!("Wrote {}", out.display());
         }
         Commands::Measure { cmd } => match cmd {
             MeasureCmd::Suite { only, out } => {

@@ -62,6 +62,25 @@ Build instruments first — never trust unverified green:
 # → .tomorrowci/measure/{bench,suite,claim-ledger,summary}.json + CLAIM_LEDGER.md
 ```
 
+### Compare horizons (PR / base vs head)
+
+```bash
+./target/release/tomorrowci scan . --evidence-root .tomorrowci   # note run-id A
+# ... switch branch ...
+./target/release/tomorrowci scan . --evidence-root .tomorrowci   # note run-id B
+./target/release/tomorrowci compare <base-run-id> <head-run-id> --fail-on-regression
+```
+
+Earlier horizon on head = **regression** (exit 5 with `--fail-on-regression`).
+
+### Backtest skeleton (commit sampling)
+
+```bash
+./target/release/tomorrowci backtest . --at 2025-01-01 --until 2026-08-01 --max-commits 5
+```
+
+Honest limit: applies **current** published candidates to historical source trees; does not time-travel package registries (see `docs/north-star.md`).
+
 ### Scan a repository
 
 ```bash
@@ -172,6 +191,8 @@ Generates a read-only workflow that builds TomorrowCI, runs doctor + fixture sca
 
 - [Architecture](docs/architecture.md)
 - [Threat model](docs/threat-model.md)
+- [Measurement](docs/measurement.md)
+- [North-star extensions](docs/north-star.md)
 - [Adapter authoring](docs/adapter-authoring.md)
 - [Report format](docs/report-format.md)
 - [Contributing](CONTRIBUTING.md)
