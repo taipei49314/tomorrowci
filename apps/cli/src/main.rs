@@ -486,39 +486,19 @@ permissions:
 jobs:
   tomorrowci:
     runs-on: ubuntu-latest
-    # Advisory by default: do not gate merge unless policy.fail_if is configured.
+    # Advisory by default; set fail-on-regression: true to gate on horizon moves.
     continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build TomorrowCI
-        run: cargo build -p tomorrowci --release
-
-      - name: Doctor
-        run: ./target/release/tomorrowci doctor
-
-      - name: Scan fixtures (dogfood)
-        run: |
-          ./target/release/tomorrowci scan fixtures/python-runtime-break --evidence-root .tomorrowci
-          ./target/release/tomorrowci scan fixtures/baseline-fail --evidence-root .tomorrowci || true
-
-      - name: Upload evidence
-        if: always()
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
         with:
-          name: tomorrowci-evidence
-          path: .tomorrowci/runs/
+          fetch-depth: 0
 
-      - name: Job summary
-        if: always()
-        run: |
-          {
-            echo "## TomorrowCI"
-            echo "Evidence uploaded as artifact tomorrowci-evidence."
-            echo "BLOCKED/INCONCLUSIVE are never treated as PASS."
-          } >> "$GITHUB_STEP_SUMMARY"
+      - name: TomorrowCI (composite)
+        uses: ./action
+        with:
+          target: .
+          advisory: "true"
+          base-ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+          fail-on-regression: "false"
 "###;
