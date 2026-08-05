@@ -121,9 +121,18 @@ pub fn detect_engine(preference: &str) -> Result<EngineInfo> {
 }
 
 /// Resolve image tag to immutable digest when possible.
-pub async fn resolve_image_digest(engine: &EngineInfo, image_ref: &str) -> Result<(String, Option<String>)> {
+pub async fn resolve_image_digest(
+    engine: &EngineInfo,
+    image_ref: &str,
+) -> Result<(String, Option<String>)> {
     let out = Command::new(&engine.path)
-        .args(["image", "inspect", "--format", "{{index .RepoDigests 0}}", image_ref])
+        .args([
+            "image",
+            "inspect",
+            "--format",
+            "{{index .RepoDigests 0}}",
+            image_ref,
+        ])
         .output()
         .await?;
     if out.status.success() {
@@ -190,7 +199,10 @@ pub async fn execute_scenario(
             "refusing to mount docker.sock into target container".into(),
         ));
     }
-    if opts.workspace_host.to_string_lossy().contains("docker.sock")
+    if opts
+        .workspace_host
+        .to_string_lossy()
+        .contains("docker.sock")
         || opts.workspace_container.contains("docker.sock")
     {
         return Err(SandboxError::Blocked(

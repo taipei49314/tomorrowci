@@ -15,15 +15,15 @@ pub fn ensure_within_root(root: &Path, candidate: &Path) -> Result<PathBuf> {
             .map_err(|e| CoreError::Validation(format!("path canonicalize: {e}")))?
     } else {
         let parent = candidate.parent().unwrap_or(Path::new("."));
-        let file = candidate.file_name().ok_or_else(|| {
-            CoreError::Validation("candidate path has no file name".into())
-        })?;
+        let file = candidate
+            .file_name()
+            .ok_or_else(|| CoreError::Validation("candidate path has no file name".into()))?;
         let parent = if parent.as_os_str().is_empty() {
             root.clone()
         } else if parent.exists() {
-            parent.canonicalize().map_err(|e| {
-                CoreError::Validation(format!("parent canonicalize: {e}"))
-            })?
+            parent
+                .canonicalize()
+                .map_err(|e| CoreError::Validation(format!("parent canonicalize: {e}")))?
         } else {
             // Walk components carefully
             normalize_join(&root, candidate)?
@@ -57,9 +57,7 @@ fn normalize_join(root: &Path, candidate: &Path) -> Result<PathBuf> {
             Component::CurDir => {}
             Component::ParentDir => {
                 if !out.pop() || !out.starts_with(root) {
-                    return Err(CoreError::Validation(
-                        "path escape via .. rejected".into(),
-                    ));
+                    return Err(CoreError::Validation("path escape via .. rejected".into()));
                 }
             }
             Component::Normal(s) => out.push(s),
@@ -83,11 +81,11 @@ fn walk_check(root: &Path, dir: &Path) -> Result<()> {
     for entry in entries {
         let entry = entry.map_err(|e| CoreError::Validation(e.to_string()))?;
         let path = entry.path();
-        let meta = std::fs::symlink_metadata(&path)
-            .map_err(|e| CoreError::Validation(e.to_string()))?;
+        let meta =
+            std::fs::symlink_metadata(&path).map_err(|e| CoreError::Validation(e.to_string()))?;
         if meta.file_type().is_symlink() {
-            let target = std::fs::read_link(&path)
-                .map_err(|e| CoreError::Validation(e.to_string()))?;
+            let target =
+                std::fs::read_link(&path).map_err(|e| CoreError::Validation(e.to_string()))?;
             let resolved = if target.is_absolute() {
                 target
             } else {

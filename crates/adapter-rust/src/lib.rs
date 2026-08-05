@@ -276,9 +276,9 @@ impl EcosystemAdapter for RustAdapter {
             // container toolchains can disagree with a host-generated lock.
             vec!["cargo".into(), "test".into()]
         };
-        let (program, args) = test_parts.split_first().ok_or_else(|| {
-            AdapterError::Other("empty test command".into())
-        })?;
+        let (program, args) = test_parts
+            .split_first()
+            .ok_or_else(|| AdapterError::Other("empty test command".into()))?;
         cmds.push(CommandSpec {
             phase: CommandPhase::Test,
             program: program.clone(),

@@ -124,11 +124,9 @@ pub fn normalize_failure(result: &RawExecutionResult, grade: EvidenceGrade) -> F
     }
 
     // Prefer rustc test panic messages over generic `error: test failed`.
-    if let Some(line) = combined
-        .lines()
-        .map(str::trim)
-        .find(|l| l.contains("toolchain break:") || l.starts_with("thread '") && l.contains("panicked"))
-    {
+    if let Some(line) = combined.lines().map(str::trim).find(|l| {
+        l.contains("toolchain break:") || l.starts_with("thread '") && l.contains("panicked")
+    }) {
         let summary = if line.contains("toolchain break:") {
             line.to_string()
         } else {

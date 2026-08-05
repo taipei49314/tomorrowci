@@ -76,7 +76,9 @@ impl EcosystemAdapter for NodeAdapter {
                     package_manager: pm.into(),
                     manifests: vec!["package.json".into()],
                     confidence: 0.9,
-                    notes: vec![format!("{pm} is UNSUPPORTED in v0.1; npm + package-lock.json required")],
+                    notes: vec![format!(
+                        "{pm} is UNSUPPORTED in v0.1; npm + package-lock.json required"
+                    )],
                     supported: false,
                     unsupported_reason: Some(format!(
                         "{pm} is unsupported; commit package-lock.json and use npm"
@@ -123,7 +125,13 @@ impl EcosystemAdapter for NodeAdapter {
         let mut out = Vec::new();
         let base: u32 = baseline.runtime_version.parse().unwrap_or(20);
 
-        if config.candidates.runtime.channels.iter().any(|c| c == "stable") {
+        if config
+            .candidates
+            .runtime
+            .channels
+            .iter()
+            .any(|c| c == "stable")
+        {
             for ver in NODE_STABLE_MAJORS {
                 let v: u32 = ver.parse().unwrap_or(0);
                 if v > base {
@@ -255,11 +263,16 @@ impl EcosystemAdapter for NodeAdapter {
                 .map(|s| s.to_string())
                 .collect()
         } else {
-            vec!["npm".into(), "test".into(), "--".into(), "--watch=false".into()]
+            vec![
+                "npm".into(),
+                "test".into(),
+                "--".into(),
+                "--watch=false".into(),
+            ]
         };
-        let (program, args) = test_parts.split_first().ok_or_else(|| {
-            AdapterError::Other("empty test command".into())
-        })?;
+        let (program, args) = test_parts
+            .split_first()
+            .ok_or_else(|| AdapterError::Other("empty test command".into()))?;
         let mut test_env = IndexMap::new();
         test_env.insert(
             "TOMORROWCI_DEP_MODE".into(),
@@ -321,7 +334,11 @@ mod tests {
     fn npm_lock_supported() {
         let d = tempdir().unwrap();
         fs::write(d.path().join("package.json"), r#"{"name":"x"}"#).unwrap();
-        fs::write(d.path().join("package-lock.json"), r#"{"lockfileVersion":3}"#).unwrap();
+        fs::write(
+            d.path().join("package-lock.json"),
+            r#"{"lockfileVersion":3}"#,
+        )
+        .unwrap();
         let a = NodeAdapter::new();
         assert!(a.detect(d.path()).unwrap().detection.supported);
     }

@@ -2,8 +2,8 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
-use tomorrowci_core::Config;
 use tomorrowci_core::backtest::BacktestRequest;
+use tomorrowci_core::Config;
 use tomorrowci_measure::{
     default_catalog, run_benches, run_fixture_suite, ClaimStatus, SuiteOptions,
 };
@@ -149,9 +149,7 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let evidence_root = cli.evidence_root;
-    let work_root = cli
-        .work_root
-        .unwrap_or_else(|| evidence_root.join("work"));
+    let work_root = cli.work_root.unwrap_or_else(|| evidence_root.join("work"));
 
     match cli.command {
         Commands::Scan { target, config } => {
@@ -264,7 +262,9 @@ async fn main() -> anyhow::Result<()> {
             }
             std::fs::write(&output, GITHUB_ACTION_WORKFLOW)?;
             println!("Wrote safe GitHub Actions workflow to {}", output.display());
-            println!("Default permissions: contents: read only. No secrets forwarded to untrusted code.");
+            println!(
+                "Default permissions: contents: read only. No secrets forwarded to untrusted code."
+            );
         }
         Commands::Compare {
             base,
@@ -370,8 +370,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("=== Benches ===");
                 print!("{}", benches.ledger.render_table());
                 println!("\n=== Fixture suite ===");
-                let suite =
-                    run_measure_suite(&evidence_root, &work_root, only, &out).await?;
+                let suite = run_measure_suite(&evidence_root, &work_root, only, &out).await?;
                 print!("{}", suite.ledger.render_table());
                 // Combined ledger
                 let mut combined = benches.ledger;
@@ -379,10 +378,7 @@ async fn main() -> anyhow::Result<()> {
                     combined.push(c);
                 }
                 let combined_path = out.join("claim-ledger.json");
-                std::fs::write(
-                    &combined_path,
-                    serde_json::to_string_pretty(&combined)?,
-                )?;
+                std::fs::write(&combined_path, serde_json::to_string_pretty(&combined)?)?;
                 let summary = serde_json::json!({
                     "generated_at": chrono::Utc::now().to_rfc3339(),
                     "tool_version": TOOL_VERSION,
@@ -397,10 +393,7 @@ async fn main() -> anyhow::Result<()> {
                     out.join("summary.json"),
                     serde_json::to_string_pretty(&summary)?,
                 )?;
-                println!(
-                    "\n=== Combined ===\n{}",
-                    combined.render_table()
-                );
+                println!("\n=== Combined ===\n{}", combined.render_table());
                 println!("summary={}", out.join("summary.json").display());
                 if combined.counts().fail > 0 {
                     std::process::exit(1);

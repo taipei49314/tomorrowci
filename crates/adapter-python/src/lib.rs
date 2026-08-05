@@ -223,9 +223,7 @@ impl EcosystemAdapter for PythonAdapter {
                 channel: "preview".into(),
                 order_key: "3.14-rc".into(),
                 evidence_grade: EvidenceGrade::Observed,
-                notes: vec![
-                    "preview/RC image; may be BLOCKED if tag is unavailable".into(),
-                ],
+                notes: vec!["preview/RC image; may be BLOCKED if tag is unavailable".into()],
             });
         }
 
@@ -340,9 +338,9 @@ impl EcosystemAdapter for PythonAdapter {
         });
 
         let test = Self::test_command(config);
-        let (program, args) = test.split_first().ok_or_else(|| {
-            AdapterError::Other("empty test command".into())
-        })?;
+        let (program, args) = test
+            .split_first()
+            .ok_or_else(|| AdapterError::Other("empty test command".into()))?;
         let mut test_env = IndexMap::new();
         // Explicit dependency mode marker for SIMULATED scenarios / fixtures.
         // Adapters never invent versions; they only label the mutation that was applied.
@@ -452,8 +450,12 @@ mod tests {
         };
         let cfg = Config::default();
         let c = a.candidates(&b, &cfg).unwrap();
-        assert!(c.iter().any(|x| x.runtime_version.as_deref() == Some("3.10")));
-        assert!(!c.iter().any(|x| x.runtime_version.as_deref() == Some("3.9")
-            && x.axis == EnvironmentAxis::Runtime));
+        assert!(c
+            .iter()
+            .any(|x| x.runtime_version.as_deref() == Some("3.10")));
+        assert!(!c
+            .iter()
+            .any(|x| x.runtime_version.as_deref() == Some("3.9")
+                && x.axis == EnvironmentAxis::Runtime));
     }
 }

@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Instant;
 use tomorrowci_core::{
-    config::Config, Candidate, DependencyMode, EnvironmentAxis, EvidenceGrade, Planner, RunId,
-    Scenario, ScenarioId, ScenarioKind, Ecosystem,
+    config::Config, Candidate, DependencyMode, Ecosystem, EnvironmentAxis, EvidenceGrade, Planner,
+    RunId, Scenario, ScenarioId, ScenarioKind,
 };
 use tomorrowci_sandbox::detect_engine;
 
@@ -199,9 +199,7 @@ execution: { max_scenarios: 24, timeout_seconds: 900, reruns_on_failure: 2, max_
             let mut times = Vec::new();
             for _ in 0..15 {
                 let t0 = Instant::now();
-                let status = std::process::Command::new(&bin)
-                    .arg("--version")
-                    .output();
+                let status = std::process::Command::new(&bin).arg("--version").output();
                 let ms = t0.elapsed().as_secs_f64() * 1000.0;
                 if status.map(|o| o.status.success()).unwrap_or(false) {
                     times.push(ms);

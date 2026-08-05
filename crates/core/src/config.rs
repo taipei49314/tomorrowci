@@ -299,9 +299,7 @@ impl Config {
             ));
         }
         if self.sandbox.memory_mb < 128 {
-            return Err(CoreError::Config(
-                "sandbox.memory_mb must be >= 128".into(),
-            ));
+            return Err(CoreError::Config("sandbox.memory_mb must be >= 128".into()));
         }
         let allowed_network = ["none", "fetch-only", "full"];
         if !allowed_network.contains(&self.sandbox.network.as_str()) {
@@ -342,12 +340,11 @@ impl Config {
 
 /// Reject unknown top-level keys unless they start with `x_`.
 fn prevalidate_yaml_keys(raw: &str) -> Result<()> {
-    let value: serde_yaml::Value = serde_yaml::from_str(raw).map_err(|e| {
-        CoreError::Config(format!("invalid YAML: {e}"))
-    })?;
-    let map = value.as_mapping().ok_or_else(|| {
-        CoreError::Config("config root must be a mapping".into())
-    })?;
+    let value: serde_yaml::Value =
+        serde_yaml::from_str(raw).map_err(|e| CoreError::Config(format!("invalid YAML: {e}")))?;
+    let map = value
+        .as_mapping()
+        .ok_or_else(|| CoreError::Config("config root must be a mapping".into()))?;
     let allowed = [
         "version",
         "project",
@@ -360,9 +357,7 @@ fn prevalidate_yaml_keys(raw: &str) -> Result<()> {
     ];
     for key in map.keys() {
         let Some(k) = key.as_str() else {
-            return Err(CoreError::Config(
-                "config keys must be strings".into(),
-            ));
+            return Err(CoreError::Config("config keys must be strings".into()));
         };
         if k.starts_with("x_") {
             continue;

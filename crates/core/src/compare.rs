@@ -129,8 +129,8 @@ pub fn compare_horizons(base: &BreakageFrontier, head: &BreakageFrontier) -> Hor
                         head_label,
                         base_order_key: base_key,
                         head_order_key: head_key,
-                        explanation: "Both observed horizons but labels lack comparable order keys."
-                            .into(),
+                        explanation:
+                            "Both observed horizons but labels lack comparable order keys.".into(),
                         is_regression: false,
                     };
                 }

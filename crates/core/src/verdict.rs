@@ -143,10 +143,7 @@ pub fn authorize_frontier(
         );
     }
     if let Some(prior) = prior_pass {
-        if !matches!(
-            prior.verdict,
-            Verdict::BaselinePass | Verdict::FuturePass
-        ) {
+        if !matches!(prior.verdict, Verdict::BaselinePass | Verdict::FuturePass) {
             return none_frontier(
                 "Immediately earlier candidate did not pass; horizon not authorized.",
             );
@@ -179,9 +176,9 @@ pub fn authorize_frontier(
             horizon_label: Some(fail.label.clone()),
             scenario_id: Some(fail.scenario_id.clone()),
             axis: Some(EnvironmentAxis::Runtime),
-            from_label: prior_pass.map(|p| p.label.clone()).or_else(|| {
-                Some(baseline.label.clone())
-            }),
+            from_label: prior_pass
+                .map(|p| p.label.clone())
+                .or_else(|| Some(baseline.label.clone())),
             to_label: Some(fail.label.clone()),
             failure_signature: fail.failure_signature.clone(),
             evidence_grade: Some(fail.evidence_grade),
@@ -197,9 +194,7 @@ pub fn authorize_frontier(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{
-        DependencyMode, Ecosystem, EvidenceGrade, ScenarioId, ScenarioKind,
-    };
+    use crate::domain::{DependencyMode, Ecosystem, EvidenceGrade, ScenarioId, ScenarioKind};
 
     fn sc(id: &str, baseline: bool) -> Scenario {
         Scenario {
@@ -225,8 +220,7 @@ mod tests {
     fn baseline_fail_blocks_horizon() {
         let baseline = classify_scenario(&sc("base", true), &[false, false], None, None, None);
         assert_eq!(baseline.verdict, Verdict::BaselineInvalid);
-        let (auth, frontier) =
-            authorize_frontier(Some(&baseline), &[], None, None, true, true);
+        let (auth, frontier) = authorize_frontier(Some(&baseline), &[], None, None, true, true);
         assert!(!auth.allowed);
         assert!(!frontier.observed);
     }
@@ -251,8 +245,14 @@ mod tests {
             evidence: None,
             notes: vec![],
         };
-        let (auth, _) =
-            authorize_frontier(Some(&baseline), &[fail.clone()], Some(&fail), None, true, true);
+        let (auth, _) = authorize_frontier(
+            Some(&baseline),
+            &[fail.clone()],
+            Some(&fail),
+            None,
+            true,
+            true,
+        );
         assert!(!auth.allowed);
     }
 
@@ -286,7 +286,10 @@ mod tests {
         );
         assert!(auth.allowed);
         assert!(frontier.observed);
-        assert_eq!(frontier.horizon_label.as_deref(), Some("Python 3.10 + locked"));
+        assert_eq!(
+            frontier.horizon_label.as_deref(),
+            Some("Python 3.10 + locked")
+        );
     }
 
     #[test]

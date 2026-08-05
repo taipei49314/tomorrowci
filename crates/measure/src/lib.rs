@@ -10,5 +10,5 @@ pub mod suite;
 
 pub use bench::{run_benches, BenchReport, BenchSample};
 pub use claims::{ClaimRecord, ClaimStatus, Ledger};
-pub use expect::{FixtureExpectation, default_catalog};
+pub use expect::{default_catalog, FixtureExpectation};
 pub use suite::{run_fixture_suite, MeasureReport, SuiteOptions};

@@ -1,8 +1,8 @@
-﻿fn main() {
-  use chrono::Utc;
-  use tomorrowci_core::*;
-  use tomorrowci_report::*;
-  let data = ReportData {
+fn main() {
+    use chrono::Utc;
+    use tomorrowci_core::*;
+    use tomorrowci_report::*;
+    let data = ReportData {
     run: RunManifest {
       run_id: RunId("demo-py-runtime".into()),
       tool_version: "0.1.0".into(),
@@ -77,8 +77,16 @@
     plan: serde_json::json!({"decisions":[{"action":"select","reason":"baseline"},{"action":"select","reason":"runtime candidate"}]}),
     candidates: serde_json::json!([]),
   };
-  std::fs::create_dir_all("examples/reports").ok();
-  write_html_report(std::path::Path::new("examples/reports/python-runtime-break.html"), &data).unwrap();
-  write_json_report(std::path::Path::new("examples/reports/python-runtime-break.json"), &data).unwrap();
-  println!("wrote examples/reports/python-runtime-break.html");
+    std::fs::create_dir_all("examples/reports").ok();
+    write_html_report(
+        std::path::Path::new("examples/reports/python-runtime-break.html"),
+        &data,
+    )
+    .unwrap();
+    write_json_report(
+        std::path::Path::new("examples/reports/python-runtime-break.json"),
+        &data,
+    )
+    .unwrap();
+    println!("wrote examples/reports/python-runtime-break.html");
 }

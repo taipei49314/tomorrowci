@@ -95,7 +95,13 @@ pub fn write_html_report(path: &Path, data: &ReportData) -> Result<()> {
 
     let run_id = escape_html(&data.run.run_id.0);
     let repo = escape_html(&data.run.repository.source);
-    let sha = escape_html(data.run.repository.commit_sha.as_deref().unwrap_or("unknown"));
+    let sha = escape_html(
+        data.run
+            .repository
+            .commit_sha
+            .as_deref()
+            .unwrap_or("unknown"),
+    );
     let horizon = if data.frontier.observed {
         escape_html(data.frontier.horizon_label.as_deref().unwrap_or("unknown"))
     } else {
@@ -289,12 +295,7 @@ pub fn write_html_report(path: &Path, data: &ReportData) -> Result<()> {
                 })
                 .unwrap_or_else(|| "No failure signature".into())
         ),
-        replay = escape_html(
-            data.frontier
-                .replay_command
-                .as_deref()
-                .unwrap_or("n/a")
-        ),
+        replay = escape_html(data.frontier.replay_command.as_deref().unwrap_or("n/a")),
         version = env!("CARGO_PKG_VERSION"),
     );
 

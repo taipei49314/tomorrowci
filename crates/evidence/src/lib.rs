@@ -152,11 +152,7 @@ impl EvidenceStore {
         ));
         sh.push_str("echo 'Use: tomorrowci replay <run-id> --scenario <scenario-id>'\n");
         for c in commands {
-            sh.push_str(&format!(
-                "# {} {}\n",
-                c.program,
-                c.args.join(" ")
-            ));
+            sh.push_str(&format!("# {} {}\n", c.program, c.args.join(" ")));
         }
         fs::write(dir.join("replay.sh"), sh)?;
 

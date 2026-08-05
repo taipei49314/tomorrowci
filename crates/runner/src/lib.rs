@@ -61,12 +61,13 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
     let started = Utc::now();
 
     // Resolve source repository (local path or github URL)
-    let (source_path, source_label, is_remote, commit_sha) =
-        resolve_target(&req.target, &req.work_root.join("clones").join(run_id.0.as_str()))?;
+    let (source_path, source_label, is_remote, commit_sha) = resolve_target(
+        &req.target,
+        &req.work_root.join("clones").join(run_id.0.as_str()),
+    )?;
 
     let workspace = req.work_root.join("workspaces").join(&run_id.0);
-    materialize_workspace(&source_path, &workspace)
-        .map_err(|e| RunnerError::Msg(e.to_string()))?;
+    materialize_workspace(&source_path, &workspace).map_err(|e| RunnerError::Msg(e.to_string()))?;
 
     let repo = RepositorySnapshot {
         source: source_label.clone(),
@@ -106,14 +107,7 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
     let detection = match detect_ecosystem(&workspace, &adapters, forced) {
         Ok((idx, det)) => (idx, det.detection),
         Err(e) => {
-            return finalize_unsupported(
-                &store,
-                run_id,
-                repo,
-                started,
-                config_hash,
-                e.to_string(),
-            );
+            return finalize_unsupported(&store, run_id, repo, started, config_hash, e.to_string());
         }
     };
     let (adapter_idx, detection) = detection;
@@ -198,22 +192,13 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
         Vec::new();
 
     // Baseline always first (serial) — future work is unauthorized without it.
-    let (baseline_scenarios, future_scenarios): (Vec<_>, Vec<_>) = plan
-        .scenarios
-        .iter()
-        .cloned()
-        .partition(|s| s.is_baseline);
+    let (baseline_scenarios, future_scenarios): (Vec<_>, Vec<_>) =
+        plan.scenarios.iter().cloned().partition(|s| s.is_baseline);
 
     for scenario in &baseline_scenarios {
-        let (verdict, passed, sig) = run_scenario_with_reruns(
-            adapter,
-            &engine,
-            &req.config,
-            &workspace,
-            scenario,
-            &store,
-        )
-        .await?;
+        let (verdict, passed, sig) =
+            run_scenario_with_reruns(adapter, &engine, &req.config, &workspace, scenario, &store)
+                .await?;
         executed_pass.push((scenario.clone(), passed, sig));
         verdicts.push(verdict);
         if !passed {
@@ -230,7 +215,11 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
 
     if baseline_ok && !future_scenarios.is_empty() {
         let max_p = req.config.execution.max_parallel.max(1);
-        tracing::info!(max_parallel = max_p, n = future_scenarios.len(), "running future scenarios");
+        tracing::info!(
+            max_parallel = max_p,
+            n = future_scenarios.len(),
+            "running future scenarios"
+        );
         let results = run_scenarios_bounded(
             adapter,
             &engine,
@@ -263,9 +252,9 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
                 .filter(|(s, p, _)| {
                     !s.is_baseline
                         && *p
-                        && s.axes_changed.iter().any(|a| {
-                            matches!(a, tomorrowci_core::EnvironmentAxis::Runtime)
-                        })
+                        && s.axes_changed
+                            .iter()
+                            .any(|a| matches!(a, tomorrowci_core::EnvironmentAxis::Runtime))
                 })
                 .map(|(s, _, _)| (s.id.0.clone(), s.runtime_version.clone()))
                 .collect();
@@ -303,9 +292,7 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
                                 .collect::<Vec<_>>();
                             let reduced = reduce_axes(&axes, |subset| {
                                 !subset.is_empty()
-                                    && subset
-                                        .iter()
-                                        .any(|x| x == "dependencies" || x == "runtime")
+                                    && subset.iter().any(|x| x == "dependencies" || x == "runtime")
                             });
                             tracing::info!(?reduced, "ddmin reduced axes");
                         }
@@ -318,7 +305,10 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
     }
 
     // Frontier authorization
-    let baseline_v = verdicts.iter().find(|v| v.scenario_id.0 == "baseline").cloned();
+    let baseline_v = verdicts
+        .iter()
+        .find(|v| v.scenario_id.0 == "baseline")
+        .cloned();
     let ordered_future: Vec<_> = verdicts
         .iter()
         .filter(|v| v.scenario_id.0 != "baseline")
@@ -347,9 +337,15 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
         None
     };
 
-    let has_replay = first_fail.as_ref().map(|f| {
-        store.scenario_dir(&f.scenario_id.0).join("replay-manifest.json").exists()
-    }).unwrap_or(false);
+    let has_replay = first_fail
+        .as_ref()
+        .map(|f| {
+            store
+                .scenario_dir(&f.scenario_id.0)
+                .join("replay-manifest.json")
+                .exists()
+        })
+        .unwrap_or(false);
     let has_evidence = store.root.exists();
 
     let (_auth, mut frontier) = authorize_frontier(
@@ -406,8 +402,7 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
         verdicts: verdicts.clone(),
         frontier: frontier.clone(),
         plan: serde_json::to_value(&plan).unwrap_or_default(),
-        candidates: serde_json::to_value(&runtime_cands)
-            .unwrap_or_default(),
+        candidates: serde_json::to_value(&runtime_cands).unwrap_or_default(),
     };
     if req.config.report.json {
         write_json_report(&store.root.join("report.json"), &report_data)
@@ -459,18 +454,25 @@ async fn run_scenarios_bounded(
 > {
     use futures::stream::{self, StreamExt};
     let limit = max_parallel.max(1);
-    let results: Vec<Result<(String, (ScenarioVerdict, bool, Option<tomorrowci_core::FailureSignature>))>> =
-        stream::iter(scenarios.iter())
-            .map(|scenario| async move {
-                let (verdict, passed, sig) = run_scenario_with_reruns(
-                    adapter, engine, config, workspace, scenario, store,
-                )
-                .await?;
-                Ok((scenario.id.0.clone(), (verdict, passed, sig)))
-            })
-            .buffer_unordered(limit)
-            .collect()
-            .await;
+    let results: Vec<
+        Result<(
+            String,
+            (
+                ScenarioVerdict,
+                bool,
+                Option<tomorrowci_core::FailureSignature>,
+            ),
+        )>,
+    > = stream::iter(scenarios.iter())
+        .map(|scenario| async move {
+            let (verdict, passed, sig) =
+                run_scenario_with_reruns(adapter, engine, config, workspace, scenario, store)
+                    .await?;
+            Ok((scenario.id.0.clone(), (verdict, passed, sig)))
+        })
+        .buffer_unordered(limit)
+        .collect()
+        .await;
 
     let mut map = std::collections::HashMap::new();
     for r in results {
@@ -487,7 +489,11 @@ async fn run_scenario_with_reruns(
     workspace: &Path,
     scenario: &Scenario,
     store: &EvidenceStore,
-) -> Result<(ScenarioVerdict, bool, Option<tomorrowci_core::FailureSignature>)> {
+) -> Result<(
+    ScenarioVerdict,
+    bool,
+    Option<tomorrowci_core::FailureSignature>,
+)> {
     let mut outcomes = Vec::new();
     let mut last_sig = None;
     let mut last_blocked = None;
@@ -557,14 +563,7 @@ async fn run_scenario_with_reruns(
         (&last_env, &last_cmds, &last_raw, &last_result)
     {
         store
-            .write_scenario_bundle(
-                scenario,
-                env,
-                cmds,
-                raw,
-                result,
-                last_sig.as_ref(),
-            )
+            .write_scenario_bundle(scenario, env, cmds, raw, result, last_sig.as_ref())
             .map_err(|e| RunnerError::Msg(e.to_string()))?;
     }
 
@@ -688,9 +687,7 @@ fn resolve_target(
             .status()
             .map_err(|e| RunnerError::Msg(format!("git clone failed: {e}")))?;
         if !status.success() {
-            return Err(RunnerError::Msg(format!(
-                "git clone failed for {target}"
-            )));
+            return Err(RunnerError::Msg(format!("git clone failed for {target}")));
         }
         let sha = git_sha(clone_dir);
         return Ok((clone_dir.to_path_buf(), target.to_string(), true, sha));
@@ -933,8 +930,8 @@ pub async fn replay(
     scenario_id: &str,
     workspace_hint: Option<&Path>,
 ) -> Result<String> {
-    let store = EvidenceStore::open(output_root, run_id)
-        .map_err(|e| RunnerError::Msg(e.to_string()))?;
+    let store =
+        EvidenceStore::open(output_root, run_id).map_err(|e| RunnerError::Msg(e.to_string()))?;
     let manifest = store
         .load_replay_manifest(scenario_id)
         .map_err(|e| RunnerError::Msg(e.to_string()))?;
@@ -949,7 +946,11 @@ pub async fn replay(
         // Prefer digest if pullable
         let by_digest = format!(
             "{}@{}",
-            manifest.image_ref.split('@').next().unwrap_or(&manifest.image_ref),
+            manifest
+                .image_ref
+                .split('@')
+                .next()
+                .unwrap_or(&manifest.image_ref),
             digest
         );
         if ensure_image(&engine, &by_digest).await.is_err() {
@@ -973,7 +974,9 @@ pub async fn replay(
             })?;
     }
 
-    let run = store.load_run().map_err(|e| RunnerError::Msg(e.to_string()))?;
+    let run = store
+        .load_run()
+        .map_err(|e| RunnerError::Msg(e.to_string()))?;
     let workspace = workspace_hint
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| run.repository.workspace_copy.clone());
@@ -1084,9 +1087,11 @@ fn command_version(bin: &str, args: &[&str]) -> Check {
 }
 
 pub fn show_run(output_root: &Path, run_id: &str) -> Result<String> {
-    let store = EvidenceStore::open(output_root, run_id)
+    let store =
+        EvidenceStore::open(output_root, run_id).map_err(|e| RunnerError::Msg(e.to_string()))?;
+    let manifest = store
+        .load_run()
         .map_err(|e| RunnerError::Msg(e.to_string()))?;
-    let manifest = store.load_run().map_err(|e| RunnerError::Msg(e.to_string()))?;
     let verdicts = store
         .load_verdicts()
         .map_err(|e| RunnerError::Msg(e.to_string()))?;
@@ -1102,8 +1107,8 @@ pub fn show_run(output_root: &Path, run_id: &str) -> Result<String> {
 }
 
 pub fn explain_run(output_root: &Path, run_id: &str) -> Result<String> {
-    let store = EvidenceStore::open(output_root, run_id)
-        .map_err(|e| RunnerError::Msg(e.to_string()))?;
+    let store =
+        EvidenceStore::open(output_root, run_id).map_err(|e| RunnerError::Msg(e.to_string()))?;
     let frontier = store
         .load_frontier()
         .map_err(|e| RunnerError::Msg(e.to_string()))?;
@@ -1143,7 +1148,9 @@ pub fn compare_runs(
 
 pub fn format_compare(cmp: &HorizonCompare, base_id: &str, head_id: &str) -> String {
     let mut out = String::new();
-    out.push_str(&format!("TomorrowCI compare  base={base_id}  head={head_id}\n"));
+    out.push_str(&format!(
+        "TomorrowCI compare  base={base_id}  head={head_id}\n"
+    ));
     out.push_str(&format!("Movement: {:?}\n", cmp.movement));
     out.push_str(&format!(
         "Base horizon: {}\n",
@@ -1192,10 +1199,7 @@ pub async fn backtest_repo(
             frontier_observed: false,
             horizon_label: None,
             status: BacktestPointStatus::Skipped,
-            detail: format!(
-                "no commits found in {}..{} (git log)",
-                req.at, req.until
-            ),
+            detail: format!("no commits found in {}..{} (git log)", req.at, req.until),
         });
         return Ok(BacktestReport {
             request: req,
@@ -1311,7 +1315,11 @@ fn list_commits_in_range(
     Ok(rows)
 }
 
-fn materialize_commit_worktree(repo: &Path, sha: &str, dest: &Path) -> std::result::Result<(), String> {
+fn materialize_commit_worktree(
+    repo: &Path,
+    sha: &str,
+    dest: &Path,
+) -> std::result::Result<(), String> {
     if dest.exists() {
         let _ = std::fs::remove_dir_all(dest);
     }
@@ -1327,7 +1335,11 @@ fn materialize_commit_worktree(repo: &Path, sha: &str, dest: &Path) -> std::resu
     let tar = std::process::Command::new("tar")
         .args(["-x", "-C"])
         .arg(dest)
-        .stdin(archive.stdout.ok_or_else(|| "git archive stdout".to_string())?)
+        .stdin(
+            archive
+                .stdout
+                .ok_or_else(|| "git archive stdout".to_string())?,
+        )
         .output();
     match tar {
         Ok(o) if o.status.success() => Ok(()),
@@ -1369,4 +1381,3 @@ fn materialize_commit_worktree(repo: &Path, sha: &str, dest: &Path) -> std::resu
         }
     }
 }
-

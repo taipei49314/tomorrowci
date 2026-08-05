@@ -259,7 +259,9 @@ async fn measure_one_fixture(
                     .map(|v| format!("{:?} (want {})", v.verdict, expected.label()))
                     .unwrap_or_else(|| "no baseline verdict".into());
                 // If engine blocked mid-run
-                let status = if baseline.map(|v| v.verdict == Verdict::Blocked).unwrap_or(false)
+                let status = if baseline
+                    .map(|v| v.verdict == Verdict::Blocked)
+                    .unwrap_or(false)
                     && exp.require_engine
                 {
                     ClaimStatus::Blocked
@@ -316,7 +318,10 @@ async fn measure_one_fixture(
                     } else {
                         ClaimStatus::Fail
                     },
-                    format!("observed={} — {}", out.frontier.observed, out.frontier.explanation),
+                    format!(
+                        "observed={} — {}",
+                        out.frontier.observed, out.frontier.explanation
+                    ),
                     0,
                 ));
             }
@@ -386,22 +391,25 @@ async fn measure_one_fixture(
                     missing.push(f);
                 }
             }
-            claims.push(ClaimRecord::new(
-                format!("fixture.{}.evidence", exp.id),
-                "evidence bundle has required files",
-                "fixture",
-                if missing.is_empty() {
-                    ClaimStatus::Pass
-                } else {
-                    ClaimStatus::Fail
-                },
-                if missing.is_empty() {
-                    out.evidence_dir.display().to_string()
-                } else {
-                    format!("missing {missing:?}")
-                },
-                0,
-            ).with_artifact(out.evidence_dir.clone()));
+            claims.push(
+                ClaimRecord::new(
+                    format!("fixture.{}.evidence", exp.id),
+                    "evidence bundle has required files",
+                    "fixture",
+                    if missing.is_empty() {
+                        ClaimStatus::Pass
+                    } else {
+                        ClaimStatus::Fail
+                    },
+                    if missing.is_empty() {
+                        out.evidence_dir.display().to_string()
+                    } else {
+                        format!("missing {missing:?}")
+                    },
+                    0,
+                )
+                .with_artifact(out.evidence_dir.clone()),
+            );
 
             FixtureResult {
                 id: exp.id.clone(),
