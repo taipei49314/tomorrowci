@@ -35,16 +35,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: build
         run: cargo build -p tomorrowci --release
-      - name: scan python-runtime-break
-        run: ./target/release/tomorrowci scan fixtures/python-runtime-break --evidence-root .tomorrowci
-      - name: scan baseline-fail
-        run: ./target/release/tomorrowci scan fixtures/baseline-fail --evidence-root .tomorrowci || true
+      - name: measure all (instruments → trust)
+        run: ./target/release/tomorrowci measure all --out .tomorrowci/measure --evidence-root .tomorrowci
       - name: upload evidence
         if: always()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
         with:
           name: tomorrowci-ci-evidence
-          path: .tomorrowci/runs/
+          path: |
+            .tomorrowci/runs/
+            .tomorrowci/measure/
 
   action-dogfood:
     runs-on: ubuntu-latest

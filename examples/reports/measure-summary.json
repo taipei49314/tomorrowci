@@ -1,0 +1,16 @@
+{
+  "bench_report": ".tomorrowci/measure\\bench-report.json",
+  "counts": {
+    "blocked": 0,
+    "fail": 0,
+    "not_run": 0,
+    "pass": 49,
+    "skip": 0
+  },
+  "engine_available": true,
+  "generated_at": "2026-08-05T09:09:34.244459100+00:00",
+  "ledger": ".tomorrowci/measure\\claim-ledger.json",
+  "suite_report": ".tomorrowci/measure\\suite-report.json",
+  "tool_version": "0.1.0",
+  "trustworthy": true
+}

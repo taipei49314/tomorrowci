@@ -1,0 +1,281 @@
+{
+  "run": {
+    "run_id": "b7a5998e8ae9",
+    "tool_version": "0.1.0",
+    "started_at": "2026-08-05T09:07:51.365814500Z",
+    "finished_at": "2026-08-05T09:08:45.584721100Z",
+    "repository": {
+      "source": "C:\\Users\\1\\Desktop\\tomorrowci\\fixtures/python-dependency-break",
+      "path": "C:\\Users\\1\\Desktop\\tomorrowci\\fixtures/python-dependency-break",
+      "commit_sha": "86ab9503245860094dd2da64fa7d86ce583ee2df",
+      "branch": null,
+      "is_remote": false,
+      "workspace_copy": ".tomorrowci\\work\\workspaces\\b7a5998e8ae9",
+      "captured_at": "2026-08-05T09:07:51.365814500Z"
+    },
+    "detection": {
+      "ecosystem": "python",
+      "package_manager": "pip",
+      "manifests": [
+        "pyproject.toml",
+        "requirements.txt"
+      ],
+      "confidence": 0.95,
+      "notes": [
+        "Python package manager for v0.1: pip",
+        "Runtime images: official docker.io/library/python:<major.minor>"
+      ],
+      "supported": true,
+      "unsupported_reason": null
+    },
+    "baseline": {
+      "ecosystem": "python",
+      "runtime_label": "Python 3.11",
+      "runtime_version": "3.11",
+      "dependency_mode": "locked",
+      "image_ref": "python:3.11-bookworm",
+      "notes": [
+        "baseline uses locked/pinned requirements when present"
+      ]
+    },
+    "config_hash": "0df0d79707a36c74",
+    "sandbox_engine": "docker",
+    "status": "COMPLETED",
+    "frontier": {
+      "observed": true,
+      "horizon_label": "Python 3.11 + latest allowed dependencies",
+      "scenario_id": "py311-latest",
+      "axis": "dependencies",
+      "from_label": "Python 3.12 + locked dependencies",
+      "to_label": "Python 3.11 + latest allowed dependencies",
+      "failure_signature": {
+        "kind": "AssertionError",
+        "summary": "AssertionError: legacycompat 2.x removed old_function contract (mode=latest_allowed, version=2, path=/workspace/vendor/legacycompat_v2/legacycompat/__init__.py)",
+        "primary_error": "AssertionError: legacycompat 2.x removed old_function contract (mode=latest_allowed, version=2, path=/workspace/vendor/legacycompat_v2/legacycompat/__init__.py)",
+        "fingerprint": "3522a35bc9fc483f",
+        "framework_hints": [
+          "pytest"
+        ],
+        "evidence_grade": "OBSERVED"
+      },
+      "evidence_grade": "SIMULATED",
+      "replay_command": "tomorrowci replay b7a5998e8ae9 --scenario py311-latest",
+      "explanation": "Observed breakage horizon at 'Python 3.11 + latest allowed dependencies'. Minimal changed axis relative to prior passing environment. Evidence grade: Simulated. Suspected cause correlates with failure signature (correlation, not proven root cause)."
+    },
+    "scenario_count": 4,
+    "host": {
+      "os": "windows",
+      "arch": "x86_64",
+      "tomorrowci_version": "0.1.0"
+    }
+  },
+  "verdicts": [
+    {
+      "scenario_id": "baseline",
+      "label": "Python 3.11 + locked dependencies",
+      "verdict": "BASELINE_PASS",
+      "evidence_grade": "OBSERVED",
+      "attempts": 1,
+      "failure_signature": null,
+      "evidence": {
+        "run_id": "b7a5998e8ae9",
+        "scenario_id": "baseline",
+        "directory": ".tomorrowci\\runs\\b7a5998e8ae9\\scenarios\\baseline",
+        "replay_command": "tomorrowci replay b7a5998e8ae9 --scenario baseline"
+      },
+      "notes": []
+    },
+    {
+      "scenario_id": "py312-locked",
+      "label": "Python 3.12 + locked dependencies",
+      "verdict": "FUTURE_PASS",
+      "evidence_grade": "OBSERVED",
+      "attempts": 1,
+      "failure_signature": null,
+      "evidence": {
+        "run_id": "b7a5998e8ae9",
+        "scenario_id": "py312-locked",
+        "directory": ".tomorrowci\\runs\\b7a5998e8ae9\\scenarios\\py312-locked",
+        "replay_command": "tomorrowci replay b7a5998e8ae9 --scenario py312-locked"
+      },
+      "notes": []
+    },
+    {
+      "scenario_id": "py311-latest",
+      "label": "Python 3.11 + latest allowed dependencies",
+      "verdict": "FUTURE_FAIL",
+      "evidence_grade": "SIMULATED",
+      "attempts": 3,
+      "failure_signature": {
+        "kind": "AssertionError",
+        "summary": "AssertionError: legacycompat 2.x removed old_function contract (mode=latest_allowed, version=2, path=/workspace/vendor/legacycompat_v2/legacycompat/__init__.py)",
+        "primary_error": "AssertionError: legacycompat 2.x removed old_function contract (mode=latest_allowed, version=2, path=/workspace/vendor/legacycompat_v2/legacycompat/__init__.py)",
+        "fingerprint": "3522a35bc9fc483f",
+        "framework_hints": [
+          "pytest"
+        ],
+        "evidence_grade": "OBSERVED"
+      },
+      "evidence": {
+        "run_id": "b7a5998e8ae9",
+        "scenario_id": "py311-latest",
+        "directory": ".tomorrowci\\runs\\b7a5998e8ae9\\scenarios\\py311-latest",
+        "replay_command": "tomorrowci replay b7a5998e8ae9 --scenario py311-latest"
+      },
+      "notes": []
+    },
+    {
+      "scenario_id": "combined-py312-locked-py311-latest",
+      "label": "3.12 + latest_allowed",
+      "verdict": "FUTURE_FAIL",
+      "evidence_grade": "SIMULATED",
+      "attempts": 3,
+      "failure_signature": {
+        "kind": "AssertionError",
+        "summary": "AssertionError: legacycompat 2.x removed old_function contract (mode=latest_allowed, version=2, path=/workspace/vendor/legacycompat_v2/legacycompat/__init__.py)",
+        "primary_error": "AssertionError: legacycompat 2.x removed old_function contract (mode=latest_allowed, version=2, path=/workspace/vendor/legacycompat_v2/legacycompat/__init__.py)",
+        "fingerprint": "3522a35bc9fc483f",
+        "framework_hints": [
+          "pytest"
+        ],
+        "evidence_grade": "OBSERVED"
+      },
+      "evidence": {
+        "run_id": "b7a5998e8ae9",
+        "scenario_id": "combined-py312-locked-py311-latest",
+        "directory": ".tomorrowci\\runs\\b7a5998e8ae9\\scenarios\\combined-py312-locked-py311-latest",
+        "replay_command": "tomorrowci replay b7a5998e8ae9 --scenario combined-py312-locked-py311-latest"
+      },
+      "notes": []
+    }
+  ],
+  "frontier": {
+    "observed": true,
+    "horizon_label": "Python 3.11 + latest allowed dependencies",
+    "scenario_id": "py311-latest",
+    "axis": "dependencies",
+    "from_label": "Python 3.12 + locked dependencies",
+    "to_label": "Python 3.11 + latest allowed dependencies",
+    "failure_signature": {
+      "kind": "AssertionError",
+      "summary": "AssertionError: legacycompat 2.x removed old_function contract (mode=latest_allowed, version=2, path=/workspace/vendor/legacycompat_v2/legacycompat/__init__.py)",
+      "primary_error": "AssertionError: legacycompat 2.x removed old_function contract (mode=latest_allowed, version=2, path=/workspace/vendor/legacycompat_v2/legacycompat/__init__.py)",
+      "fingerprint": "3522a35bc9fc483f",
+      "framework_hints": [
+        "pytest"
+      ],
+      "evidence_grade": "OBSERVED"
+    },
+    "evidence_grade": "SIMULATED",
+    "replay_command": "tomorrowci replay b7a5998e8ae9 --scenario py311-latest",
+    "explanation": "Observed breakage horizon at 'Python 3.11 + latest allowed dependencies'. Minimal changed axis relative to prior passing environment. Evidence grade: Simulated. Suspected cause correlates with failure signature (correlation, not proven root cause)."
+  },
+  "plan": {
+    "decisions": [
+      {
+        "action": "select",
+        "reason": "baseline must pass before future comparisons are authorized",
+        "scenario_id": "baseline"
+      },
+      {
+        "action": "skip",
+        "reason": "max_versions budget",
+        "scenario_id": "py313-locked"
+      },
+      {
+        "action": "select",
+        "reason": "single-axis runtime candidate in order",
+        "scenario_id": "py312-locked"
+      },
+      {
+        "action": "select",
+        "reason": "single-axis dependency candidate",
+        "scenario_id": "py311-latest"
+      }
+    ],
+    "max_scenarios": 8,
+    "run_id": "b7a5998e8ae9",
+    "scenarios": [
+      {
+        "axes_changed": [],
+        "dependency_mode": "locked",
+        "ecosystem": "python",
+        "evidence_grade": "OBSERVED",
+        "id": "baseline",
+        "image_ref": "python:3.11-bookworm",
+        "is_baseline": true,
+        "kind": "baseline",
+        "label": "Python 3.11 + locked dependencies",
+        "runtime_version": "3.11",
+        "selection_reason": "repository baseline"
+      },
+      {
+        "axes_changed": [
+          "runtime"
+        ],
+        "dependency_mode": "locked",
+        "ecosystem": "python",
+        "evidence_grade": "OBSERVED",
+        "id": "py312-locked",
+        "image_ref": "python:3.12-bookworm",
+        "is_baseline": false,
+        "kind": "single_axis",
+        "label": "Python 3.12 + locked dependencies",
+        "runtime_version": "3.12",
+        "selection_reason": "candidate on axis runtime"
+      },
+      {
+        "axes_changed": [
+          "dependencies"
+        ],
+        "dependency_mode": "latest_allowed",
+        "ecosystem": "python",
+        "evidence_grade": "SIMULATED",
+        "id": "py311-latest",
+        "image_ref": "python:3.11-bookworm",
+        "is_baseline": false,
+        "kind": "single_axis",
+        "label": "Python 3.11 + latest allowed dependencies",
+        "runtime_version": "3.11",
+        "selection_reason": "candidate on axis dependencies"
+      }
+    ],
+    "untested": [
+      {
+        "axis": "runtime",
+        "label": "Python 3.13 + locked dependencies",
+        "reason": "exceeded candidates.runtime.max_versions=1"
+      }
+    ]
+  },
+  "candidates": [
+    {
+      "axis": "runtime",
+      "channel": "stable",
+      "dependency_mode": "locked",
+      "evidence_grade": "OBSERVED",
+      "id": "py312-locked",
+      "image_ref": "python:3.12-bookworm",
+      "label": "Python 3.12 + locked dependencies",
+      "notes": [
+        "concrete official python image tag"
+      ],
+      "order_key": "3.12",
+      "runtime_version": "3.12"
+    },
+    {
+      "axis": "runtime",
+      "channel": "stable",
+      "dependency_mode": "locked",
+      "evidence_grade": "OBSERVED",
+      "id": "py313-locked",
+      "image_ref": "python:3.13-bookworm",
+      "label": "Python 3.13 + locked dependencies",
+      "notes": [
+        "concrete official python image tag"
+      ],
+      "order_key": "3.13",
+      "runtime_version": "3.13"
+    }
+  ]
+}

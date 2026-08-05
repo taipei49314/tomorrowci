@@ -838,12 +838,14 @@ name = "tomorrowci"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "serde_json",
  "serde_yaml",
  "tokio",
  "tomorrowci-core",
  "tomorrowci-evidence",
+ "tomorrowci-measure",
  "tomorrowci-report",
  "tomorrowci-runner",
  "tracing",
@@ -938,6 +940,26 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tomorrowci-core",
+ "tracing",
+]
+
+[[package]]
+name = "tomorrowci-measure"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hex",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tomorrowci-core",
+ "tomorrowci-runner",
+ "tomorrowci-sandbox",
  "tracing",
 ]
 

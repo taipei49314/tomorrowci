@@ -3,6 +3,9 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use tomorrowci_core::Config;
+use tomorrowci_measure::{
+    default_catalog, run_benches, run_fixture_suite, ClaimStatus, SuiteOptions,
+};
 use tomorrowci_runner::{
     doctor, explain_run, replay, scan, show_run, ScanRequest, TOOL_VERSION,
 };
@@ -62,6 +65,36 @@ enum Commands {
     InitAction {
         #[arg(long, default_value = ".github/workflows/tomorrowci.yml")]
         output: PathBuf,
+    },
+    /// Measurement harness: instruments before trust (fixtures + benches + ledger)
+    Measure {
+        #[command(subcommand)]
+        cmd: MeasureCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum MeasureCmd {
+    /// Run fixture expectation suite and emit claim ledger
+    Suite {
+        /// Only these fixture ids (comma-separated)
+        #[arg(long)]
+        only: Option<String>,
+        /// Output directory for measure report JSON
+        #[arg(long, default_value = ".tomorrowci/measure")]
+        out: PathBuf,
+    },
+    /// Micro-benchmarks with recorded methodology (no invented SLAs)
+    Bench {
+        #[arg(long, default_value = ".tomorrowci/measure")]
+        out: PathBuf,
+    },
+    /// Run benches then full fixture suite (north-star trust loop)
+    All {
+        #[arg(long, default_value = ".tomorrowci/measure")]
+        out: PathBuf,
+        #[arg(long)]
+        only: Option<String>,
     },
 }
 
@@ -201,9 +234,140 @@ async fn main() -> anyhow::Result<()> {
             println!("Wrote safe GitHub Actions workflow to {}", output.display());
             println!("Default permissions: contents: read only. No secrets forwarded to untrusted code.");
         }
+        Commands::Measure { cmd } => match cmd {
+            MeasureCmd::Suite { only, out } => {
+                let report = run_measure_suite(&evidence_root, &work_root, only, &out).await?;
+                print!("{}", report.ledger.render_table());
+                println!(
+                    "\ntrustworthy(no FAIL)={} engine={} report={}",
+                    report.trustworthy,
+                    report.engine_available,
+                    out.join("suite-report.json").display()
+                );
+                if report.ledger.counts().fail > 0 {
+                    std::process::exit(1);
+                }
+                if !report.engine_available {
+                    std::process::exit(4);
+                }
+            }
+            MeasureCmd::Bench { out } => {
+                let root = std::env::current_dir()?;
+                let report = run_benches(&root);
+                std::fs::create_dir_all(&out)?;
+                let path = out.join("bench-report.json");
+                std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+                print!("{}", report.ledger.render_table());
+                println!("\n{}\nreport={}", report.note, path.display());
+                if report.ledger.counts().fail > 0 {
+                    std::process::exit(1);
+                }
+            }
+            MeasureCmd::All { out, only } => {
+                let root = std::env::current_dir()?;
+                std::fs::create_dir_all(&out)?;
+                let benches = run_benches(&root);
+                std::fs::write(
+                    out.join("bench-report.json"),
+                    serde_json::to_string_pretty(&benches)?,
+                )?;
+                println!("=== Benches ===");
+                print!("{}", benches.ledger.render_table());
+                println!("\n=== Fixture suite ===");
+                let suite =
+                    run_measure_suite(&evidence_root, &work_root, only, &out).await?;
+                print!("{}", suite.ledger.render_table());
+                // Combined ledger
+                let mut combined = benches.ledger;
+                for c in suite.ledger.claims {
+                    combined.push(c);
+                }
+                let combined_path = out.join("claim-ledger.json");
+                std::fs::write(
+                    &combined_path,
+                    serde_json::to_string_pretty(&combined)?,
+                )?;
+                let summary = serde_json::json!({
+                    "generated_at": chrono::Utc::now().to_rfc3339(),
+                    "tool_version": TOOL_VERSION,
+                    "trustworthy": combined.all_trustworthy() && suite.engine_available,
+                    "counts": combined.counts(),
+                    "engine_available": suite.engine_available,
+                    "bench_report": out.join("bench-report.json"),
+                    "suite_report": out.join("suite-report.json"),
+                    "ledger": combined_path,
+                });
+                std::fs::write(
+                    out.join("summary.json"),
+                    serde_json::to_string_pretty(&summary)?,
+                )?;
+                println!(
+                    "\n=== Combined ===\n{}",
+                    combined.render_table()
+                );
+                println!("summary={}", out.join("summary.json").display());
+                if combined.counts().fail > 0 {
+                    std::process::exit(1);
+                }
+                if !suite.engine_available {
+                    std::process::exit(4);
+                }
+            }
+        },
     }
 
     Ok(())
+}
+
+async fn run_measure_suite(
+    evidence_root: &std::path::Path,
+    work_root: &std::path::Path,
+    only: Option<String>,
+    out: &std::path::Path,
+) -> anyhow::Result<tomorrowci_measure::MeasureReport> {
+    let root = std::env::current_dir()?;
+    let only = only.map(|s| {
+        s.split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect::<Vec<_>>()
+    });
+    let report = run_fixture_suite(SuiteOptions {
+        repo_root: root,
+        evidence_root: evidence_root.to_path_buf(),
+        work_root: work_root.to_path_buf(),
+        only,
+        catalog: default_catalog(),
+    })
+    .await;
+    std::fs::create_dir_all(out)?;
+    std::fs::write(
+        out.join("suite-report.json"),
+        serde_json::to_string_pretty(&report)?,
+    )?;
+    std::fs::write(
+        out.join("claim-ledger.json"),
+        serde_json::to_string_pretty(&report.ledger)?,
+    )?;
+    // Human markdown
+    let mut md = String::from("# TomorrowCI measure suite\n\n");
+    md.push_str(&format!(
+        "- engine: {} ({})\n- trustworthy: {}\n\n",
+        report.engine_available, report.engine_detail, report.trustworthy
+    ));
+    md.push_str("| Claim | Status | ms | Detail |\n|---|---|---:|---|\n");
+    for c in &report.ledger.claims {
+        md.push_str(&format!(
+            "| `{}` | {} | {} | {} |\n",
+            c.id,
+            c.status.label(),
+            c.duration_ms,
+            c.detail.replace('|', "\\|")
+        ));
+    }
+    std::fs::write(out.join("CLAIM_LEDGER.md"), md)?;
+    let _ = ClaimStatus::Pass; // keep import used if optimized
+    Ok(report)
 }
 
 fn load_config(path: Option<&std::path::Path>) -> anyhow::Result<Config> {

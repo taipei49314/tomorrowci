@@ -16,6 +16,7 @@ tomorrowci-core = { path = "../../crates/core" }
 tomorrowci-runner = { path = "../../crates/runner" }
 tomorrowci-evidence = { path = "../../crates/evidence" }
 tomorrowci-report = { path = "../../crates/report" }
+tomorrowci-measure = { path = "../../crates/measure" }
 clap.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
@@ -23,3 +24,4 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
+chrono.workspace = true

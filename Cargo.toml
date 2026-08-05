@@ -11,8 +11,12 @@ members = [
   "crates/adapter-rust",
   "crates/evidence",
   "crates/report",
+  "crates/measure",
 ]
 default-members = ["apps/cli"]
+exclude = [
+  "fixtures/rust-msrv-break",
+]
 
 [workspace.package]
 version = "0.1.0"

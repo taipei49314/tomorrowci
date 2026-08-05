@@ -1,0 +1,25 @@
+version: 1
+project:
+  ecosystem: python
+  test_command: python -m pytest -q
+baseline:
+  runtime: "3.11"
+  dependencies: locked
+candidates:
+  runtime:
+    channels: [stable]
+    max_versions: 1
+  dependencies:
+    latest_allowed: true
+    prerelease: false
+execution:
+  max_scenarios: 8
+  timeout_seconds: 600
+  reruns_on_failure: 2
+  max_parallel: 1
+sandbox:
+  engine: auto
+  network: fetch-only
+  memory_mb: 2048
+  cpus: 2
+  pids_limit: 256

@@ -1,0 +1,20 @@
+version: 1
+project:
+  ecosystem: rust
+  test_command: cargo test
+baseline:
+  runtime: "1.83"
+  dependencies: locked
+candidates:
+  runtime:
+    # stable only — beta/nightly tags are not always published as expected
+    channels: [stable]
+    max_versions: 4
+  dependencies:
+    latest_allowed: false
+    prerelease: false
+execution:
+  max_scenarios: 8
+  timeout_seconds: 900
+  reruns_on_failure: 2
+  max_parallel: 1

@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>TomorrowCI Report — efd8c840db3f</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --panel: #121a2b;
+      --text: #e8eefc;
+      --muted: #9db0d0;
+      --pass: #1f9d55;
+      --fail: #e53e3e;
+      --flaky: #d69e2e;
+      --blocked: #718096;
+      --accent: #63b3ed;
+      --border: #243049;
+      --focus: #f6e05e;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; transition: none !important; }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.5;
+    }
+    a { color: var(--accent); }
+    a:focus, button:focus, [tabindex]:focus { outline: 3px solid var(--focus); outline-offset: 2px; }
+    header, main, footer { max-width: 1100px; margin: 0 auto; padding: 1.25rem; }
+    header { border-bottom: 1px solid var(--border); }
+    h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
+    .muted { color: var(--muted); }
+    .panel {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 12px; padding: 1rem; margin: 1rem 0;
+    }
+    .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 0.6rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; }
+    .badge {
+      display: inline-block; min-width: 5.5rem; text-align: center;
+      padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.75rem;
+      font-weight: 700; letter-spacing: 0.03em;
+      border: 1px solid transparent;
+    }
+    .badge-pass { background: rgba(31,157,85,0.15); color: #68d391; border-color: var(--pass); }
+    .badge-fail { background: rgba(229,62,62,0.15); color: #fc8181; border-color: var(--fail); }
+    .badge-flaky { background: rgba(214,158,46,0.15); color: #f6e05e; border-color: var(--flaky); }
+    .badge-blocked { background: rgba(113,128,150,0.15); color: #cbd5e0; border-color: var(--blocked); }
+    .timeline { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .chip {
+      border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.75rem;
+      background: #0f1726; min-width: 8rem;
+    }
+    .chip strong { display: block; font-size: 0.8rem; }
+    pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre {
+      background: #0a0f18; border: 1px solid var(--border); border-radius: 8px;
+      padding: 0.75rem; overflow: auto; max-height: 320px; white-space: pre-wrap;
+    }
+    nav.toc ul { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.75rem; }
+    nav.toc a { text-decoration: none; border-bottom: 1px dotted var(--accent); }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0,0,0,0); border: 0;
+    }
+  </style>
+</head>
+<body>
+  <a class="sr-only" href="#main">Skip to content</a>
+  <header>
+    <p class="muted">TomorrowCI — Continuous Integration Against the Future</p>
+    <h1>Run efd8c840db3f</h1>
+    <p>Repository: <strong>C:\Users\1\Desktop\tomorrowci\fixtures/baseline-fail</strong> @ <code>86ab9503245860094dd2da64fa7d86ce583ee2df</code></p>
+    <nav class="toc" aria-label="Report sections">
+      <ul>
+        <li><a href="#horizon">Horizon</a></li>
+        <li><a href="#matrix">Scenario matrix</a></li>
+        <li><a href="#evidence">Failure evidence</a></li>
+        <li><a href="#graph">Execution graph</a></li>
+      </ul>
+    </nav>
+  </header>
+  <main id="main">
+    <section id="horizon" class="panel" aria-labelledby="horizon-title">
+      <h2 id="horizon-title">Breakage horizon timeline</h2>
+      <p><strong>Observed horizon:</strong> No observed breakage horizon within tested candidates.</p>
+      <p class="muted">Baseline did not pass; future comparisons are not authorized. No observed breakage horizon.</p>
+      <div class="timeline" role="list" aria-label="Scenario timeline">
+        <div class="chip" role="listitem">
+              <strong>Python 3.11 + locked dependencies</strong>
+              <span class="badge badge-fail">FAIL</span>
+              <span class="muted">Observed</span>
+            </div>
+      </div>
+    </section>
+
+    <section id="matrix" class="panel" aria-labelledby="matrix-title">
+      <h2 id="matrix-title">Scenario matrix</h2>
+      <table>
+        <caption class="sr-only">Scenarios and verdicts</caption>
+        <thead>
+          <tr>
+            <th scope="col">Scenario</th>
+            <th scope="col">Verdict</th>
+            <th scope="col">Evidence grade</th>
+            <th scope="col">Signature</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+              <td>Python 3.11 + locked dependencies</td>
+              <td><span class="badge badge-fail" aria-label="FAIL">FAIL</span></td>
+              <td>Observed</td>
+              <td><code>AssertionError: baseline intentionally fails</code></td>
+            </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="evidence" class="panel" aria-labelledby="evidence-title">
+      <h2 id="evidence-title">Failure evidence</h2>
+      <div class="grid">
+        <div>
+          <h3>Signature</h3>
+          <pre>No failure signature</pre>
+        </div>
+        <div>
+          <h3>Replay</h3>
+          <pre>n/a</pre>
+          <p class="muted">Evidence grade and correlation only — not a proven root cause unless stated.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="graph" class="panel" aria-labelledby="graph-title">
+      <h2 id="graph-title">Execution graph / planner decisions</h2>
+      <pre id="plan-view"></pre>
+    </section>
+  </main>
+  <footer class="muted">
+    <p>Generated by TomorrowCI 0.1.0. No telemetry. Local-first.</p>
+  </footer>
+  <script id="tomorrowci-data" type="application/json">{"run":{"run_id":"efd8c840db3f","tool_version":"0.1.0","started_at":"2026-08-05T09:07:11.645733100Z","finished_at":"2026-08-05T09:07:31.397711600Z","repository":{"source":"C:\\Users\\1\\Desktop\\tomorrowci\\fixtures/baseline-fail","path":"C:\\Users\\1\\Desktop\\tomorrowci\\fixtures/baseline-fail","commit_sha":"86ab9503245860094dd2da64fa7d86ce583ee2df","branch":null,"is_remote":false,"workspace_copy":".tomorrowci\\work\\workspaces\\efd8c840db3f","captured_at":"2026-08-05T09:07:11.645733100Z"},"detection":{"ecosystem":"python","package_manager":"pip","manifests":["requirements.txt"],"confidence":0.95,"notes":["Python package manager for v0.1: pip","Runtime images: official docker.io/library/python:\u003cmajor.minor\u003e"],"supported":true,"unsupported_reason":null},"baseline":{"ecosystem":"python","runtime_label":"Python 3.11","runtime_version":"3.11","dependency_mode":"locked","image_ref":"python:3.11-bookworm","notes":["baseline uses locked/pinned requirements when present"]},"config_hash":"d52c6083a2ba63dd","sandbox_engine":"docker","status":"COMPLETED","frontier":{"observed":false,"horizon_label":null,"scenario_id":null,"axis":null,"from_label":null,"to_label":null,"failure_signature":null,"evidence_grade":null,"replay_command":null,"explanation":"Baseline did not pass; future comparisons are not authorized. No observed breakage horizon."},"scenario_count":1,"host":{"os":"windows","arch":"x86_64","tomorrowci_version":"0.1.0"}},"verdicts":[{"scenario_id":"baseline","label":"Python 3.11 + locked dependencies","verdict":"BASELINE_INVALID","evidence_grade":"OBSERVED","attempts":3,"failure_signature":{"kind":"AssertionError","summary":"AssertionError: baseline intentionally fails","primary_error":"AssertionError: baseline intentionally fails","fingerprint":"6d78b381e34e961a","framework_hints":["pytest"],"evidence_grade":"OBSERVED"},"evidence":{"run_id":"efd8c840db3f","scenario_id":"baseline","directory":".tomorrowci\\runs\\efd8c840db3f\\scenarios\\baseline","replay_command":"tomorrowci replay efd8c840db3f --scenario baseline"},"notes":[]}],"frontier":{"observed":false,"horizon_label":null,"scenario_id":null,"axis":null,"from_label":null,"to_label":null,"failure_signature":null,"evidence_grade":null,"replay_command":null,"explanation":"Baseline did not pass; future comparisons are not authorized. No observed breakage horizon."},"plan":{"decisions":[{"action":"select","reason":"baseline must pass before future comparisons are authorized","scenario_id":"baseline"},{"action":"select","reason":"single-axis runtime candidate in order","scenario_id":"py312-locked"},{"action":"select","reason":"single-axis runtime candidate in order","scenario_id":"py313-locked"},{"action":"select","reason":"single-axis runtime candidate in order","scenario_id":"py314rc-locked"},{"action":"select","reason":"single-axis dependency candidate","scenario_id":"py311-latest"}],"max_scenarios":24,"run_id":"efd8c840db3f","scenarios":[{"axes_changed":[],"dependency_mode":"locked","ecosystem":"python","evidence_grade":"OBSERVED","id":"baseline","image_ref":"python:3.11-bookworm","is_baseline":true,"kind":"baseline","label":"Python 3.11 + locked dependencies","runtime_version":"3.11","selection_reason":"repository baseline"},{"axes_changed":["runtime"],"dependency_mode":"locked","ecosystem":"python","evidence_grade":"OBSERVED","id":"py312-locked","image_ref":"python:3.12-bookworm","is_baseline":false,"kind":"single_axis","label":"Python 3.12 + locked dependencies","runtime_version":"3.12","selection_reason":"candidate on axis runtime"},{"axes_changed":["runtime"],"dependency_mode":"locked","ecosystem":"python","evidence_grade":"OBSERVED","id":"py313-locked","image_ref":"python:3.13-bookworm","is_baseline":false,"kind":"single_axis","label":"Python 3.13 + locked dependencies","runtime_version":"3.13","selection_reason":"candidate on axis runtime"},{"axes_changed":["runtime"],"dependency_mode":"locked","ecosystem":"python","evidence_grade":"OBSERVED","id":"py314rc-locked","image_ref":"python:3.14-rc-bookworm","is_baseline":false,"kind":"single_axis","label":"Python 3.14-rc + locked dependencies","runtime_version":"3.14-rc","selection_reason":"candidate on axis runtime"},{"axes_changed":["dependencies"],"dependency_mode":"latest_allowed","ecosystem":"python","evidence_grade":"SIMULATED","id":"py311-latest","image_ref":"python:3.11-bookworm","is_baseline":false,"kind":"single_axis","label":"Python 3.11 + latest allowed dependencies","runtime_version":"3.11","selection_reason":"candidate on axis dependencies"}],"untested":[]},"candidates":[{"axis":"runtime","channel":"stable","dependency_mode":"locked","evidence_grade":"OBSERVED","id":"py312-locked","image_ref":"python:3.12-bookworm","label":"Python 3.12 + locked dependencies","notes":["concrete official python image tag"],"order_key":"3.12","runtime_version":"3.12"},{"axis":"runtime","channel":"stable","dependency_mode":"locked","evidence_grade":"OBSERVED","id":"py313-locked","image_ref":"python:3.13-bookworm","label":"Python 3.13 + locked dependencies","notes":["concrete official python image tag"],"order_key":"3.13","runtime_version":"3.13"},{"axis":"runtime","channel":"preview","dependency_mode":"locked","evidence_grade":"OBSERVED","id":"py314rc-locked","image_ref":"python:3.14-rc-bookworm","label":"Python 3.14-rc + locked dependencies","notes":["preview/RC image; may be BLOCKED if tag is unavailable"],"order_key":"3.14-rc","runtime_version":"3.14-rc"}]}</script>
+  <script>
+    (function() {
+      var el = document.getElementById('tomorrowci-data');
+      var data = JSON.parse(el.textContent);
+      var plan = document.getElementById('plan-view');
+      plan.textContent = JSON.stringify(data.plan, null, 2);
+    })();
+  </script>
+</body>
+</html>

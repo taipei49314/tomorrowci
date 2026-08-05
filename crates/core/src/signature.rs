@@ -61,9 +61,123 @@ pub fn normalize_failure(result: &RawExecutionResult, grade: EvidenceGrade) -> F
         };
     }
 
+    // pytest / node assertion failures — keep the message, not only exit code
+    if let Some(caps) = Regex::new(r"(?m)^E\s+AssertionError:\s*(.+)$")
+        .ok()
+        .and_then(|re| re.captures(&combined))
+    {
+        let msg = caps.get(1).map(|m| m.as_str()).unwrap_or("").trim();
+        let summary = format!("AssertionError: {msg}");
+        return FailureSignature {
+            kind: "AssertionError".into(),
+            summary: summary.clone(),
+            primary_error: Some(summary.clone()),
+            fingerprint: FailureSignature::compute_fingerprint("AssertionError", msg, &summary),
+            framework_hints: vec!["pytest".into()],
+            evidence_grade: grade,
+        };
+    }
+    if combined.contains("AssertionError:") {
+        let line = combined
+            .lines()
+            .find(|l| l.contains("AssertionError"))
+            .unwrap_or("AssertionError")
+            .trim();
+        return FailureSignature {
+            kind: "AssertionError".into(),
+            summary: line.to_string(),
+            primary_error: Some(line.to_string()),
+            fingerprint: FailureSignature::compute_fingerprint("AssertionError", line, line),
+            framework_hints: vec!["python".into()],
+            evidence_grade: grade,
+        };
+    }
+    if combined.contains("ERR_ASSERTION")
+        || combined.contains("simulated dependency")
+        || combined.contains("assert.fail")
+    {
+        // Prefer the assertion message line over stack frames like `node:assert:137`.
+        let line = combined
+            .lines()
+            .map(str::trim)
+            .find(|l| {
+                l.contains("simulated dependency")
+                    || (l.contains("AssertionError") && !l.starts_with("node:"))
+                    || (l.contains("ERR_ASSERTION") && l.contains(':'))
+            })
+            .or_else(|| {
+                combined.lines().map(str::trim).find(|l| {
+                    !l.starts_with("node:")
+                        && !l.starts_with("at ")
+                        && (l.contains("fail") || l.contains("assert"))
+                })
+            })
+            .unwrap_or("node assertion failed");
+        return FailureSignature {
+            kind: "AssertionError".into(),
+            summary: line.to_string(),
+            primary_error: Some(line.to_string()),
+            fingerprint: FailureSignature::compute_fingerprint("AssertionError", line, line),
+            framework_hints: vec!["node".into()],
+            evidence_grade: grade,
+        };
+    }
+
+    // Prefer rustc test panic messages over generic `error: test failed`.
+    if let Some(line) = combined
+        .lines()
+        .map(str::trim)
+        .find(|l| l.contains("toolchain break:") || l.starts_with("thread '") && l.contains("panicked"))
+    {
+        let summary = if line.contains("toolchain break:") {
+            line.to_string()
+        } else {
+            combined
+                .lines()
+                .map(str::trim)
+                .find(|l| l.contains("toolchain break:") || l.contains("panicked at"))
+                .unwrap_or(line)
+                .to_string()
+        };
+        // Also grab the next line if panic header
+        let summary = if summary.contains("panicked at") {
+            combined
+                .lines()
+                .map(str::trim)
+                .find(|l| l.contains("toolchain break:") || l.contains("assertion failed"))
+                .unwrap_or(&summary)
+                .to_string()
+        } else {
+            summary
+        };
+        return FailureSignature {
+            kind: "rust_test".into(),
+            summary: summary.clone(),
+            primary_error: Some(summary.clone()),
+            fingerprint: FailureSignature::compute_fingerprint("rust_test", &summary, &summary),
+            framework_hints: vec!["cargo-test".into()],
+            evidence_grade: grade,
+        };
+    }
     if let Some(caps) = rust_error_re().captures(&combined) {
         let code = caps.get(1).map(|m| m.as_str()).unwrap_or("");
         let msg = caps.get(2).map(|m| m.as_str()).unwrap_or("").trim();
+        // Skip uninformative cargo test wrappers when stdout has better detail
+        if msg.starts_with("test failed") && combined.contains("toolchain break:") {
+            let line = combined
+                .lines()
+                .map(str::trim)
+                .find(|l| l.contains("toolchain break:"))
+                .unwrap_or(msg);
+            return FailureSignature {
+                kind: "rust_test".into(),
+                summary: line.to_string(),
+                primary_error: Some(line.to_string()),
+                fingerprint: FailureSignature::compute_fingerprint("rust_test", line, line),
+                framework_hints: vec!["cargo-test".into()],
+                evidence_grade: grade,
+            };
+        }
         let kind = format!("rust{code}");
         let summary = format!("rust{code}: {msg}");
         return FailureSignature {

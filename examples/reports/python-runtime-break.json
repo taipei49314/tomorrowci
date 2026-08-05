@@ -1,17 +1,17 @@
 {
   "run": {
-    "run_id": "16210890999f",
+    "run_id": "4e18b2ac852a",
     "tool_version": "0.1.0",
-    "started_at": "2026-08-05T08:36:14.876530Z",
-    "finished_at": "2026-08-05T08:40:05.750063900Z",
+    "started_at": "2026-08-05T09:05:44.138723800Z",
+    "finished_at": "2026-08-05T09:07:11.611953500Z",
     "repository": {
-      "source": "C:\\Users\\1\\Desktop\\tomorrowci\\.\\fixtures\\python-runtime-break",
-      "path": "C:\\Users\\1\\Desktop\\tomorrowci\\.\\fixtures\\python-runtime-break",
-      "commit_sha": "7094125ca08bb629bbff096a36522dec85a78d5b",
+      "source": "C:\\Users\\1\\Desktop\\tomorrowci\\fixtures/python-runtime-break",
+      "path": "C:\\Users\\1\\Desktop\\tomorrowci\\fixtures/python-runtime-break",
+      "commit_sha": "86ab9503245860094dd2da64fa7d86ce583ee2df",
       "branch": null,
       "is_remote": false,
-      "workspace_copy": ".tomorrowci\\work\\workspaces\\16210890999f",
-      "captured_at": "2026-08-05T08:36:14.876530Z"
+      "workspace_copy": ".tomorrowci\\work\\workspaces\\4e18b2ac852a",
+      "captured_at": "2026-08-05T09:05:44.138723800Z"
     },
     "detection": {
       "ecosystem": "python",
@@ -38,7 +38,7 @@
         "baseline uses locked/pinned requirements when present"
       ]
     },
-    "config_hash": "d52c6083a2ba63dd",
+    "config_hash": "5569cd279b982813",
     "sandbox_engine": "docker",
     "status": "COMPLETED",
     "frontier": {
@@ -59,10 +59,10 @@
         "evidence_grade": "OBSERVED"
       },
       "evidence_grade": "OBSERVED",
-      "replay_command": "tomorrowci replay 16210890999f --scenario py310-locked",
+      "replay_command": "tomorrowci replay 4e18b2ac852a --scenario py310-locked",
       "explanation": "Observed breakage horizon at 'Python 3.10 + locked dependencies'. Minimal changed axis relative to prior passing environment. Evidence grade: Observed. Suspected cause correlates with failure signature (correlation, not proven root cause)."
     },
-    "scenario_count": 7,
+    "scenario_count": 5,
     "host": {
       "os": "windows",
       "arch": "x86_64",
@@ -78,10 +78,10 @@
       "attempts": 1,
       "failure_signature": null,
       "evidence": {
-        "run_id": "16210890999f",
+        "run_id": "4e18b2ac852a",
         "scenario_id": "baseline",
-        "directory": ".tomorrowci\\runs\\16210890999f\\scenarios\\baseline",
-        "replay_command": "tomorrowci replay 16210890999f --scenario baseline"
+        "directory": ".tomorrowci\\runs\\4e18b2ac852a\\scenarios\\baseline",
+        "replay_command": "tomorrowci replay 4e18b2ac852a --scenario baseline"
       },
       "notes": []
     },
@@ -102,10 +102,10 @@
         "evidence_grade": "OBSERVED"
       },
       "evidence": {
-        "run_id": "16210890999f",
+        "run_id": "4e18b2ac852a",
         "scenario_id": "py310-locked",
-        "directory": ".tomorrowci\\runs\\16210890999f\\scenarios\\py310-locked",
-        "replay_command": "tomorrowci replay 16210890999f --scenario py310-locked"
+        "directory": ".tomorrowci\\runs\\4e18b2ac852a\\scenarios\\py310-locked",
+        "replay_command": "tomorrowci replay 4e18b2ac852a --scenario py310-locked"
       },
       "notes": []
     },
@@ -126,10 +126,10 @@
         "evidence_grade": "OBSERVED"
       },
       "evidence": {
-        "run_id": "16210890999f",
+        "run_id": "4e18b2ac852a",
         "scenario_id": "py311-locked",
-        "directory": ".tomorrowci\\runs\\16210890999f\\scenarios\\py311-locked",
-        "replay_command": "tomorrowci replay 16210890999f --scenario py311-locked"
+        "directory": ".tomorrowci\\runs\\4e18b2ac852a\\scenarios\\py311-locked",
+        "replay_command": "tomorrowci replay 4e18b2ac852a --scenario py311-locked"
       },
       "notes": []
     },
@@ -150,10 +150,10 @@
         "evidence_grade": "OBSERVED"
       },
       "evidence": {
-        "run_id": "16210890999f",
+        "run_id": "4e18b2ac852a",
         "scenario_id": "py312-locked",
-        "directory": ".tomorrowci\\runs\\16210890999f\\scenarios\\py312-locked",
-        "replay_command": "tomorrowci replay 16210890999f --scenario py312-locked"
+        "directory": ".tomorrowci\\runs\\4e18b2ac852a\\scenarios\\py312-locked",
+        "replay_command": "tomorrowci replay 4e18b2ac852a --scenario py312-locked"
       },
       "notes": []
     },
@@ -174,49 +174,10 @@
         "evidence_grade": "OBSERVED"
       },
       "evidence": {
-        "run_id": "16210890999f",
+        "run_id": "4e18b2ac852a",
         "scenario_id": "py313-locked",
-        "directory": ".tomorrowci\\runs\\16210890999f\\scenarios\\py313-locked",
-        "replay_command": "tomorrowci replay 16210890999f --scenario py313-locked"
-      },
-      "notes": []
-    },
-    {
-      "scenario_id": "py314rc-locked",
-      "label": "Python 3.14-rc + locked dependencies",
-      "verdict": "FUTURE_FAIL",
-      "evidence_grade": "OBSERVED",
-      "attempts": 3,
-      "failure_signature": {
-        "kind": "Error",
-        "summary": "Error: cannot import name 'MutableMapping' from 'collections' (/usr/local/lib/python3.14/collections/__init__.py)",
-        "primary_error": "Error: cannot import name 'MutableMapping' from 'collections' (/usr/local/lib/python3.14/collections/__init__.py)",
-        "fingerprint": "7d870204fb777535",
-        "framework_hints": [
-          "node"
-        ],
-        "evidence_grade": "OBSERVED"
-      },
-      "evidence": {
-        "run_id": "16210890999f",
-        "scenario_id": "py314rc-locked",
-        "directory": ".tomorrowci\\runs\\16210890999f\\scenarios\\py314rc-locked",
-        "replay_command": "tomorrowci replay 16210890999f --scenario py314rc-locked"
-      },
-      "notes": []
-    },
-    {
-      "scenario_id": "py39-latest",
-      "label": "Python 3.9 + latest allowed dependencies",
-      "verdict": "FUTURE_PASS",
-      "evidence_grade": "SIMULATED",
-      "attempts": 1,
-      "failure_signature": null,
-      "evidence": {
-        "run_id": "16210890999f",
-        "scenario_id": "py39-latest",
-        "directory": ".tomorrowci\\runs\\16210890999f\\scenarios\\py39-latest",
-        "replay_command": "tomorrowci replay 16210890999f --scenario py39-latest"
+        "directory": ".tomorrowci\\runs\\4e18b2ac852a\\scenarios\\py313-locked",
+        "replay_command": "tomorrowci replay 4e18b2ac852a --scenario py313-locked"
       },
       "notes": []
     }
@@ -239,7 +200,7 @@
       "evidence_grade": "OBSERVED"
     },
     "evidence_grade": "OBSERVED",
-    "replay_command": "tomorrowci replay 16210890999f --scenario py310-locked",
+    "replay_command": "tomorrowci replay 4e18b2ac852a --scenario py310-locked",
     "explanation": "Observed breakage horizon at 'Python 3.10 + locked dependencies'. Minimal changed axis relative to prior passing environment. Evidence grade: Observed. Suspected cause correlates with failure signature (correlation, not proven root cause)."
   },
   "plan": {
@@ -268,20 +229,10 @@
         "action": "select",
         "reason": "single-axis runtime candidate in order",
         "scenario_id": "py313-locked"
-      },
-      {
-        "action": "select",
-        "reason": "single-axis runtime candidate in order",
-        "scenario_id": "py314rc-locked"
-      },
-      {
-        "action": "select",
-        "reason": "single-axis dependency candidate",
-        "scenario_id": "py39-latest"
       }
     ],
-    "max_scenarios": 24,
-    "run_id": "16210890999f",
+    "max_scenarios": 8,
+    "run_id": "4e18b2ac852a",
     "scenarios": [
       {
         "axes_changed": [],
@@ -355,36 +306,6 @@
         "label": "Python 3.13 + locked dependencies",
         "runtime_version": "3.13",
         "selection_reason": "candidate on axis runtime"
-      },
-      {
-        "axes_changed": [
-          "runtime"
-        ],
-        "dependency_mode": "locked",
-        "ecosystem": "python",
-        "evidence_grade": "OBSERVED",
-        "id": "py314rc-locked",
-        "image_ref": "python:3.14-rc-bookworm",
-        "is_baseline": false,
-        "kind": "single_axis",
-        "label": "Python 3.14-rc + locked dependencies",
-        "runtime_version": "3.14-rc",
-        "selection_reason": "candidate on axis runtime"
-      },
-      {
-        "axes_changed": [
-          "dependencies"
-        ],
-        "dependency_mode": "latest_allowed",
-        "ecosystem": "python",
-        "evidence_grade": "SIMULATED",
-        "id": "py39-latest",
-        "image_ref": "python:3.9-bookworm",
-        "is_baseline": false,
-        "kind": "single_axis",
-        "label": "Python 3.9 + latest allowed dependencies",
-        "runtime_version": "3.9",
-        "selection_reason": "candidate on axis dependencies"
       }
     ],
     "untested": []
@@ -445,20 +366,6 @@
       ],
       "order_key": "3.13",
       "runtime_version": "3.13"
-    },
-    {
-      "axis": "runtime",
-      "channel": "preview",
-      "dependency_mode": "locked",
-      "evidence_grade": "OBSERVED",
-      "id": "py314rc-locked",
-      "image_ref": "python:3.14-rc-bookworm",
-      "label": "Python 3.14-rc + locked dependencies",
-      "notes": [
-        "preview/RC image; may be BLOCKED if tag is unavailable"
-      ],
-      "order_key": "3.14-rc",
-      "runtime_version": "3.14-rc"
     }
   ]
 }

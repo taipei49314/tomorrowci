@@ -343,13 +343,36 @@ impl EcosystemAdapter for PythonAdapter {
         let (program, args) = test.split_first().ok_or_else(|| {
             AdapterError::Other("empty test command".into())
         })?;
+        let mut test_env = IndexMap::new();
+        // Explicit dependency mode marker for SIMULATED scenarios / fixtures.
+        // Adapters never invent versions; they only label the mutation that was applied.
+        test_env.insert(
+            "TOMORROWCI_DEP_MODE".into(),
+            match scenario.dependency_mode {
+                DependencyMode::Locked => "locked".into(),
+                DependencyMode::LatestAllowed => "latest_allowed".into(),
+                DependencyMode::PrereleaseAllowed => "prerelease".into(),
+            },
+        );
+        // Prefer upgraded vendor tree when present (fixture contract for dep-axis SIMULATED).
+        if matches!(
+            scenario.dependency_mode,
+            DependencyMode::LatestAllowed | DependencyMode::PrereleaseAllowed
+        ) {
+            test_env.insert(
+                "PYTHONPATH".into(),
+                "/workspace/vendor/legacycompat_v2:/workspace/vendor".into(),
+            );
+        } else {
+            test_env.insert("PYTHONPATH".into(), "/workspace/vendor".into());
+        }
         cmds.push(CommandSpec {
             phase: CommandPhase::Test,
             program: program.clone(),
             args: args.to_vec(),
             workdir: "/workspace".into(),
             network_required: false,
-            env: IndexMap::new(),
+            env: test_env,
         });
 
         Ok(cmds)

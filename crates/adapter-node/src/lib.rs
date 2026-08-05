@@ -260,13 +260,22 @@ impl EcosystemAdapter for NodeAdapter {
         let (program, args) = test_parts.split_first().ok_or_else(|| {
             AdapterError::Other("empty test command".into())
         })?;
+        let mut test_env = IndexMap::new();
+        test_env.insert(
+            "TOMORROWCI_DEP_MODE".into(),
+            match scenario.dependency_mode {
+                DependencyMode::Locked => "locked".into(),
+                DependencyMode::LatestAllowed => "latest_allowed".into(),
+                DependencyMode::PrereleaseAllowed => "prerelease".into(),
+            },
+        );
         cmds.push(CommandSpec {
             phase: CommandPhase::Test,
             program: program.clone(),
             args: args.to_vec(),
             workdir: "/workspace".into(),
             network_required: false,
-            env: IndexMap::new(),
+            env: test_env,
         });
         Ok(cmds)
     }

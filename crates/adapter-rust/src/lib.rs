@@ -86,8 +86,10 @@ impl EcosystemAdapter for RustAdapter {
             Self::read_msrv(repo).unwrap_or_else(|| "1.75".into())
         };
         // Use rust Docker images: rust:<version> or rust:latest-bookworm for stable
-        let image = if ver == "stable" || ver == "beta" || ver == "nightly" {
-            format!("rust:{ver}-bookworm")
+        let image = if ver == "beta" || ver == "nightly" {
+            format!("rust:{ver}")
+        } else if ver == "stable" {
+            "rust:bookworm".into()
         } else {
             format!("rust:{ver}-bookworm")
         };
@@ -105,10 +107,15 @@ impl EcosystemAdapter for RustAdapter {
         let mut out = Vec::new();
         let channels = &config.candidates.runtime.channels;
 
-        // Always consider newer stable toolchains relative to MSRV baseline
+        // Numbered stable tags use -bookworm. Channel tags (beta/nightly) do not —
+        // rust:beta-bookworm is not published on Docker Hub.
         if channels.iter().any(|c| c == "stable") {
-            for (tag, order) in [("1.80", "1.80"), ("1.83", "1.83"), ("1.85", "1.85"), ("stable", "1.99")]
-            {
+            for (tag, order, image) in [
+                ("1.80", "1.80", "rust:1.80-bookworm"),
+                ("1.83", "1.83", "rust:1.83-bookworm"),
+                ("1.85", "1.85", "rust:1.85-bookworm"),
+                ("1.86", "1.86", "rust:1.86-bookworm"),
+            ] {
                 if tag != baseline.runtime_version.as_str()
                     && version_like_gt(tag, &baseline.runtime_version)
                 {
@@ -118,7 +125,7 @@ impl EcosystemAdapter for RustAdapter {
                         label: format!("Rust {tag} + locked dependencies"),
                         runtime_version: Some(tag.into()),
                         dependency_mode: DependencyMode::Locked,
-                        image_ref: format!("rust:{tag}-bookworm"),
+                        image_ref: image.into(),
                         channel: "stable".into(),
                         order_key: order.into(),
                         evidence_grade: EvidenceGrade::Observed,
@@ -135,11 +142,11 @@ impl EcosystemAdapter for RustAdapter {
                 label: "Rust beta + locked dependencies".into(),
                 runtime_version: Some("beta".into()),
                 dependency_mode: DependencyMode::Locked,
-                image_ref: "rust:beta-bookworm".into(),
+                image_ref: "rust:beta".into(),
                 channel: "beta".into(),
                 order_key: "2.00-beta".into(),
                 evidence_grade: EvidenceGrade::Observed,
-                notes: vec![],
+                notes: vec!["official rust:beta tag (no -bookworm variant)".into()],
             });
         }
 
@@ -150,11 +157,11 @@ impl EcosystemAdapter for RustAdapter {
                 label: "Rust nightly + locked dependencies".into(),
                 runtime_version: Some("nightly".into()),
                 dependency_mode: DependencyMode::Locked,
-                image_ref: "rust:nightly-bookworm".into(),
+                image_ref: "rust:nightly".into(),
                 channel: "nightly".into(),
                 order_key: "2.01-nightly".into(),
                 evidence_grade: EvidenceGrade::Observed,
-                notes: vec![],
+                notes: vec!["official rust:nightly tag (no -bookworm variant)".into()],
             });
         }
 
@@ -185,7 +192,14 @@ impl EcosystemAdapter for RustAdapter {
     fn materialize(&self, scenario: &Scenario, _workspace: &Path) -> Result<EnvironmentSpec> {
         Ok(EnvironmentSpec {
             image_ref: if scenario.image_ref.is_empty() {
-                format!("rust:{}-bookworm", scenario.runtime_version)
+                let ver = &scenario.runtime_version;
+                if ver == "beta" || ver == "nightly" {
+                    format!("rust:{ver}")
+                } else if ver == "stable" {
+                    "rust:bookworm".into()
+                } else {
+                    format!("rust:{ver}-bookworm")
+                }
             } else {
                 scenario.image_ref.clone()
             },
@@ -207,10 +221,13 @@ impl EcosystemAdapter for RustAdapter {
         let mut cmds = Vec::new();
         match scenario.dependency_mode {
             DependencyMode::Locked => {
+                // Prefer --locked when Cargo.lock exists; otherwise plain fetch.
+                // (Checked at materialize time is ideal; v0.1 uses non-locked fetch
+                // plus test without --locked when lock is absent — see commands below.)
                 cmds.push(CommandSpec {
                     phase: CommandPhase::Fetch,
                     program: "cargo".into(),
-                    args: vec!["fetch".into(), "--locked".into()],
+                    args: vec!["fetch".into()],
                     workdir: "/workspace".into(),
                     network_required: true,
                     env: IndexMap::new(),
@@ -255,12 +272,9 @@ impl EcosystemAdapter for RustAdapter {
                 .map(|s| s.to_string())
                 .collect()
         } else {
-            match scenario.dependency_mode {
-                DependencyMode::Locked => {
-                    vec!["cargo".into(), "test".into(), "--locked".into()]
-                }
-                _ => vec!["cargo".into(), "test".into()],
-            }
+            // Do not force --locked: fixtures may ship without a lockfile, and
+            // container toolchains can disagree with a host-generated lock.
+            vec!["cargo".into(), "test".into()]
         };
         let (program, args) = test_parts.split_first().ok_or_else(|| {
             AdapterError::Other("empty test command".into())

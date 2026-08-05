@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>TomorrowCI Report — 11b12b2b2948</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --panel: #121a2b;
+      --text: #e8eefc;
+      --muted: #9db0d0;
+      --pass: #1f9d55;
+      --fail: #e53e3e;
+      --flaky: #d69e2e;
+      --blocked: #718096;
+      --accent: #63b3ed;
+      --border: #243049;
+      --focus: #f6e05e;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; transition: none !important; }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.5;
+    }
+    a { color: var(--accent); }
+    a:focus, button:focus, [tabindex]:focus { outline: 3px solid var(--focus); outline-offset: 2px; }
+    header, main, footer { max-width: 1100px; margin: 0 auto; padding: 1.25rem; }
+    header { border-bottom: 1px solid var(--border); }
+    h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
+    .muted { color: var(--muted); }
+    .panel {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 12px; padding: 1rem; margin: 1rem 0;
+    }
+    .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 0.6rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; }
+    .badge {
+      display: inline-block; min-width: 5.5rem; text-align: center;
+      padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.75rem;
+      font-weight: 700; letter-spacing: 0.03em;
+      border: 1px solid transparent;
+    }
+    .badge-pass { background: rgba(31,157,85,0.15); color: #68d391; border-color: var(--pass); }
+    .badge-fail { background: rgba(229,62,62,0.15); color: #fc8181; border-color: var(--fail); }
+    .badge-flaky { background: rgba(214,158,46,0.15); color: #f6e05e; border-color: var(--flaky); }
+    .badge-blocked { background: rgba(113,128,150,0.15); color: #cbd5e0; border-color: var(--blocked); }
+    .timeline { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .chip {
+      border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.75rem;
+      background: #0f1726; min-width: 8rem;
+    }
+    .chip strong { display: block; font-size: 0.8rem; }
+    pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre {
+      background: #0a0f18; border: 1px solid var(--border); border-radius: 8px;
+      padding: 0.75rem; overflow: auto; max-height: 320px; white-space: pre-wrap;
+    }
+    nav.toc ul { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.75rem; }
+    nav.toc a { text-decoration: none; border-bottom: 1px dotted var(--accent); }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0,0,0,0); border: 0;
+    }
+  </style>
+</head>
+<body>
+  <a class="sr-only" href="#main">Skip to content</a>
+  <header>
+    <p class="muted">TomorrowCI — Continuous Integration Against the Future</p>
+    <h1>Run 11b12b2b2948</h1>
+    <p>Repository: <strong>C:\Users\1\Desktop\tomorrowci\fixtures/node-dependency-break</strong> @ <code>86ab9503245860094dd2da64fa7d86ce583ee2df</code></p>
+    <nav class="toc" aria-label="Report sections">
+      <ul>
+        <li><a href="#horizon">Horizon</a></li>
+        <li><a href="#matrix">Scenario matrix</a></li>
+        <li><a href="#evidence">Failure evidence</a></li>
+        <li><a href="#graph">Execution graph</a></li>
+      </ul>
+    </nav>
+  </header>
+  <main id="main">
+    <section id="horizon" class="panel" aria-labelledby="horizon-title">
+      <h2 id="horizon-title">Breakage horizon timeline</h2>
+      <p><strong>Observed horizon:</strong> Node.js 20 + latest allowed dependencies</p>
+      <p class="muted">Observed breakage horizon at &#39;Node.js 20 + latest allowed dependencies&#39;. Minimal changed axis relative to prior passing environment. Evidence grade: Simulated. Suspected cause correlates with failure signature (correlation, not proven root cause).</p>
+      <div class="timeline" role="list" aria-label="Scenario timeline">
+        <div class="chip" role="listitem">
+              <strong>Node.js 20 + locked dependencies</strong>
+              <span class="badge badge-pass">PASS</span>
+              <span class="muted">Observed</span>
+            </div><div class="chip" role="listitem">
+              <strong>Node.js 22 + locked dependencies</strong>
+              <span class="badge badge-pass">PASS</span>
+              <span class="muted">Observed</span>
+            </div><div class="chip" role="listitem">
+              <strong>Node.js 24 + locked dependencies</strong>
+              <span class="badge badge-pass">PASS</span>
+              <span class="muted">Observed</span>
+            </div><div class="chip" role="listitem">
+              <strong>Node.js 20 + latest allowed dependencies</strong>
+              <span class="badge badge-fail">FAIL</span>
+              <span class="muted">Simulated</span>
+            </div><div class="chip" role="listitem">
+              <strong>22 + latest_allowed</strong>
+              <span class="badge badge-fail">FAIL</span>
+              <span class="muted">Simulated</span>
+            </div><div class="chip" role="listitem">
+              <strong>24 + latest_allowed</strong>
+              <span class="badge badge-fail">FAIL</span>
+              <span class="muted">Simulated</span>
+            </div>
+      </div>
+    </section>
+
+    <section id="matrix" class="panel" aria-labelledby="matrix-title">
+      <h2 id="matrix-title">Scenario matrix</h2>
+      <table>
+        <caption class="sr-only">Scenarios and verdicts</caption>
+        <thead>
+          <tr>
+            <th scope="col">Scenario</th>
+            <th scope="col">Verdict</th>
+            <th scope="col">Evidence grade</th>
+            <th scope="col">Signature</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+              <td>Node.js 20 + locked dependencies</td>
+              <td><span class="badge badge-pass" aria-label="PASS">PASS</span></td>
+              <td>Observed</td>
+              <td><code>—</code></td>
+            </tr><tr>
+              <td>Node.js 22 + locked dependencies</td>
+              <td><span class="badge badge-pass" aria-label="PASS">PASS</span></td>
+              <td>Observed</td>
+              <td><code>—</code></td>
+            </tr><tr>
+              <td>Node.js 24 + locked dependencies</td>
+              <td><span class="badge badge-pass" aria-label="PASS">PASS</span></td>
+              <td>Observed</td>
+              <td><code>—</code></td>
+            </tr><tr>
+              <td>Node.js 20 + latest allowed dependencies</td>
+              <td><span class="badge badge-fail" aria-label="FAIL">FAIL</span></td>
+              <td>Simulated</td>
+              <td><code>AssertionError [ERR_ASSERTION]: simulated dependency API break under latest_allowed mode</code></td>
+            </tr><tr>
+              <td>22 + latest_allowed</td>
+              <td><span class="badge badge-fail" aria-label="FAIL">FAIL</span></td>
+              <td>Simulated</td>
+              <td><code>AssertionError [ERR_ASSERTION]: simulated dependency API break under latest_allowed mode</code></td>
+            </tr><tr>
+              <td>24 + latest_allowed</td>
+              <td><span class="badge badge-fail" aria-label="FAIL">FAIL</span></td>
+              <td>Simulated</td>
+              <td><code>AssertionError [ERR_ASSERTION]: simulated dependency API break under latest_allowed mode</code></td>
+            </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="evidence" class="panel" aria-labelledby="evidence-title">
+      <h2 id="evidence-title">Failure evidence</h2>
+      <div class="grid">
+        <div>
+          <h3>Signature</h3>
+          <pre>AssertionError [ERR_ASSERTION]: simulated dependency API break under latest_allowed mode</pre>
+        </div>
+        <div>
+          <h3>Replay</h3>
+          <pre>tomorrowci replay 11b12b2b2948 --scenario node20-latest</pre>
+          <p class="muted">Evidence grade and correlation only — not a proven root cause unless stated.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="graph" class="panel" aria-labelledby="graph-title">
+      <h2 id="graph-title">Execution graph / planner decisions</h2>
+      <pre id="plan-view"></pre>
+    </section>
+  </main>
+  <footer class="muted">
+    <p>Generated by TomorrowCI 0.1.0. No telemetry. Local-first.</p>
+  </footer>
+  <script id="tomorrowci-data" type="application/json">{"run":{"run_id":"11b12b2b2948","tool_version":"0.1.0","started_at":"2026-08-05T09:08:45.625557300Z","finished_at":"2026-08-05T09:09:07.644259800Z","repository":{"source":"C:\\Users\\1\\Desktop\\tomorrowci\\fixtures/node-dependency-break","path":"C:\\Users\\1\\Desktop\\tomorrowci\\fixtures/node-dependency-break","commit_sha":"86ab9503245860094dd2da64fa7d86ce583ee2df","branch":null,"is_remote":false,"workspace_copy":".tomorrowci\\work\\workspaces\\11b12b2b2948","captured_at":"2026-08-05T09:08:45.625557300Z"},"detection":{"ecosystem":"node","package_manager":"npm","manifests":["package.json","package-lock.json"],"confidence":0.95,"notes":["Node package manager for v0.1: npm"],"supported":true,"unsupported_reason":null},"baseline":{"ecosystem":"node","runtime_label":"Node.js 20","runtime_version":"20","dependency_mode":"locked","image_ref":"node:20-bookworm","notes":["baseline uses npm ci when package-lock.json present"]},"config_hash":"5eb4e6818bda8c3f","sandbox_engine":"docker","status":"COMPLETED","frontier":{"observed":true,"horizon_label":"Node.js 20 + latest allowed dependencies","scenario_id":"node20-latest","axis":"dependencies","from_label":"Node.js 24 + locked dependencies","to_label":"Node.js 20 + latest allowed dependencies","failure_signature":{"kind":"AssertionError","summary":"AssertionError [ERR_ASSERTION]: simulated dependency API break under latest_allowed mode","primary_error":"AssertionError [ERR_ASSERTION]: simulated dependency API break under latest_allowed mode","fingerprint":"a8b021b41a9e5ef9","framework_hints":["node"],"evidence_grade":"OBSERVED"},"evidence_grade":"SIMULATED","replay_command":"tomorrowci replay 11b12b2b2948 --scenario node20-latest","explanation":"Observed breakage horizon at 'Node.js 20 + latest allowed dependencies'. Minimal changed axis relative to prior passing environment. Evidence grade: Simulated. Suspected cause correlates with failure signature (correlation, not proven root cause)."},"scenario_count":6,"host":{"os":"windows","arch":"x86_64","tomorrowci_version":"0.1.0"}},"verdicts":[{"scenario_id":"baseline","label":"Node.js 20 + locked dependencies","verdict":"BASELINE_PASS","evidence_grade":"OBSERVED","attempts":1,"failure_signature":null,"evidence":{"run_id":"11b12b2b2948","scenario_id":"baseline","directory":".tomorrowci\\runs\\11b12b2b2948\\scenarios\\baseline","replay_command":"tomorrowci replay 11b12b2b2948 --scenario baseline"},"notes":[]},{"scenario_id":"node22-locked","label":"Node.js 22 + locked dependencies","verdict":"FUTURE_PASS","evidence_grade":"OBSERVED","attempts":1,"failure_signature":null,"evidence":{"run_id":"11b12b2b2948","scenario_id":"node22-locked","directory":".tomorrowci\\runs\\11b12b2b2948\\scenarios\\node22-locked","replay_command":"tomorrowci replay 11b12b2b2948 --scenario node22-locked"},"notes":[]},{"scenario_id":"node24-locked","label":"Node.js 24 + locked dependencies","verdict":"FUTURE_PASS","evidence_grade":"OBSERVED","attempts":1,"failure_signature":null,"evidence":{"run_id":"11b12b2b2948","scenario_id":"node24-locked","directory":".tomorrowci\\runs\\11b12b2b2948\\scenarios\\node24-locked","replay_command":"tomorrowci replay 11b12b2b2948 --scenario node24-locked"},"notes":[]},{"scenario_id":"node20-latest","label":"Node.js 20 + latest allowed dependencies","verdict":"FUTURE_FAIL","evidence_grade":"SIMULATED","attempts":3,"failure_signature":{"kind":"AssertionError","summary":"AssertionError [ERR_ASSERTION]: simulated dependency API break under latest_allowed mode","primary_error":"AssertionError [ERR_ASSERTION]: simulated dependency API break under latest_allowed mode","fingerprint":"a8b021b41a9e5ef9","framework_hints":["node"],"evidence_grade":"OBSERVED"},"evidence":{"run_id":"11b12b2b2948","scenario_id":"node20-latest","directory":".tomorrowci\\runs\\11b12b2b2948\\scenarios\\node20-latest","replay_command":"tomorrowci replay 11b12b2b2948 --scenario node20-latest"},"notes":[]},{"scenario_id":"combined-node22-locked-node20-latest","label":"22 + latest_allowed","verdict":"FUTURE_FAIL","evidence_grade":"SIMULATED","attempts":3,"failure_signature":{"kind":"AssertionError","summary":"AssertionError [ERR_ASSERTION]: simulated dependency API break under latest_allowed mode","primary_error":"AssertionError [ERR_ASSERTION]: simulated dependency API break under latest_allowed mode","fingerprint":"a8b021b41a9e5ef9","framework_hints":["node"],"evidence_grade":"OBSERVED"},"evidence":{"run_id":"11b12b2b2948","scenario_id":"combined-node22-locked-node20-latest","directory":".tomorrowci\\runs\\11b12b2b2948\\scenarios\\combined-node22-locked-node20-latest","replay_command":"tomorrowci replay 11b12b2b2948 --scenario combined-node22-locked-node20-latest"},"notes":[]},{"scenario_id":"combined-node24-locked-node20-latest","label":"24 + latest_allowed","verdict":"FUTURE_FAIL","evidence_grade":"SIMULATED","attempts":3,"failure_signature":{"kind":"AssertionError","summary":"AssertionError [ERR_ASSERTION]: simulated dependency API break under latest_allowed mode","primary_error":"AssertionError [ERR_ASSERTION]: simulated dependency API break under latest_allowed mode","fingerprint":"a8b021b41a9e5ef9","framework_hints":["node"],"evidence_grade":"OBSERVED"},"evidence":{"run_id":"11b12b2b2948","scenario_id":"combined-node24-locked-node20-latest","directory":".tomorrowci\\runs\\11b12b2b2948\\scenarios\\combined-node24-locked-node20-latest","replay_command":"tomorrowci replay 11b12b2b2948 --scenario combined-node24-locked-node20-latest"},"notes":[]}],"frontier":{"observed":true,"horizon_label":"Node.js 20 + latest allowed dependencies","scenario_id":"node20-latest","axis":"dependencies","from_label":"Node.js 24 + locked dependencies","to_label":"Node.js 20 + latest allowed dependencies","failure_signature":{"kind":"AssertionError","summary":"AssertionError [ERR_ASSERTION]: simulated dependency API break under latest_allowed mode","primary_error":"AssertionError [ERR_ASSERTION]: simulated dependency API break under latest_allowed mode","fingerprint":"a8b021b41a9e5ef9","framework_hints":["node"],"evidence_grade":"OBSERVED"},"evidence_grade":"SIMULATED","replay_command":"tomorrowci replay 11b12b2b2948 --scenario node20-latest","explanation":"Observed breakage horizon at 'Node.js 20 + latest allowed dependencies'. Minimal changed axis relative to prior passing environment. Evidence grade: Simulated. Suspected cause correlates with failure signature (correlation, not proven root cause)."},"plan":{"decisions":[{"action":"select","reason":"baseline must pass before future comparisons are authorized","scenario_id":"baseline"},{"action":"select","reason":"single-axis runtime candidate in order","scenario_id":"node22-locked"},{"action":"select","reason":"single-axis runtime candidate in order","scenario_id":"node24-locked"},{"action":"select","reason":"single-axis dependency candidate","scenario_id":"node20-latest"}],"max_scenarios":8,"run_id":"11b12b2b2948","scenarios":[{"axes_changed":[],"dependency_mode":"locked","ecosystem":"node","evidence_grade":"OBSERVED","id":"baseline","image_ref":"node:20-bookworm","is_baseline":true,"kind":"baseline","label":"Node.js 20 + locked dependencies","runtime_version":"20","selection_reason":"repository baseline"},{"axes_changed":["runtime"],"dependency_mode":"locked","ecosystem":"node","evidence_grade":"OBSERVED","id":"node22-locked","image_ref":"node:22-bookworm","is_baseline":false,"kind":"single_axis","label":"Node.js 22 + locked dependencies","runtime_version":"22","selection_reason":"candidate on axis runtime"},{"axes_changed":["runtime"],"dependency_mode":"locked","ecosystem":"node","evidence_grade":"OBSERVED","id":"node24-locked","image_ref":"node:24-bookworm","is_baseline":false,"kind":"single_axis","label":"Node.js 24 + locked dependencies","runtime_version":"24","selection_reason":"candidate on axis runtime"},{"axes_changed":["dependencies"],"dependency_mode":"latest_allowed","ecosystem":"node","evidence_grade":"SIMULATED","id":"node20-latest","image_ref":"node:20-bookworm","is_baseline":false,"kind":"single_axis","label":"Node.js 20 + latest allowed dependencies","runtime_version":"20","selection_reason":"candidate on axis dependencies"}],"untested":[]},"candidates":[{"axis":"runtime","channel":"stable","dependency_mode":"locked","evidence_grade":"OBSERVED","id":"node22-locked","image_ref":"node:22-bookworm","label":"Node.js 22 + locked dependencies","notes":[],"order_key":"22","runtime_version":"22"},{"axis":"runtime","channel":"stable","dependency_mode":"locked","evidence_grade":"OBSERVED","id":"node24-locked","image_ref":"node:24-bookworm","label":"Node.js 24 + locked dependencies","notes":[],"order_key":"24","runtime_version":"24"}]}</script>
+  <script>
+    (function() {
+      var el = document.getElementById('tomorrowci-data');
+      var data = JSON.parse(el.textContent);
+      var plan = document.getElementById('plan-view');
+      plan.textContent = JSON.stringify(data.plan, null, 2);
+    })();
+  </script>
+</body>
+</html>

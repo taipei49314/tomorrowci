@@ -1,0 +1,250 @@
+{
+  "run": {
+    "run_id": "e2d4454041a2",
+    "tool_version": "0.1.0",
+    "started_at": "2026-08-05T09:09:07.672672400Z",
+    "finished_at": "2026-08-05T09:09:34.209662200Z",
+    "repository": {
+      "source": "C:\\Users\\1\\Desktop\\tomorrowci\\fixtures/rust-msrv-break",
+      "path": "C:\\Users\\1\\Desktop\\tomorrowci\\fixtures/rust-msrv-break",
+      "commit_sha": "86ab9503245860094dd2da64fa7d86ce583ee2df",
+      "branch": null,
+      "is_remote": false,
+      "workspace_copy": ".tomorrowci\\work\\workspaces\\e2d4454041a2",
+      "captured_at": "2026-08-05T09:09:07.672672400Z"
+    },
+    "detection": {
+      "ecosystem": "rust",
+      "package_manager": "cargo",
+      "manifests": [
+        "Cargo.toml",
+        "Cargo.lock"
+      ],
+      "confidence": 0.95,
+      "notes": [
+        "Rust package manager for v0.1: cargo"
+      ],
+      "supported": true,
+      "unsupported_reason": null
+    },
+    "baseline": {
+      "ecosystem": "rust",
+      "runtime_label": "Rust 1.83",
+      "runtime_version": "1.83",
+      "dependency_mode": "locked",
+      "image_ref": "rust:1.83-bookworm",
+      "notes": [
+        "baseline uses cargo test with existing lockfile when present"
+      ]
+    },
+    "config_hash": "b5d9ea9f9119f290",
+    "sandbox_engine": "docker",
+    "status": "COMPLETED",
+    "frontier": {
+      "observed": true,
+      "horizon_label": "Rust 1.85 + locked dependencies",
+      "scenario_id": "rust185-locked",
+      "axis": "runtime",
+      "from_label": "Rust 1.83 + locked dependencies",
+      "to_label": "Rust 1.85 + locked dependencies",
+      "failure_signature": {
+        "kind": "rust_test",
+        "summary": "toolchain break: fixture supports rustc <= 1.84, got release=1.85.1 (major=1 minor=85)",
+        "primary_error": "toolchain break: fixture supports rustc <= 1.84, got release=1.85.1 (major=1 minor=85)",
+        "fingerprint": "46b3cd846d45b8ea",
+        "framework_hints": [
+          "cargo-test"
+        ],
+        "evidence_grade": "OBSERVED"
+      },
+      "evidence_grade": "OBSERVED",
+      "replay_command": "tomorrowci replay e2d4454041a2 --scenario rust185-locked",
+      "explanation": "Observed breakage horizon at 'Rust 1.85 + locked dependencies'. Minimal changed axis relative to prior passing environment. Evidence grade: Observed. Suspected cause correlates with failure signature (correlation, not proven root cause)."
+    },
+    "scenario_count": 3,
+    "host": {
+      "os": "windows",
+      "arch": "x86_64",
+      "tomorrowci_version": "0.1.0"
+    }
+  },
+  "verdicts": [
+    {
+      "scenario_id": "baseline",
+      "label": "Rust 1.83 + locked dependencies",
+      "verdict": "BASELINE_PASS",
+      "evidence_grade": "OBSERVED",
+      "attempts": 1,
+      "failure_signature": null,
+      "evidence": {
+        "run_id": "e2d4454041a2",
+        "scenario_id": "baseline",
+        "directory": ".tomorrowci\\runs\\e2d4454041a2\\scenarios\\baseline",
+        "replay_command": "tomorrowci replay e2d4454041a2 --scenario baseline"
+      },
+      "notes": []
+    },
+    {
+      "scenario_id": "rust185-locked",
+      "label": "Rust 1.85 + locked dependencies",
+      "verdict": "FUTURE_FAIL",
+      "evidence_grade": "OBSERVED",
+      "attempts": 3,
+      "failure_signature": {
+        "kind": "rust_test",
+        "summary": "toolchain break: fixture supports rustc <= 1.84, got release=1.85.1 (major=1 minor=85)",
+        "primary_error": "toolchain break: fixture supports rustc <= 1.84, got release=1.85.1 (major=1 minor=85)",
+        "fingerprint": "46b3cd846d45b8ea",
+        "framework_hints": [
+          "cargo-test"
+        ],
+        "evidence_grade": "OBSERVED"
+      },
+      "evidence": {
+        "run_id": "e2d4454041a2",
+        "scenario_id": "rust185-locked",
+        "directory": ".tomorrowci\\runs\\e2d4454041a2\\scenarios\\rust185-locked",
+        "replay_command": "tomorrowci replay e2d4454041a2 --scenario rust185-locked"
+      },
+      "notes": []
+    },
+    {
+      "scenario_id": "rust186-locked",
+      "label": "Rust 1.86 + locked dependencies",
+      "verdict": "FUTURE_FAIL",
+      "evidence_grade": "OBSERVED",
+      "attempts": 3,
+      "failure_signature": {
+        "kind": "rust_test",
+        "summary": "toolchain break: fixture supports rustc <= 1.84, got release=1.86.0 (major=1 minor=86)",
+        "primary_error": "toolchain break: fixture supports rustc <= 1.84, got release=1.86.0 (major=1 minor=86)",
+        "fingerprint": "cb68b1689a8b0544",
+        "framework_hints": [
+          "cargo-test"
+        ],
+        "evidence_grade": "OBSERVED"
+      },
+      "evidence": {
+        "run_id": "e2d4454041a2",
+        "scenario_id": "rust186-locked",
+        "directory": ".tomorrowci\\runs\\e2d4454041a2\\scenarios\\rust186-locked",
+        "replay_command": "tomorrowci replay e2d4454041a2 --scenario rust186-locked"
+      },
+      "notes": []
+    }
+  ],
+  "frontier": {
+    "observed": true,
+    "horizon_label": "Rust 1.85 + locked dependencies",
+    "scenario_id": "rust185-locked",
+    "axis": "runtime",
+    "from_label": "Rust 1.83 + locked dependencies",
+    "to_label": "Rust 1.85 + locked dependencies",
+    "failure_signature": {
+      "kind": "rust_test",
+      "summary": "toolchain break: fixture supports rustc <= 1.84, got release=1.85.1 (major=1 minor=85)",
+      "primary_error": "toolchain break: fixture supports rustc <= 1.84, got release=1.85.1 (major=1 minor=85)",
+      "fingerprint": "46b3cd846d45b8ea",
+      "framework_hints": [
+        "cargo-test"
+      ],
+      "evidence_grade": "OBSERVED"
+    },
+    "evidence_grade": "OBSERVED",
+    "replay_command": "tomorrowci replay e2d4454041a2 --scenario rust185-locked",
+    "explanation": "Observed breakage horizon at 'Rust 1.85 + locked dependencies'. Minimal changed axis relative to prior passing environment. Evidence grade: Observed. Suspected cause correlates with failure signature (correlation, not proven root cause)."
+  },
+  "plan": {
+    "decisions": [
+      {
+        "action": "select",
+        "reason": "baseline must pass before future comparisons are authorized",
+        "scenario_id": "baseline"
+      },
+      {
+        "action": "select",
+        "reason": "single-axis runtime candidate in order",
+        "scenario_id": "rust185-locked"
+      },
+      {
+        "action": "select",
+        "reason": "single-axis runtime candidate in order",
+        "scenario_id": "rust186-locked"
+      }
+    ],
+    "max_scenarios": 8,
+    "run_id": "e2d4454041a2",
+    "scenarios": [
+      {
+        "axes_changed": [],
+        "dependency_mode": "locked",
+        "ecosystem": "rust",
+        "evidence_grade": "OBSERVED",
+        "id": "baseline",
+        "image_ref": "rust:1.83-bookworm",
+        "is_baseline": true,
+        "kind": "baseline",
+        "label": "Rust 1.83 + locked dependencies",
+        "runtime_version": "1.83",
+        "selection_reason": "repository baseline"
+      },
+      {
+        "axes_changed": [
+          "runtime"
+        ],
+        "dependency_mode": "locked",
+        "ecosystem": "rust",
+        "evidence_grade": "OBSERVED",
+        "id": "rust185-locked",
+        "image_ref": "rust:1.85-bookworm",
+        "is_baseline": false,
+        "kind": "single_axis",
+        "label": "Rust 1.85 + locked dependencies",
+        "runtime_version": "1.85",
+        "selection_reason": "candidate on axis runtime"
+      },
+      {
+        "axes_changed": [
+          "runtime"
+        ],
+        "dependency_mode": "locked",
+        "ecosystem": "rust",
+        "evidence_grade": "OBSERVED",
+        "id": "rust186-locked",
+        "image_ref": "rust:1.86-bookworm",
+        "is_baseline": false,
+        "kind": "single_axis",
+        "label": "Rust 1.86 + locked dependencies",
+        "runtime_version": "1.86",
+        "selection_reason": "candidate on axis runtime"
+      }
+    ],
+    "untested": []
+  },
+  "candidates": [
+    {
+      "axis": "runtime",
+      "channel": "stable",
+      "dependency_mode": "locked",
+      "evidence_grade": "OBSERVED",
+      "id": "rust185-locked",
+      "image_ref": "rust:1.85-bookworm",
+      "label": "Rust 1.85 + locked dependencies",
+      "notes": [],
+      "order_key": "1.85",
+      "runtime_version": "1.85"
+    },
+    {
+      "axis": "runtime",
+      "channel": "stable",
+      "dependency_mode": "locked",
+      "evidence_grade": "OBSERVED",
+      "id": "rust186-locked",
+      "image_ref": "rust:1.86-bookworm",
+      "label": "Rust 1.86 + locked dependencies",
+      "notes": [],
+      "order_key": "1.86",
+      "runtime_version": "1.86"
+    }
+  ]
+}

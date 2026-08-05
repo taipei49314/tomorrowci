@@ -53,6 +53,15 @@ cargo build -p tomorrowci --release
 ./target/release/tomorrowci doctor
 ```
 
+### Measure then trust (recommended)
+
+Build instruments first — never trust unverified green:
+
+```bash
+./target/release/tomorrowci measure all
+# → .tomorrowci/measure/{bench,suite,claim-ledger,summary}.json + CLAIM_LEDGER.md
+```
+
 ### Scan a repository
 
 ```bash

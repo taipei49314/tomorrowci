@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>TomorrowCI Report — e2d4454041a2</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --panel: #121a2b;
+      --text: #e8eefc;
+      --muted: #9db0d0;
+      --pass: #1f9d55;
+      --fail: #e53e3e;
+      --flaky: #d69e2e;
+      --blocked: #718096;
+      --accent: #63b3ed;
+      --border: #243049;
+      --focus: #f6e05e;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; transition: none !important; }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.5;
+    }
+    a { color: var(--accent); }
+    a:focus, button:focus, [tabindex]:focus { outline: 3px solid var(--focus); outline-offset: 2px; }
+    header, main, footer { max-width: 1100px; margin: 0 auto; padding: 1.25rem; }
+    header { border-bottom: 1px solid var(--border); }
+    h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
+    .muted { color: var(--muted); }
+    .panel {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 12px; padding: 1rem; margin: 1rem 0;
+    }
+    .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 0.6rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; }
+    .badge {
+      display: inline-block; min-width: 5.5rem; text-align: center;
+      padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.75rem;
+      font-weight: 700; letter-spacing: 0.03em;
+      border: 1px solid transparent;
+    }
+    .badge-pass { background: rgba(31,157,85,0.15); color: #68d391; border-color: var(--pass); }
+    .badge-fail { background: rgba(229,62,62,0.15); color: #fc8181; border-color: var(--fail); }
+    .badge-flaky { background: rgba(214,158,46,0.15); color: #f6e05e; border-color: var(--flaky); }
+    .badge-blocked { background: rgba(113,128,150,0.15); color: #cbd5e0; border-color: var(--blocked); }
+    .timeline { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .chip {
+      border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.75rem;
+      background: #0f1726; min-width: 8rem;
+    }
+    .chip strong { display: block; font-size: 0.8rem; }
+    pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre {
+      background: #0a0f18; border: 1px solid var(--border); border-radius: 8px;
+      padding: 0.75rem; overflow: auto; max-height: 320px; white-space: pre-wrap;
+    }
+    nav.toc ul { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.75rem; }
+    nav.toc a { text-decoration: none; border-bottom: 1px dotted var(--accent); }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0,0,0,0); border: 0;
+    }
+  </style>
+</head>
+<body>
+  <a class="sr-only" href="#main">Skip to content</a>
+  <header>
+    <p class="muted">TomorrowCI — Continuous Integration Against the Future</p>
+    <h1>Run e2d4454041a2</h1>
+    <p>Repository: <strong>C:\Users\1\Desktop\tomorrowci\fixtures/rust-msrv-break</strong> @ <code>86ab9503245860094dd2da64fa7d86ce583ee2df</code></p>
+    <nav class="toc" aria-label="Report sections">
+      <ul>
+        <li><a href="#horizon">Horizon</a></li>
+        <li><a href="#matrix">Scenario matrix</a></li>
+        <li><a href="#evidence">Failure evidence</a></li>
+        <li><a href="#graph">Execution graph</a></li>
+      </ul>
+    </nav>
+  </header>
+  <main id="main">
+    <section id="horizon" class="panel" aria-labelledby="horizon-title">
+      <h2 id="horizon-title">Breakage horizon timeline</h2>
+      <p><strong>Observed horizon:</strong> Rust 1.85 + locked dependencies</p>
+      <p class="muted">Observed breakage horizon at &#39;Rust 1.85 + locked dependencies&#39;. Minimal changed axis relative to prior passing environment. Evidence grade: Observed. Suspected cause correlates with failure signature (correlation, not proven root cause).</p>
+      <div class="timeline" role="list" aria-label="Scenario timeline">
+        <div class="chip" role="listitem">
+              <strong>Rust 1.83 + locked dependencies</strong>
+              <span class="badge badge-pass">PASS</span>
+              <span class="muted">Observed</span>
+            </div><div class="chip" role="listitem">
+              <strong>Rust 1.85 + locked dependencies</strong>
+              <span class="badge badge-fail">FAIL</span>
+              <span class="muted">Observed</span>
+            </div><div class="chip" role="listitem">
+              <strong>Rust 1.86 + locked dependencies</strong>
+              <span class="badge badge-fail">FAIL</span>
+              <span class="muted">Observed</span>
+            </div>
+      </div>
+    </section>
+
+    <section id="matrix" class="panel" aria-labelledby="matrix-title">
+      <h2 id="matrix-title">Scenario matrix</h2>
+      <table>
+        <caption class="sr-only">Scenarios and verdicts</caption>
+        <thead>
+          <tr>
+            <th scope="col">Scenario</th>
+            <th scope="col">Verdict</th>
+            <th scope="col">Evidence grade</th>
+            <th scope="col">Signature</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+              <td>Rust 1.83 + locked dependencies</td>
+              <td><span class="badge badge-pass" aria-label="PASS">PASS</span></td>
+              <td>Observed</td>
+              <td><code>—</code></td>
+            </tr><tr>
+              <td>Rust 1.85 + locked dependencies</td>
+              <td><span class="badge badge-fail" aria-label="FAIL">FAIL</span></td>
+              <td>Observed</td>
+              <td><code>toolchain break: fixture supports rustc &lt;= 1.84, got release=1.85.1 (major=1 minor=85)</code></td>
+            </tr><tr>
+              <td>Rust 1.86 + locked dependencies</td>
+              <td><span class="badge badge-fail" aria-label="FAIL">FAIL</span></td>
+              <td>Observed</td>
+              <td><code>toolchain break: fixture supports rustc &lt;= 1.84, got release=1.86.0 (major=1 minor=86)</code></td>
+            </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="evidence" class="panel" aria-labelledby="evidence-title">
+      <h2 id="evidence-title">Failure evidence</h2>
+      <div class="grid">
+        <div>
+          <h3>Signature</h3>
+          <pre>toolchain break: fixture supports rustc &lt;= 1.84, got release=1.85.1 (major=1 minor=85)</pre>
+        </div>
+        <div>
+          <h3>Replay</h3>
+          <pre>tomorrowci replay e2d4454041a2 --scenario rust185-locked</pre>
+          <p class="muted">Evidence grade and correlation only — not a proven root cause unless stated.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="graph" class="panel" aria-labelledby="graph-title">
+      <h2 id="graph-title">Execution graph / planner decisions</h2>
+      <pre id="plan-view"></pre>
+    </section>
+  </main>
+  <footer class="muted">
+    <p>Generated by TomorrowCI 0.1.0. No telemetry. Local-first.</p>
+  </footer>
+  <script id="tomorrowci-data" type="application/json">{"run":{"run_id":"e2d4454041a2","tool_version":"0.1.0","started_at":"2026-08-05T09:09:07.672672400Z","finished_at":"2026-08-05T09:09:34.209662200Z","repository":{"source":"C:\\Users\\1\\Desktop\\tomorrowci\\fixtures/rust-msrv-break","path":"C:\\Users\\1\\Desktop\\tomorrowci\\fixtures/rust-msrv-break","commit_sha":"86ab9503245860094dd2da64fa7d86ce583ee2df","branch":null,"is_remote":false,"workspace_copy":".tomorrowci\\work\\workspaces\\e2d4454041a2","captured_at":"2026-08-05T09:09:07.672672400Z"},"detection":{"ecosystem":"rust","package_manager":"cargo","manifests":["Cargo.toml","Cargo.lock"],"confidence":0.95,"notes":["Rust package manager for v0.1: cargo"],"supported":true,"unsupported_reason":null},"baseline":{"ecosystem":"rust","runtime_label":"Rust 1.83","runtime_version":"1.83","dependency_mode":"locked","image_ref":"rust:1.83-bookworm","notes":["baseline uses cargo test with existing lockfile when present"]},"config_hash":"b5d9ea9f9119f290","sandbox_engine":"docker","status":"COMPLETED","frontier":{"observed":true,"horizon_label":"Rust 1.85 + locked dependencies","scenario_id":"rust185-locked","axis":"runtime","from_label":"Rust 1.83 + locked dependencies","to_label":"Rust 1.85 + locked dependencies","failure_signature":{"kind":"rust_test","summary":"toolchain break: fixture supports rustc \u003c= 1.84, got release=1.85.1 (major=1 minor=85)","primary_error":"toolchain break: fixture supports rustc \u003c= 1.84, got release=1.85.1 (major=1 minor=85)","fingerprint":"46b3cd846d45b8ea","framework_hints":["cargo-test"],"evidence_grade":"OBSERVED"},"evidence_grade":"OBSERVED","replay_command":"tomorrowci replay e2d4454041a2 --scenario rust185-locked","explanation":"Observed breakage horizon at 'Rust 1.85 + locked dependencies'. Minimal changed axis relative to prior passing environment. Evidence grade: Observed. Suspected cause correlates with failure signature (correlation, not proven root cause)."},"scenario_count":3,"host":{"os":"windows","arch":"x86_64","tomorrowci_version":"0.1.0"}},"verdicts":[{"scenario_id":"baseline","label":"Rust 1.83 + locked dependencies","verdict":"BASELINE_PASS","evidence_grade":"OBSERVED","attempts":1,"failure_signature":null,"evidence":{"run_id":"e2d4454041a2","scenario_id":"baseline","directory":".tomorrowci\\runs\\e2d4454041a2\\scenarios\\baseline","replay_command":"tomorrowci replay e2d4454041a2 --scenario baseline"},"notes":[]},{"scenario_id":"rust185-locked","label":"Rust 1.85 + locked dependencies","verdict":"FUTURE_FAIL","evidence_grade":"OBSERVED","attempts":3,"failure_signature":{"kind":"rust_test","summary":"toolchain break: fixture supports rustc \u003c= 1.84, got release=1.85.1 (major=1 minor=85)","primary_error":"toolchain break: fixture supports rustc \u003c= 1.84, got release=1.85.1 (major=1 minor=85)","fingerprint":"46b3cd846d45b8ea","framework_hints":["cargo-test"],"evidence_grade":"OBSERVED"},"evidence":{"run_id":"e2d4454041a2","scenario_id":"rust185-locked","directory":".tomorrowci\\runs\\e2d4454041a2\\scenarios\\rust185-locked","replay_command":"tomorrowci replay e2d4454041a2 --scenario rust185-locked"},"notes":[]},{"scenario_id":"rust186-locked","label":"Rust 1.86 + locked dependencies","verdict":"FUTURE_FAIL","evidence_grade":"OBSERVED","attempts":3,"failure_signature":{"kind":"rust_test","summary":"toolchain break: fixture supports rustc \u003c= 1.84, got release=1.86.0 (major=1 minor=86)","primary_error":"toolchain break: fixture supports rustc \u003c= 1.84, got release=1.86.0 (major=1 minor=86)","fingerprint":"cb68b1689a8b0544","framework_hints":["cargo-test"],"evidence_grade":"OBSERVED"},"evidence":{"run_id":"e2d4454041a2","scenario_id":"rust186-locked","directory":".tomorrowci\\runs\\e2d4454041a2\\scenarios\\rust186-locked","replay_command":"tomorrowci replay e2d4454041a2 --scenario rust186-locked"},"notes":[]}],"frontier":{"observed":true,"horizon_label":"Rust 1.85 + locked dependencies","scenario_id":"rust185-locked","axis":"runtime","from_label":"Rust 1.83 + locked dependencies","to_label":"Rust 1.85 + locked dependencies","failure_signature":{"kind":"rust_test","summary":"toolchain break: fixture supports rustc \u003c= 1.84, got release=1.85.1 (major=1 minor=85)","primary_error":"toolchain break: fixture supports rustc \u003c= 1.84, got release=1.85.1 (major=1 minor=85)","fingerprint":"46b3cd846d45b8ea","framework_hints":["cargo-test"],"evidence_grade":"OBSERVED"},"evidence_grade":"OBSERVED","replay_command":"tomorrowci replay e2d4454041a2 --scenario rust185-locked","explanation":"Observed breakage horizon at 'Rust 1.85 + locked dependencies'. Minimal changed axis relative to prior passing environment. Evidence grade: Observed. Suspected cause correlates with failure signature (correlation, not proven root cause)."},"plan":{"decisions":[{"action":"select","reason":"baseline must pass before future comparisons are authorized","scenario_id":"baseline"},{"action":"select","reason":"single-axis runtime candidate in order","scenario_id":"rust185-locked"},{"action":"select","reason":"single-axis runtime candidate in order","scenario_id":"rust186-locked"}],"max_scenarios":8,"run_id":"e2d4454041a2","scenarios":[{"axes_changed":[],"dependency_mode":"locked","ecosystem":"rust","evidence_grade":"OBSERVED","id":"baseline","image_ref":"rust:1.83-bookworm","is_baseline":true,"kind":"baseline","label":"Rust 1.83 + locked dependencies","runtime_version":"1.83","selection_reason":"repository baseline"},{"axes_changed":["runtime"],"dependency_mode":"locked","ecosystem":"rust","evidence_grade":"OBSERVED","id":"rust185-locked","image_ref":"rust:1.85-bookworm","is_baseline":false,"kind":"single_axis","label":"Rust 1.85 + locked dependencies","runtime_version":"1.85","selection_reason":"candidate on axis runtime"},{"axes_changed":["runtime"],"dependency_mode":"locked","ecosystem":"rust","evidence_grade":"OBSERVED","id":"rust186-locked","image_ref":"rust:1.86-bookworm","is_baseline":false,"kind":"single_axis","label":"Rust 1.86 + locked dependencies","runtime_version":"1.86","selection_reason":"candidate on axis runtime"}],"untested":[]},"candidates":[{"axis":"runtime","channel":"stable","dependency_mode":"locked","evidence_grade":"OBSERVED","id":"rust185-locked","image_ref":"rust:1.85-bookworm","label":"Rust 1.85 + locked dependencies","notes":[],"order_key":"1.85","runtime_version":"1.85"},{"axis":"runtime","channel":"stable","dependency_mode":"locked","evidence_grade":"OBSERVED","id":"rust186-locked","image_ref":"rust:1.86-bookworm","label":"Rust 1.86 + locked dependencies","notes":[],"order_key":"1.86","runtime_version":"1.86"}]}</script>
+  <script>
+    (function() {
+      var el = document.getElementById('tomorrowci-data');
+      var data = JSON.parse(el.textContent);
+      var plan = document.getElementById('plan-view');
+      plan.textContent = JSON.stringify(data.plan, null, 2);
+    })();
+  </script>
+</body>
+</html>
