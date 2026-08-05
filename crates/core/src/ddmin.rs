@@ -31,7 +31,7 @@ where
         return indices.to_vec();
     }
     let n = n.min(len);
-    let chunk = (len + n - 1) / n;
+    let chunk = len.div_ceil(n);
 
     // Try subsets
     for i in 0..n {

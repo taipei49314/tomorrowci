@@ -247,7 +247,7 @@ mod tests {
         };
         let (auth, _) = authorize_frontier(
             Some(&baseline),
-            &[fail.clone()],
+            std::slice::from_ref(&fail),
             Some(&fail),
             None,
             true,
@@ -278,7 +278,7 @@ mod tests {
         };
         let (auth, frontier) = authorize_frontier(
             Some(&baseline),
-            &[fail.clone()],
+            std::slice::from_ref(&fail),
             Some(&fail),
             Some(&baseline),
             true,

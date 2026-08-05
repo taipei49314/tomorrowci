@@ -432,6 +432,13 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
     })
 }
 
+type ScenarioOutcome = (
+    ScenarioVerdict,
+    bool,
+    Option<tomorrowci_core::FailureSignature>,
+);
+type ScenarioOutcomeMap = std::collections::HashMap<String, ScenarioOutcome>;
+
 /// Run scenarios with bounded concurrency. Results keyed by scenario id.
 /// Ordering of execution is not guaranteed; callers should re-sort by plan order.
 async fn run_scenarios_bounded(
@@ -442,28 +449,10 @@ async fn run_scenarios_bounded(
     store: &EvidenceStore,
     scenarios: &[Scenario],
     max_parallel: usize,
-) -> Result<
-    std::collections::HashMap<
-        String,
-        (
-            ScenarioVerdict,
-            bool,
-            Option<tomorrowci_core::FailureSignature>,
-        ),
-    >,
-> {
+) -> Result<ScenarioOutcomeMap> {
     use futures::stream::{self, StreamExt};
     let limit = max_parallel.max(1);
-    let results: Vec<
-        Result<(
-            String,
-            (
-                ScenarioVerdict,
-                bool,
-                Option<tomorrowci_core::FailureSignature>,
-            ),
-        )>,
-    > = stream::iter(scenarios.iter())
+    let results: Vec<Result<(String, ScenarioOutcome)>> = stream::iter(scenarios.iter())
         .map(|scenario| async move {
             let (verdict, passed, sig) =
                 run_scenario_with_reruns(adapter, engine, config, workspace, scenario, store)
@@ -474,7 +463,7 @@ async fn run_scenarios_bounded(
         .collect()
         .await;
 
-    let mut map = std::collections::HashMap::new();
+    let mut map = ScenarioOutcomeMap::new();
     for r in results {
         let (id, triple) = r?;
         map.insert(id, triple);
@@ -754,7 +743,7 @@ fn finalize_unsupported(
         replay_command: None,
         explanation: format!("UNSUPPORTED: {reason}"),
     };
-    let _ = store.write_verdicts(&[verdict.clone()]);
+    let _ = store.write_verdicts(std::slice::from_ref(&verdict));
     let _ = store.write_frontier(&frontier);
     let manifest = RunManifest {
         run_id: run_id.clone(),
@@ -821,7 +810,7 @@ fn finalize_blocked(
             "BLOCKED: {reason}. No observed breakage horizon (execution could not complete)."
         ),
     };
-    let _ = store.write_verdicts(&[verdict.clone()]);
+    let _ = store.write_verdicts(std::slice::from_ref(&verdict));
     let _ = store.write_frontier(&frontier);
     let manifest = RunManifest {
         run_id: run_id.clone(),
@@ -897,15 +886,13 @@ pub fn format_terminal_summary(
             frontier.horizon_label.as_deref().unwrap_or("?")
         ));
         if let (Some(from), Some(to)) = (&frontier.from_label, &frontier.to_label) {
-            out.push_str(&format!(
-                "Minimal changed axis: {} -> {}\n",
-                frontier
-                    .axis
-                    .as_ref()
-                    .map(|a| a.to_string())
-                    .unwrap_or_else(|| "unknown".into()),
-                format!("{from} -> {to}")
-            ));
+            let axis = frontier
+                .axis
+                .as_ref()
+                .map(|a| a.to_string())
+                .unwrap_or_else(|| "unknown".into());
+            let axis_msg = format!("{axis}: {from} -> {to}");
+            out.push_str(&format!("Minimal changed axis: {axis_msg}\n"));
         }
         if let Some(sig) = &frontier.failure_signature {
             out.push_str(&format!("Stable failure signature: {}\n", sig.summary));

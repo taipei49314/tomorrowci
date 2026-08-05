@@ -70,22 +70,13 @@ impl Default for BaselineConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct CandidatesConfig {
     #[serde(default)]
     pub runtime: RuntimeCandidatesConfig,
     #[serde(default)]
     pub dependencies: DependencyCandidatesConfig,
-}
-
-impl Default for CandidatesConfig {
-    fn default() -> Self {
-        Self {
-            runtime: RuntimeCandidatesConfig::default(),
-            dependencies: DependencyCandidatesConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
