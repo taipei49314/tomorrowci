@@ -412,6 +412,28 @@ async fn measure_one_fixture(
                 .with_artifact(out.evidence_dir.clone()),
             );
 
+            // Policy engine smoke: must evaluate without panic. Intentional FUTURE_FAIL
+            // fixtures do not require policy PASS (new_future_failure off).
+            let mut pol = PolicyConfig::default();
+            pol.fail_if.new_future_failure = false;
+            pol.fail_if.horizon_regression = false;
+            if exp.id == "baseline-fail" || exp.id == "flaky-project" {
+                pol.fail_if.baseline_invalid = false;
+            }
+            let pref = evaluate_policy(&pol, &out.verdicts, None);
+            claims.push(ClaimRecord::new(
+                format!("fixture.{}.policy_engine", exp.id),
+                "policy engine evaluates run verdicts",
+                "fixture",
+                ClaimStatus::Pass,
+                format!(
+                    "decision={:?} violations={}",
+                    pref.decision,
+                    pref.violations.len()
+                ),
+                0,
+            ));
+
             FixtureResult {
                 id: exp.id.clone(),
                 path,
