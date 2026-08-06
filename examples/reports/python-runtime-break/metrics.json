@@ -1,0 +1,22 @@
+{
+  "run_id": "test0ea837f7",
+  "recorded_at": "2026-08-06T05:10:18.435806600Z",
+  "scenarios_total": 4,
+  "scenarios_pass": 1,
+  "scenarios_fail": 3,
+  "scenarios_flaky": 0,
+  "scenarios_blocked": 0,
+  "scenarios_unsupported": 0,
+  "scenarios_inconclusive": 0,
+  "baseline_ok": true,
+  "frontier_observed": true,
+  "total_duration_ms": 20,
+  "mean_duration_ms": 5.0,
+  "evidence_grade": "Observed",
+  "ecosystem": "Python",
+  "wall_ms": 37,
+  "verdict_histogram": {
+    "BaselinePass": 1,
+    "FutureFail": 3
+  }
+}

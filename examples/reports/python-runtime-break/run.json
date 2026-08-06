@@ -1,0 +1,261 @@
+{
+  "run_id": "test0ea837f7",
+  "tool_version": "0.1.0",
+  "started_at": "2026-08-06T05:10:18.406643500Z",
+  "finished_at": "2026-08-06T05:10:18.406651800Z",
+  "repository": {
+    "source": "C:\\Users\\1\\tomorrowci\\tools\\gen-demo\\../..\\fixtures/python-runtime-break",
+    "path": "C:\\Users\\1\\tomorrowci\\tools\\gen-demo\\../..\\fixtures/python-runtime-break",
+    "commit_sha": "e654ab774d0636e11f119ec471c3ec9db1e2738d",
+    "is_disposable_copy": true
+  },
+  "config_hash": "sha256:2c2726b1678de914a9e36c2c6be7c6be2ae9868a74e0e2a78488671765caa515",
+  "detection": {
+    "ecosystem": "python",
+    "manifests": [
+      "pyproject.toml",
+      "requirements.txt"
+    ],
+    "package_manager": "pip",
+    "confidence": 0.9,
+    "notes": [
+      "Python project detected; package manager: pip (v0.1)."
+    ]
+  },
+  "baseline": {
+    "runtime": "3.9",
+    "dependencies": "locked",
+    "declared_by": "config/auto"
+  },
+  "plan": {
+    "plan_id": "plan-4",
+    "scenarios": [
+      {
+        "id": "baseline",
+        "is_baseline": true,
+        "runtime": "3.9",
+        "dependencies": "locked",
+        "axes_changed": [],
+        "candidates": [],
+        "grade": "OBSERVED"
+      },
+      {
+        "id": "py310-locked",
+        "is_baseline": false,
+        "runtime": "3.10",
+        "dependencies": "locked",
+        "axes_changed": [
+          "runtime"
+        ],
+        "candidates": [
+          "py310-locked"
+        ],
+        "grade": "OBSERVED"
+      },
+      {
+        "id": "py311-locked",
+        "is_baseline": false,
+        "runtime": "3.11",
+        "dependencies": "locked",
+        "axes_changed": [
+          "runtime"
+        ],
+        "candidates": [
+          "py311-locked"
+        ],
+        "grade": "OBSERVED"
+      },
+      {
+        "id": "py312-locked",
+        "is_baseline": false,
+        "runtime": "3.12",
+        "dependencies": "locked",
+        "axes_changed": [
+          "runtime"
+        ],
+        "candidates": [
+          "py312-locked"
+        ],
+        "grade": "OBSERVED"
+      }
+    ],
+    "selection_notes": [
+      "planned 4 scenarios (budget 8)"
+    ],
+    "budget_max": 8
+  },
+  "results": [
+    {
+      "scenario_id": "baseline",
+      "attempt": 1,
+      "verdict": "BASELINE_PASS",
+      "exit_code": 0,
+      "duration_ms": 5,
+      "timed_out": false,
+      "failure": null,
+      "environment": {
+        "image": "python:3.9",
+        "image_digest": "sha256:scripted-test-digest",
+        "workdir": "/work",
+        "env": {},
+        "network_mode": "none",
+        "memory_mb": 4096,
+        "cpus": 2.0,
+        "pids_limit": 512,
+        "user": "65534:65534",
+        "read_only_root": true
+      },
+      "commands": [
+        {
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q"
+          ],
+          "cwd": "/work",
+          "network": false,
+          "phase": "test"
+        }
+      ]
+    },
+    {
+      "scenario_id": "py310-locked",
+      "attempt": 2,
+      "verdict": "FUTURE_FAIL",
+      "exit_code": 1,
+      "duration_ms": 5,
+      "timed_out": false,
+      "failure": {
+        "kind": "ImportError",
+        "summary": "ImportError: cannot import name 'MutableMapping' from 'collections'",
+        "normalized_hash": "sha256:38738b4e588f86677b06b42fe99b494ec86b8800506216956594dd503b6aa77a",
+        "primary_frame": null
+      },
+      "environment": {
+        "image": "python:3.10",
+        "image_digest": "sha256:scripted-test-digest",
+        "workdir": "/work",
+        "env": {},
+        "network_mode": "none",
+        "memory_mb": 4096,
+        "cpus": 2.0,
+        "pids_limit": 512,
+        "user": "65534:65534",
+        "read_only_root": true
+      },
+      "commands": [
+        {
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q"
+          ],
+          "cwd": "/work",
+          "network": false,
+          "phase": "test"
+        }
+      ]
+    },
+    {
+      "scenario_id": "py311-locked",
+      "attempt": 2,
+      "verdict": "FUTURE_FAIL",
+      "exit_code": 1,
+      "duration_ms": 5,
+      "timed_out": false,
+      "failure": {
+        "kind": "ImportError",
+        "summary": "ImportError: cannot import name 'MutableMapping' from 'collections'",
+        "normalized_hash": "sha256:38738b4e588f86677b06b42fe99b494ec86b8800506216956594dd503b6aa77a",
+        "primary_frame": null
+      },
+      "environment": {
+        "image": "python:3.11",
+        "image_digest": "sha256:scripted-test-digest",
+        "workdir": "/work",
+        "env": {},
+        "network_mode": "none",
+        "memory_mb": 4096,
+        "cpus": 2.0,
+        "pids_limit": 512,
+        "user": "65534:65534",
+        "read_only_root": true
+      },
+      "commands": [
+        {
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q"
+          ],
+          "cwd": "/work",
+          "network": false,
+          "phase": "test"
+        }
+      ]
+    },
+    {
+      "scenario_id": "py312-locked",
+      "attempt": 2,
+      "verdict": "FUTURE_FAIL",
+      "exit_code": 1,
+      "duration_ms": 5,
+      "timed_out": false,
+      "failure": {
+        "kind": "ImportError",
+        "summary": "ImportError: cannot import name 'MutableMapping' from 'collections'",
+        "normalized_hash": "sha256:38738b4e588f86677b06b42fe99b494ec86b8800506216956594dd503b6aa77a",
+        "primary_frame": null
+      },
+      "environment": {
+        "image": "python:3.12",
+        "image_digest": "sha256:scripted-test-digest",
+        "workdir": "/work",
+        "env": {},
+        "network_mode": "none",
+        "memory_mb": 4096,
+        "cpus": 2.0,
+        "pids_limit": 512,
+        "user": "65534:65534",
+        "read_only_root": true
+      },
+      "commands": [
+        {
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q"
+          ],
+          "cwd": "/work",
+          "network": false,
+          "phase": "test"
+        }
+      ]
+    }
+  ],
+  "frontier": {
+    "observed": true,
+    "horizon_label": "3.10",
+    "first_failing_scenario": "py310-locked",
+    "last_passing_scenario": "baseline",
+    "changed_axes": [
+      "runtime"
+    ],
+    "failure_signature": {
+      "kind": "ImportError",
+      "summary": "ImportError: cannot import name 'MutableMapping' from 'collections'",
+      "normalized_hash": "sha256:38738b4e588f86677b06b42fe99b494ec86b8800506216956594dd503b6aa77a",
+      "primary_frame": null
+    },
+    "grade": "OBSERVED",
+    "replay_command": "tomorrowci replay test0ea837f7 --scenario py310-locked",
+    "notes": [
+      "Breakage horizon authorized after confirmed FUTURE_FAIL."
+    ]
+  },
+  "evidence_root": "C:\\Users\\1\\tomorrowci\\tools\\gen-demo\\../..\\fixtures/python-runtime-break\\.tomorrowci/runs\\test0ea837f7"
+}

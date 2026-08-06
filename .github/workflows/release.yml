@@ -1,0 +1,109 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build artifacts without creating a GitHub Release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build -p tomorrowci-cli --release
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          STAGE=tomorrowci-${GITHUB_REF_NAME:-v0.1.0}-${{ matrix.target }}
+          mkdir -p "dist/$STAGE"
+          cp target/release/tomorrowci "dist/$STAGE/"
+          cp README.md LICENSE CHANGELOG.md "dist/$STAGE/"
+          tar -C dist -czf "dist/${STAGE}.tar.gz" "$STAGE"
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $stage = "tomorrowci-$env:GITHUB_REF_NAME-x86_64-pc-windows-msvc"
+          if (-not $env:GITHUB_REF_NAME) { $stage = "tomorrowci-v0.1.0-x86_64-pc-windows-msvc" }
+          New-Item -ItemType Directory -Force -Path "dist/$stage" | Out-Null
+          Copy-Item target/release/tomorrowci.exe "dist/$stage/"
+          Copy-Item README.md,LICENSE,CHANGELOG.md "dist/$stage/"
+          Compress-Archive -Path "dist/$stage/*" -DestinationPath "dist/$stage.zip"
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+
+  checksums-and-release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Flatten and checksum
+        run: |
+          mkdir -p dist
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} dist/ \;
+          cd dist
+          sha256sum ./* > SHA256SUMS.txt
+          ls -la
+          test -s SHA256SUMS.txt
+          # Require at least one archive
+          test "$(ls -1 | grep -E '\.(tar\.gz|zip)$' | wc -l)" -ge 1
+      - name: Minimal SBOM
+        run: |
+          cat > dist/sbom.cdx.json <<'EOF'
+          {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "version": 1,
+            "metadata": {
+              "component": {
+                "type": "application",
+                "name": "tomorrowci",
+                "version": "0.1.0"
+              }
+            },
+            "components": []
+          }
+          EOF
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') && inputs.dry_run != true
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Dry-run artifact upload
+        if: inputs.dry_run == true || !startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: dist/*

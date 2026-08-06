@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>TomorrowCI Report test0ea837f7</title>
+<style>
+:root { color-scheme: dark; }
+body { font-family: system-ui, sans-serif; margin: 0; background: #0b1220; color: #e5eefc; line-height: 1.5; }
+a:focus, button:focus, tr:focus { outline: 3px solid #fbbf24; outline-offset: 2px; }
+header, main, footer { max-width: 960px; margin: 0 auto; padding: 1.25rem; }
+h1 { color: #7dd3fc; margin-bottom: 0.25rem; }
+.banner { background: #1e293b; padding: 1rem; border-radius: 8px; border-left: 4px solid #38bdf8; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #334155; padding: 0.5rem; text-align: left; }
+th { background: #1e293b; }
+.badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-weight: 700; font-size: 0.85rem; }
+.badge.pass { background: #14532d; color: #bbf7d0; }
+.badge.fail { background: #7f1d1d; color: #fecaca; }
+.badge.flaky { background: #713f12; color: #fde68a; }
+.badge.blocked { background: #334155; color: #e2e8f0; }
+.badge.other { background: #312e81; color: #c7d2fe; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+nav a { color: #7dd3fc; margin-right: 1rem; }
+</style>
+</head>
+<body>
+<a class="sr-only" href="#main">Skip to main content</a>
+<header>
+  <h1>TomorrowCI</h1>
+  <p>Continuous Integration Against the Future.</p>
+  <nav aria-label="Report sections">
+    <a href="#horizon">Horizon</a>
+    <a href="#matrix">Matrix</a>
+    <a href="#results">Results</a>
+    <a href="#planner">Planner</a>
+  </nav>
+</header>
+<main id="main">
+  <section class="banner" aria-labelledby="run-meta">
+    <h2 id="run-meta" class="sr-only">Run metadata</h2>
+    <p>Run <code>test0ea837f7</code> · Ecosystem <code>Python</code> · Tool <code>0.1.0</code></p>
+    <p id="horizon"><strong>Observed breakage horizon:</strong> <code>3.10</code> (grade Observed)</p>
+    <p><em>Evidence grades only — no LLM root-cause claims. Color is not the only verdict cue (text badges).</em></p>
+  </section>
+
+  <section aria-labelledby="matrix-h" id="matrix">
+    <h2 id="matrix-h">Scenario matrix</h2>
+    <table aria-label="Scenario matrix"><thead><tr><th scope="col">Scenario</th><th scope="col">Runtime</th><th scope="col">Deps</th><th scope="col">State</th></tr></thead><tbody><tr><th scope="row"><code>baseline</code></th><td>3.9</td><td>locked</td><td><span class="badge pass">PASS</span></td></tr><tr><th scope="row"><code>py310-locked</code></th><td>3.10</td><td>locked</td><td><span class="badge fail">FAIL</span></td></tr><tr><th scope="row"><code>py311-locked</code></th><td>3.11</td><td>locked</td><td><span class="badge fail">FAIL</span></td></tr><tr><th scope="row"><code>py312-locked</code></th><td>3.12</td><td>locked</td><td><span class="badge fail">FAIL</span></td></tr></tbody></table>
+  </section>
+
+  <section aria-labelledby="results-h" id="results">
+    <h2 id="results-h">Results</h2>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Scenario</th>
+          <th scope="col">Verdict</th>
+          <th scope="col">Axes</th>
+          <th scope="col">Duration ms</th>
+        </tr>
+      </thead>
+      <tbody>
+<tr tabindex="0"><td><code>baseline</code></td><td><span class="badge pass" aria-label="verdict PASS">PASS</span></td><td>[]</td><td>5</td></tr>
+<tr tabindex="0"><td><code>py310-locked</code></td><td><span class="badge fail" aria-label="verdict FAIL">FAIL</span></td><td>[Runtime]</td><td>5</td></tr>
+<tr tabindex="0"><td><code>py311-locked</code></td><td><span class="badge fail" aria-label="verdict FAIL">FAIL</span></td><td>[Runtime]</td><td>5</td></tr>
+<tr tabindex="0"><td><code>py312-locked</code></td><td><span class="badge fail" aria-label="verdict FAIL">FAIL</span></td><td>[Runtime]</td><td>5</td></tr>
+
+      </tbody>
+    </table>
+  </section>
+
+  <section aria-labelledby="planner-h" id="planner">
+    <h2 id="planner-h">Planner notes</h2>
+    <ul><li>planned 4 scenarios (budget 8)</li></ul>
+    <h3>Frontier notes</h3>
+    <ul><li>Breakage horizon authorized after confirmed FUTURE_FAIL.</li></ul>
+  </section>
+</main>
+<footer>
+  <p>Read-only report derived from evidence bundle. Rebuild with <code>tomorrowci report</code>.</p>
+</footer>
+</body>
+</html>

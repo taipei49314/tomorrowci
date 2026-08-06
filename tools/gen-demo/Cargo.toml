@@ -1,0 +1,17 @@
+[package]
+name = "tomorrowci-gen-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "gen-demo"
+path = "src/main.rs"
+
+[dependencies]
+tomorrowci-core = { workspace = true }
+tomorrowci-adapters = { workspace = true }
+tomorrowci-adapter-python = { workspace = true }
+tomorrowci-runner = { workspace = true }
+anyhow = { workspace = true }

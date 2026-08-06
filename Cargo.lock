@@ -742,6 +742,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tomorrowci-gen-demo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tomorrowci-adapter-python",
+ "tomorrowci-adapters",
+ "tomorrowci-core",
+ "tomorrowci-runner",
+]
+
+[[package]]
 name = "tomorrowci-metrics"
 version = "0.1.0"
 dependencies = [

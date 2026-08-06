@@ -9,6 +9,8 @@ No forecast without an executable scenario.
 No breakage claim without replayable evidence.
 ```
 
+![Architecture](docs/architecture/diagram.md)
+
 ## What it is / is not
 
 | TomorrowCI | Not TomorrowCI |
@@ -17,49 +19,113 @@ No breakage claim without replayable evidence.
 | OBSERVED / SIMULATED / SCHEDULED_RISK / INCONCLUSIVE grades | Invented future APIs |
 | Sandboxed execution (Docker/Podman) | Default host execution of untrusted code |
 | Typed verdicts (`BLOCKED` ≠ `PASS`) | Collapsing everything into FAIL/PASS |
+| Local-first, no telemetry, no cloud account | A SaaS-only scanner |
 
-## Status (through Milestone 2)
+## Status (public v0.1 candidate)
 
-| Area | Status |
-|------|--------|
-| Domain model + config + verdict/horizon rules | Done |
-| Budget planner + ddmin reduction | Done |
-| Flaky vs FUTURE_FAIL classification | Done |
-| Python detect + full scan pipeline | Done |
-| Docker/Podman sandbox executor | Done (daemon required for live runs) |
-| Evidence bundle + HTML/JSON report + replay scripts | Done |
-| Scripted pipeline tests (no Docker) | Done — PASS |
-| Live Docker e2e on fixtures | **BLOCKED** if Docker Desktop daemon is down |
-| Node/Rust full execution (M3) | Done (same evidence contract; scripted tests PASS) |
-| Metrics + trust audit (量測器 / 信任行為) | Done |
-| M4 Action + accessible report + compare gate | Done |
+| Milestone | Status |
+|-----------|--------|
+| M0 Repository contract | Done |
+| M1 Python vertical slice | Done |
+| M2 Planner / deps / ddmin / flaky | Done |
+| M3 Node + Rust adapters | Done |
+| M4 Action + accessible report + compare | Done |
+| M5 Release candidate docs + dry-run | Done |
+
+See [docs/CLAIM_TO_EVIDENCE.md](docs/CLAIM_TO_EVIDENCE.md) for the full claim matrix.
 
 ## Quick start
 
+**Prerequisites:** Rust toolchain; Docker or Podman for live scans.
+
 ```bash
+git clone <this-repo>
+cd tomorrowci
 cargo build -p tomorrowci-cli --release
+
 ./target/release/tomorrowci doctor
-./target/release/tomorrowci scan fixtures/python-runtime-break
-cargo test --workspace
 ./target/release/tomorrowci trust
+./target/release/tomorrowci scan fixtures/python-runtime-break
 ```
 
-### Measurement & trust
+Without a container daemon, `scan` correctly returns **BLOCKED** (not a silent host run).
+
+Generate the committed demo HTML report (scripted evidence, no Docker):
 
 ```bash
-tomorrowci trust              # security behavior probes (no target code)
-tomorrowci metrics <run-id>   # per-run counters
-tomorrowci compare --base <id> --head <id> --gate
+cargo run -p tomorrowci-gen-demo
+# open examples/reports/python-runtime-break/report.html
 ```
 
-Evidence includes `metrics.json`, `claims.json`, and `job-summary.md` for GitHub Actions.
+## CLI
 
-**Security:** target code is **never** executed on the host by default. Use Docker/Podman.
+```bash
+tomorrowci doctor
+tomorrowci trust
+tomorrowci scan <path> [--config .tomorrowci.yml]
+tomorrowci show <run-id>
+tomorrowci replay <run-id> --scenario <id>
+tomorrowci explain <run-id>
+tomorrowci report <run-id> --format html|json|sarif|summary
+tomorrowci metrics <run-id>
+tomorrowci compare --base <id> --head <id> [--gate]
+tomorrowci init-action
+```
 
 ## Configuration
 
-See `.tomorrowci.yml` schema: `packages/schema/tomorrowci-config.schema.json`.
+Schema: `packages/schema/tomorrowci-config.schema.json`  
+Example: `fixtures/python-runtime-break/.tomorrowci.yml`
+
+## Fixtures
+
+| Fixture | Intent |
+|---------|--------|
+| `fixtures/python-runtime-break` | Stdlib break on newer Python |
+| `fixtures/python-dependency-break` | Dependency-axis failure |
+| `fixtures/node-dependency-break` | Node runtime API break (`toSorted`) |
+| `fixtures/rust-msrv-break` | Older rustc cannot compile LazyCell |
+
+## GitHub Action
+
+Composite action: [`action/action.yml`](action/action.yml)  
+Template: `tomorrowci init-action`
+
+Permissions default to `contents: read`. Advisory mode does not fail the job on horizon findings; policy gate is explicit.
+
+## Release
+
+```bash
+# Windows
+./scripts/release-dry-run.ps1
+
+# Unix
+./scripts/release-dry-run.sh
+```
+
+See [docs/RELEASE.md](docs/RELEASE.md). Tag `v*` triggers `.github/workflows/release.yml`.
+
+## Security
+
+- Target code is **never** executed on the host by default
+- No privileged containers; no docker.sock into the target
+- Residual container escape risk is documented in [docs/threat-model](docs/threat-model/README.md)
+- Report untrusted HTML is escaped; see `SECURITY.md`
+
+## Documentation
+
+- [Architecture](docs/architecture/README.md) · [Diagram](docs/architecture/diagram.md)
+- [Threat model](docs/threat-model/README.md)
+- [Adapter authoring](docs/adapter-authoring/README.md)
+- [Report format](docs/report-format/README.md)
+- [ADRs](docs/adr/)
+- [Terminal demo](docs/demo/terminal-session.md)
+- [Support policy](SUPPORT.md)
 
 ## License
 
-Apache-2.0
+Apache-2.0 — see [LICENSE](LICENSE)
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).

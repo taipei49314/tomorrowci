@@ -12,6 +12,7 @@ members = [
     "crates/evidence",
     "crates/report",
     "crates/metrics",
+    "tools/gen-demo",
 ]
 default-members = ["apps/cli"]
 
