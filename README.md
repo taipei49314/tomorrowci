@@ -18,28 +18,31 @@ No breakage claim without replayable evidence.
 | Sandboxed execution (Docker/Podman) | Default host execution of untrusted code |
 | Typed verdicts (`BLOCKED` ≠ `PASS`) | Collapsing everything into FAIL/PASS |
 
-## Status (Milestone 0)
+## Status (through Milestone 2)
 
 | Area | Status |
 |------|--------|
-| Domain model + config schema | Implemented |
-| Verdict / horizon authorization rules | Implemented + unit tested |
-| Adapter detection (Python / Node / Rust) | Implemented (detect only) |
-| Sandbox policy + doctor | Implemented |
-| Full scenario execution | **NOT_RUN** — Milestone 1 |
-| HTML React report | Scaffold only — Milestone 1/4 |
-| GitHub Action dogfood | Skeleton — Milestone 4 |
+| Domain model + config + verdict/horizon rules | Done |
+| Budget planner + ddmin reduction | Done |
+| Flaky vs FUTURE_FAIL classification | Done |
+| Python detect + full scan pipeline | Done |
+| Docker/Podman sandbox executor | Done (daemon required for live runs) |
+| Evidence bundle + HTML/JSON report + replay scripts | Done |
+| Scripted pipeline tests (no Docker) | Done — PASS |
+| Live Docker e2e on fixtures | **BLOCKED** if Docker Desktop daemon is down |
+| Node/Rust full execution | Milestone 3 |
+| React report UI + Action dogfood | Milestone 4 |
 
-## Quick start (Milestone 0)
+## Quick start
 
 ```bash
 cargo build -p tomorrowci-cli --release
 ./target/release/tomorrowci doctor
-./target/release/tomorrowci scan .
-./target/release/tomorrowci init-action
+./target/release/tomorrowci scan fixtures/python-runtime-break
+cargo test --workspace
 ```
 
-**Requirements for later execution milestones:** Docker or Podman. Target repository code is **never** run on the host by default.
+**Security:** target code is **never** executed on the host by default. Use Docker/Podman.
 
 ## Configuration
 
