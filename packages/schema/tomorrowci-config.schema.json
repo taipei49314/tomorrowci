@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tomorrowci.dev/schemas/config-v1.json",
+  "title": "TomorrowCIConfig",
+  "type": "object",
+  "required": ["version"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": 1 },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ecosystem": { "type": "string" },
+        "test_command": { "type": "string" },
+        "build_command": { "type": "string" }
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runtime": { "type": "string" },
+        "dependencies": { "type": "string" }
+      }
+    },
+    "candidates": { "type": "object" },
+    "execution": { "type": "object" },
+    "sandbox": { "type": "object" },
+    "report": { "type": "object" },
+    "policy": { "type": "object" }
+  },
+  "patternProperties": {
+    "^x-": true
+  }
+}

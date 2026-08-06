@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "apps/cli",
+    "crates/core",
+    "crates/sandbox",
+    "crates/runner",
+    "crates/adapters",
+    "crates/adapter-python",
+    "crates/adapter-node",
+    "crates/adapter-rust",
+    "crates/evidence",
+    "crates/report",
+]
+default-members = ["apps/cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/tomorrowci/tomorrowci"
+authors = ["TomorrowCI Contributors"]
+rust-version = "1.75"
+
+[workspace.dependencies]
+tomorrowci-core = { path = "crates/core" }
+tomorrowci-sandbox = { path = "crates/sandbox" }
+tomorrowci-runner = { path = "crates/runner" }
+tomorrowci-adapters = { path = "crates/adapters" }
+tomorrowci-adapter-python = { path = "crates/adapter-python" }
+tomorrowci-adapter-node = { path = "crates/adapter-node" }
+tomorrowci-adapter-rust = { path = "crates/adapter-rust" }
+tomorrowci-evidence = { path = "crates/evidence" }
+tomorrowci-report = { path = "crates/report" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+thiserror = "2"
+anyhow = "1"
+sha2 = "0.10"
+hex = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+toml = "0.8"
+regex = "1"
+tempfile = "3"
+indexmap = { version = "2", features = ["serde"] }

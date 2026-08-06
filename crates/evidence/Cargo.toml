@@ -1,0 +1,15 @@
+[package]
+name = "tomorrowci-evidence"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Evidence bundle layout, checksums, replay manifests"
+
+[dependencies]
+tomorrowci-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

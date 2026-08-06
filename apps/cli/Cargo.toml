@@ -1,0 +1,28 @@
+[package]
+name = "tomorrowci-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "TomorrowCI command-line interface"
+default-run = "tomorrowci"
+
+[[bin]]
+name = "tomorrowci"
+path = "src/main.rs"
+
+[dependencies]
+tomorrowci-core = { workspace = true }
+tomorrowci-sandbox = { workspace = true }
+tomorrowci-runner = { workspace = true }
+tomorrowci-adapters = { workspace = true }
+tomorrowci-adapter-python = { workspace = true }
+tomorrowci-adapter-node = { workspace = true }
+tomorrowci-adapter-rust = { workspace = true }
+tomorrowci-evidence = { workspace = true }
+tomorrowci-report = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
