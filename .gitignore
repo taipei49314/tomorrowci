@@ -2,7 +2,8 @@
 **/node_modules
 dist
 .DS_Store
-.tomorrowci/runs/
+.tomorrowci/
+**/.tomorrowci/
 *.pdb
 .idea/
 .vscode/
