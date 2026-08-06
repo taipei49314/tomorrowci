@@ -755,11 +755,18 @@ dependencies = [
 name = "tomorrowci-runner"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "indexmap",
  "serde",
  "serde_json",
+ "tempfile",
+ "tomorrowci-adapter-python",
+ "tomorrowci-adapters",
  "tomorrowci-core",
+ "tomorrowci-evidence",
+ "tomorrowci-report",
  "tomorrowci-sandbox",
+ "uuid",
 ]
 
 [[package]]
@@ -768,6 +775,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tomorrowci-core",
 ]

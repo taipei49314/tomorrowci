@@ -1,0 +1,2 @@
+# No third-party deps — failure is stdlib removal of collections.MutableMapping (Py3.10+).
+pytest==7.4.4

@@ -49,26 +49,36 @@ impl EcosystemAdapter for PythonAdapter {
 
     fn baseline(&self, _repo: &Path, config: &Config) -> Result<Baseline> {
         let runtime = if config.baseline.runtime == "auto" {
-            "python:3.9".into()
+            "3.9".into()
         } else {
-            config.baseline.runtime.clone()
+            config
+                .baseline
+                .runtime
+                .trim_start_matches("python:")
+                .to_string()
         };
         Ok(Baseline {
             runtime,
-            dependencies: config.baseline.dependencies.clone(),
+            dependencies: if config.baseline.dependencies == "auto" {
+                "locked".into()
+            } else {
+                config.baseline.dependencies.clone()
+            },
             declared_by: "config/auto".into(),
         })
     }
 
     fn candidates(&self, baseline: &Baseline, config: &Config) -> Result<Vec<Candidate>> {
-        // M0: return a deterministic ordered list of concrete version labels only.
-        // Real discovery of installed/published images is Milestone 1.
+        // Concrete published CPython slim tags — never invent versions.
         let max = config.candidates.runtime.max_versions as usize;
         let mut out = Vec::new();
-        let versions = ["3.10", "3.11", "3.12", "3.13"];
+        let versions = ["3.10", "3.11", "3.12"];
         for (i, v) in versions.iter().take(max).enumerate() {
+            if *v == baseline.runtime.as_str() {
+                continue;
+            }
             out.push(Candidate {
-                id: format!("py{v}-locked"),
+                id: format!("py{}-locked", v.replace('.', "")),
                 axis: EnvironmentAxis::Runtime,
                 label: format!("Python {v} + locked dependencies"),
                 version: (*v).into(),
@@ -77,7 +87,6 @@ impl EcosystemAdapter for PythonAdapter {
                 order_key: format!("{:04}", i + 1),
             });
         }
-        let _ = baseline;
         Ok(out)
     }
 
