@@ -1,0 +1,20 @@
+[
+  {
+    "id": "node18-locked",
+    "axis": "runtime",
+    "label": "Node 18 + locked dependencies",
+    "version": "18",
+    "channel": "stable",
+    "grade_if_executed": "OBSERVED",
+    "order_key": "0000"
+  },
+  {
+    "id": "node22-locked",
+    "axis": "runtime",
+    "label": "Node 22 + locked dependencies",
+    "version": "22",
+    "channel": "stable",
+    "grade_if_executed": "OBSERVED",
+    "order_key": "0001"
+  }
+]

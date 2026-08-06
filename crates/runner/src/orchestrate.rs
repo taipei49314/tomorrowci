@@ -14,9 +14,11 @@ use tomorrowci_core::{
     Verdict,
 };
 use tomorrowci_evidence::{write_checksums, write_run_manifest, EvidenceLayout};
-use tomorrowci_report::{write_html_report, write_json_report};
+use tomorrowci_metrics::ScanMetrics;
+use tomorrowci_report::{write_github_job_summary, write_html_report, write_json_report};
 use tomorrowci_sandbox::make_disposable_copy;
 use chrono::Utc;
+use std::time::Instant;
 use uuid::Uuid;
 
 pub struct ScanOptions {
@@ -28,6 +30,7 @@ pub struct ScanOutcome {
     pub manifest: RunManifest,
     pub evidence_root: PathBuf,
     pub terminal_summary: String,
+    pub metrics: ScanMetrics,
 }
 
 /// Auto-detect ecosystem and run a full local scan.
@@ -56,6 +59,7 @@ pub fn scan_with_adapter(
     detection: ProjectDetection,
 ) -> Result<ScanOutcome> {
     let config = opts.config;
+    let wall_start = Instant::now();
     let run_id = Uuid::new_v4().to_string().replace('-', "")[..12].to_string();
     let layout = EvidenceLayout::create(repo, &run_id)?;
 
@@ -308,14 +312,21 @@ pub fn scan_with_adapter(
     write_run_manifest(&layout, &manifest)?;
     write_json_report(&manifest, &layout.run_root.join("report.json"))?;
     write_html_report(&manifest, &layout.run_root.join("report.html"))?;
+    write_github_job_summary(&manifest, &layout.run_root.join("job-summary.md"))?;
 
-    let terminal_summary = render_terminal_summary(&manifest);
+    let metrics = ScanMetrics::from_manifest(&manifest, Some(wall_start.elapsed().as_millis() as u64));
+    metrics.write_json(&layout.run_root.join("metrics.json"))?;
+
+    let mut terminal_summary = render_terminal_summary(&manifest);
+    terminal_summary.push_str(&metrics.summary_line());
+    terminal_summary.push('\n');
     std::fs::write(layout.run_root.join("summary.txt"), &terminal_summary)?;
 
     Ok(ScanOutcome {
         manifest,
         evidence_root: layout.run_root,
         terminal_summary,
+        metrics,
     })
 }
 
@@ -328,6 +339,7 @@ pub fn scan_with_executor(
     detection: ProjectDetection,
 ) -> Result<ScanOutcome> {
     // Duplicate simplified path using provided executor — used by tests.
+    let wall_start = Instant::now();
     let run_id = format!("test{}", &Uuid::new_v4().to_string().replace('-', "")[..8]);
     let layout = EvidenceLayout::create(repo, &run_id)?;
     let work = layout.run_root.join("workspace");
@@ -462,11 +474,18 @@ pub fn scan_with_executor(
     };
     write_run_manifest(&layout, &manifest)?;
     write_html_report(&manifest, &layout.run_root.join("report.html"))?;
-    let terminal_summary = render_terminal_summary(&manifest);
+    write_github_job_summary(&manifest, &layout.run_root.join("job-summary.md"))?;
+    let metrics =
+        ScanMetrics::from_manifest(&manifest, Some(wall_start.elapsed().as_millis() as u64));
+    metrics.write_json(&layout.run_root.join("metrics.json"))?;
+    let mut terminal_summary = render_terminal_summary(&manifest);
+    terminal_summary.push_str(&metrics.summary_line());
+    terminal_summary.push('\n');
     Ok(ScanOutcome {
         manifest,
         evidence_root: layout.run_root,
         terminal_summary,
+        metrics,
     })
 }
 

@@ -7,9 +7,14 @@ use tomorrowci_adapter_node::NodeAdapter;
 use tomorrowci_adapter_python::PythonAdapter;
 use tomorrowci_adapter_rust::RustAdapter;
 use tomorrowci_adapters::EcosystemAdapter;
-use tomorrowci_core::Config;
+use tomorrowci_core::{
+    compare_horizons, evaluate_policy_gate, Config, HorizonDelta, Verdict,
+};
 use tomorrowci_evidence::load_run_manifest;
-use tomorrowci_report::{write_html_report, write_json_report, write_sarif_stub};
+use tomorrowci_metrics::{run_trust_audit, ClaimLedger, ClaimStatus, ScanMetrics, TrustVerdict};
+use tomorrowci_report::{
+    write_github_job_summary, write_html_report, write_json_report, write_sarif_stub,
+};
 use tomorrowci_runner::{load_and_explain, replay_scenario, scan_local, ScanOptions};
 use tomorrowci_sandbox::{detect_engines, SecurityPolicy};
 
@@ -26,7 +31,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Scan a repository (Python full slice in M1/M2; detect-only for others)
+    /// Scan a repository path (Python/Node/Rust)
     Scan {
         target: String,
         #[arg(long)]
@@ -45,6 +50,22 @@ enum Commands {
         format: String,
     },
     Doctor,
+    /// Trust-behavior audit (security invariants — no target code execution)
+    Trust {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Compare base vs head run frontiers (PR horizon delta)
+    Compare {
+        #[arg(long)]
+        base: String,
+        #[arg(long)]
+        head: String,
+        #[arg(long)]
+        gate: bool,
+    },
+    /// Print metrics.json for a run
+    Metrics { run_id: String },
     #[command(name = "init-action")]
     InitAction {
         #[arg(long, default_value = ".github/workflows/tomorrowci.yml")]
@@ -63,6 +84,7 @@ fn real_main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Doctor => cmd_doctor(),
+        Commands::Trust { json } => cmd_trust(json),
         Commands::Scan { target, config } => cmd_scan(&target, config.as_deref()),
         Commands::Show { run_id } => cmd_show(&run_id),
         Commands::Replay { run_id, scenario } => {
@@ -76,6 +98,8 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         Commands::Report { run_id, format } => cmd_report(&run_id, &format),
+        Commands::Compare { base, head, gate } => cmd_compare(&base, &head, gate),
+        Commands::Metrics { run_id } => cmd_metrics(&run_id),
         Commands::InitAction { out } => cmd_init_action(&out),
     }
 }
@@ -106,15 +130,37 @@ fn cmd_doctor() -> Result<()> {
         if engines.selected.is_some() {
             "READY"
         } else {
-            "BLOCKED for container execution; unit/scripted tests still valid"
+            "BLOCKED for container execution"
         }
     );
     Ok(())
 }
 
+fn cmd_trust(json: bool) -> Result<()> {
+    let report = run_trust_audit()?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("TomorrowCI trust audit");
+        println!("overall: {:?}", report.overall);
+        for p in &report.probes {
+            println!("[{:?}] {} — {}", p.verdict, p.id, p.title);
+            println!("         {}", p.detail);
+        }
+        if report.overall == TrustVerdict::Fail {
+            bail!("trust audit FAILED");
+        }
+        println!("status: PASS (Blocked probes are infra-only, not trust failures)");
+    }
+    if report.failed() {
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
 fn cmd_scan(target: &str, config_path: Option<&Path>) -> Result<()> {
     if target.starts_with("http://") || target.starts_with("https://") {
-        bail!("remote GitHub clone scan: Milestone 1 local path only for now (NOT_RUN remote)");
+        bail!("remote GitHub clone scan: NOT_RUN in this build (local path only)");
     }
     let root = PathBuf::from(target);
     if !root.exists() {
@@ -125,7 +171,6 @@ fn cmd_scan(target: &str, config_path: Option<&Path>) -> Result<()> {
     let py = PythonAdapter.detect(&root);
     let node = NodeAdapter.detect(&root);
     let rust = RustAdapter.detect(&root);
-
     let eco = if py.supported {
         "python"
     } else if node.supported {
@@ -134,7 +179,6 @@ fn cmd_scan(target: &str, config_path: Option<&Path>) -> Result<()> {
         "rust"
     } else {
         println!("verdict: UNSUPPORTED");
-        println!("note: need Python, Node/npm, or Rust/cargo project manifests");
         return Ok(());
     };
     println!("ecosystem: {eco}");
@@ -150,6 +194,17 @@ fn cmd_scan(target: &str, config_path: Option<&Path>) -> Result<()> {
         Ok(out) => {
             println!("{}", out.terminal_summary);
             println!("report: {}", out.evidence_root.join("report.html").display());
+            println!("metrics: {}", out.evidence_root.join("metrics.json").display());
+            // claim ledger fragment
+            let mut claims = ClaimLedger::default();
+            claims.push(
+                format!("{eco} scan completed"),
+                ClaimStatus::Pass,
+                format!("tomorrowci scan {}", root.display()),
+                out.metrics.summary_line(),
+                out.evidence_root.display().to_string(),
+            );
+            claims.write_json(&out.evidence_root.join("claims.json"))?;
             Ok(())
         }
         Err(e) => {
@@ -162,7 +217,6 @@ fn cmd_scan(target: &str, config_path: Option<&Path>) -> Result<()> {
             {
                 println!("verdict: BLOCKED");
                 println!("{msg}");
-                println!("start Docker Desktop (or Podman) for container execution.");
                 Ok(())
             } else if msg.contains("UNSUPPORTED") {
                 println!("verdict: UNSUPPORTED");
@@ -211,6 +265,11 @@ fn cmd_report(run_id: &str, format: &str) -> Result<()> {
             write_sarif_stub(&m, &p)?;
             println!("wrote {}", p.display());
         }
+        "summary" => {
+            let p = root.join("job-summary.md");
+            write_github_job_summary(&m, &p)?;
+            println!("wrote {}", p.display());
+        }
         _ => {
             let p = root.join("report.json");
             write_json_report(&m, &p)?;
@@ -220,39 +279,73 @@ fn cmd_report(run_id: &str, format: &str) -> Result<()> {
     Ok(())
 }
 
+fn cmd_compare(base: &str, head: &str, gate: bool) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let base_m = load_run_manifest(&cwd.join(".tomorrowci/runs").join(base))?;
+    let head_m = load_run_manifest(&cwd.join(".tomorrowci/runs").join(head))?;
+    let cmp = compare_horizons(&base_m.frontier, &head_m.frontier);
+    println!("{}", serde_json::to_string_pretty(&cmp)?);
+
+    if gate {
+        let baseline_invalid = head_m
+            .results
+            .iter()
+            .any(|r| r.verdict == Verdict::BaselineInvalid);
+        let new_future_failure = head_m
+            .results
+            .iter()
+            .any(|r| r.verdict == Verdict::FutureFail)
+            && !base_m
+                .results
+                .iter()
+                .any(|r| r.verdict == Verdict::FutureFail);
+        let horizon_regression = cmp.delta == HorizonDelta::Regression;
+        let blocked = head_m
+            .results
+            .iter()
+            .filter(|r| r.verdict == Verdict::Blocked)
+            .count() as f64;
+        let total = head_m.results.len().max(1) as f64;
+        let g = evaluate_policy_gate(
+            baseline_invalid,
+            new_future_failure,
+            horizon_regression,
+            blocked / total,
+            Some(0.50),
+            true,
+            true,
+            true,
+        );
+        println!("policy_gate: {}", serde_json::to_string_pretty(&g)?);
+        if g.fail {
+            std::process::exit(3);
+        }
+    }
+    Ok(())
+}
+
+fn cmd_metrics(run_id: &str) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let p = cwd
+        .join(".tomorrowci/runs")
+        .join(run_id)
+        .join("metrics.json");
+    if p.exists() {
+        print!("{}", std::fs::read_to_string(p)?);
+        return Ok(());
+    }
+    // recompute from run.json
+    let m = load_run_manifest(&cwd.join(".tomorrowci/runs").join(run_id))?;
+    let metrics = ScanMetrics::from_manifest(&m, None);
+    println!("{}", serde_json::to_string_pretty(&metrics)?);
+    Ok(())
+}
+
 fn cmd_init_action(out: &Path) -> Result<()> {
     if let Some(p) = out.parent() {
         std::fs::create_dir_all(p)?;
     }
-    std::fs::write(
-        out,
-        r#"# Generated by tomorrowci init-action
-name: tomorrowci
-on:
-  pull_request:
-  push:
-    branches: [main, master]
-permissions:
-  contents: read
-jobs:
-  scan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Build TomorrowCI
-        run: cargo build -p tomorrowci-cli --release
-      - name: Scan fixture
-        run: ./target/release/tomorrowci scan fixtures/python-runtime-break || true
-      - name: Upload evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tomorrowci-evidence
-          path: .tomorrowci/runs/
-"#,
-    )?;
+    std::fs::write(out, include_str!("../../../action/workflow-template.yml"))?;
     println!("wrote {}", out.display());
     Ok(())
 }

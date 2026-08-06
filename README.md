@@ -31,7 +31,8 @@ No breakage claim without replayable evidence.
 | Scripted pipeline tests (no Docker) | Done — PASS |
 | Live Docker e2e on fixtures | **BLOCKED** if Docker Desktop daemon is down |
 | Node/Rust full execution (M3) | Done (same evidence contract; scripted tests PASS) |
-| React report UI + Action dogfood | Milestone 4 |
+| Metrics + trust audit (量測器 / 信任行為) | Done |
+| M4 Action + accessible report + compare gate | Done |
 
 ## Quick start
 
@@ -40,7 +41,18 @@ cargo build -p tomorrowci-cli --release
 ./target/release/tomorrowci doctor
 ./target/release/tomorrowci scan fixtures/python-runtime-break
 cargo test --workspace
+./target/release/tomorrowci trust
 ```
+
+### Measurement & trust
+
+```bash
+tomorrowci trust              # security behavior probes (no target code)
+tomorrowci metrics <run-id>   # per-run counters
+tomorrowci compare --base <id> --head <id> --gate
+```
+
+Evidence includes `metrics.json`, `claims.json`, and `job-summary.md` for GitHub Actions.
 
 **Security:** target code is **never** executed on the host by default. Use Docker/Podman.
 

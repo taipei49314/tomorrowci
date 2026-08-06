@@ -1,0 +1,106 @@
+name: TomorrowCI
+description: Continuous Integration Against the Future — scan for breakage horizons
+author: TomorrowCI Contributors
+
+branding:
+  icon: activity
+  color: blue
+
+inputs:
+  path:
+    description: Repository path to scan
+    required: false
+    default: "."
+  config:
+    description: Optional path to .tomorrowci.yml
+    required: false
+    default: ""
+  advisory:
+    description: If true, never fail the job on horizon findings
+    required: false
+    default: "true"
+  base-run-id:
+    description: Optional base run id for horizon comparison
+    required: false
+    default: ""
+
+outputs:
+  run-id:
+    description: TomorrowCI run id
+    value: ${{ steps.scan.outputs.run_id }}
+  frontier-observed:
+    description: Whether a breakage horizon was observed
+    value: ${{ steps.scan.outputs.frontier_observed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Trust audit
+      shell: bash
+      run: |
+        set -euo pipefail
+        BIN="${{ github.action_path }}/../target/release/tomorrowci"
+        if [[ ! -x "$BIN" ]]; then
+          cargo build -p tomorrowci-cli --release
+          BIN="./target/release/tomorrowci"
+        fi
+        "$BIN" trust
+
+    - name: Scan
+      id: scan
+      shell: bash
+      run: |
+        set -euo pipefail
+        BIN="./target/release/tomorrowci"
+        if [[ ! -x "$BIN" ]]; then
+          cargo build -p tomorrowci-cli --release
+        fi
+        CFG_ARGS=()
+        if [[ -n "${{ inputs.config }}" ]]; then
+          CFG_ARGS+=(--config "${{ inputs.config }}")
+        fi
+        set +e
+        OUT=$("$BIN" scan "${{ inputs.path }}" "${CFG_ARGS[@]}")
+        CODE=$?
+        set -e
+        echo "$OUT"
+        RUN_DIR=$(ls -1dt .tomorrowci/runs/* 2>/dev/null | head -1 || true)
+        RUN_ID=$(basename "${RUN_DIR:-unknown}")
+        echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+        if [[ -f "${RUN_DIR}/frontier.json" ]]; then
+          FO=$(python -c "import json,sys; print(json.load(open(sys.argv[1])).get('observed', False))" "$RUN_DIR/frontier.json" 2>/dev/null || echo false)
+        else
+          FO=false
+        fi
+        echo "frontier_observed=$FO" >> "$GITHUB_OUTPUT"
+        if [[ -f "${RUN_DIR}/job-summary.md" ]]; then
+          cat "${RUN_DIR}/job-summary.md" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        if [[ -f "${RUN_DIR}/metrics.json" ]]; then
+          echo '### Metrics' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat "${RUN_DIR}/metrics.json" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+        fi
+        if [[ "${{ inputs.advisory }}" != "true" && "$CODE" -ne 0 ]]; then
+          exit "$CODE"
+        fi
+        # Never convert BLOCKED to PASS: surface in summary only
+        if echo "$OUT" | grep -q "verdict: BLOCKED"; then
+          echo "Scan BLOCKED (infra). Advisory mode keeps job green." >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Compare horizons
+      if: ${{ inputs.base-run-id != '' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        BIN="./target/release/tomorrowci"
+        HEAD=$(ls -1dt .tomorrowci/runs/* | head -1 | xargs basename)
+        "$BIN" compare --base "${{ inputs.base-run-id }}" --head "$HEAD" --gate || {
+          if [[ "${{ inputs.advisory }}" == "true" ]]; then
+            echo "Horizon gate failed (advisory)." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          exit 3
+        }

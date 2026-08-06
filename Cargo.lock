@@ -707,6 +707,7 @@ dependencies = [
  "tomorrowci-adapters",
  "tomorrowci-core",
  "tomorrowci-evidence",
+ "tomorrowci-metrics",
  "tomorrowci-report",
  "tomorrowci-runner",
  "tomorrowci-sandbox",
@@ -741,10 +742,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tomorrowci-metrics"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "indexmap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tomorrowci-core",
+ "tomorrowci-sandbox",
+]
+
+[[package]]
 name = "tomorrowci-report"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "indexmap",
  "serde",
  "serde_json",
  "tempfile",
@@ -766,6 +781,7 @@ dependencies = [
  "tomorrowci-adapters",
  "tomorrowci-core",
  "tomorrowci-evidence",
+ "tomorrowci-metrics",
  "tomorrowci-report",
  "tomorrowci-sandbox",
  "uuid",

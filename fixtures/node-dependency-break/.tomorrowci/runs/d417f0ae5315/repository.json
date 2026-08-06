@@ -1,0 +1,6 @@
+{
+  "source": "fixtures/node-dependency-break",
+  "path": "fixtures/node-dependency-break",
+  "commit_sha": "80e44211ca5fc2340e5bddcfc642bbb9debc36a3",
+  "is_disposable_copy": true
+}

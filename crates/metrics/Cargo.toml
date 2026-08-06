@@ -1,17 +1,17 @@
 [package]
-name = "tomorrowci-report"
+name = "tomorrowci-metrics"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "JSON/SARIF/HTML report generation for TomorrowCI"
+description = "Measurement instruments and claim-to-evidence ledger for TomorrowCI"
 
 [dependencies]
 tomorrowci-core = { workspace = true }
+tomorrowci-sandbox = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-chrono = { workspace = true }
 indexmap = { workspace = true }

@@ -24,5 +24,23 @@ jobs:
         run: cargo test --workspace
       - name: build release CLI
         run: cargo build -p tomorrowci-cli --release
+      - name: trust audit
+        run: ./target/release/tomorrowci trust
       - name: doctor
         run: ./target/release/tomorrowci doctor
+      - name: dogfood action path (composite scripted)
+        run: |
+          ./target/release/tomorrowci trust
+          # Fixture scan may BLOCK without Docker images; must not pretend PASS
+          set +e
+          ./target/release/tomorrowci scan fixtures/python-runtime-break
+          set -e
+          ./target/release/tomorrowci init-action --out /tmp/tw.yml
+          test -f /tmp/tw.yml
+      - name: Upload any evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tomorrowci-evidence
+          path: .tomorrowci/runs/
+          if-no-files-found: ignore

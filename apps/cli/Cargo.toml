@@ -20,6 +20,7 @@ tomorrowci-adapter-node = { workspace = true }
 tomorrowci-adapter-rust = { workspace = true }
 tomorrowci-evidence = { workspace = true }
 tomorrowci-report = { workspace = true }
+tomorrowci-metrics = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
