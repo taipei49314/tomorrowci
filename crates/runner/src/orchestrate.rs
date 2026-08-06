@@ -1,14 +1,17 @@
-//! Full scan orchestration for Python vertical slice + M2 planner features.
+//! Full scan orchestration for Python / Node / Rust (M1–M3).
 
 use crate::engine::{ContainerExecutor, ExecutionContext, ScenarioExecutor};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tomorrowci_adapter_node::NodeAdapter;
 use tomorrowci_adapter_python::PythonAdapter;
+use tomorrowci_adapter_rust::RustAdapter;
 use tomorrowci_adapters::EcosystemAdapter;
 use tomorrowci_core::{
     classify_from_reruns, compute_breakage_frontier, ddmin_axes, plan_scenarios, Baseline,
-    CommandSpec, Config, EnvironmentAxis, EnvironmentSpec, EvidenceGrade, ExecutionResult,
-    ProjectDetection, RepositorySnapshot, Result, RunManifest, Scenario, TcError, Verdict,
+    CommandSpec, Config, Ecosystem, EnvironmentAxis, EnvironmentSpec, EvidenceGrade,
+    ExecutionResult, ProjectDetection, RepositorySnapshot, Result, RunManifest, Scenario, TcError,
+    Verdict,
 };
 use tomorrowci_evidence::{write_checksums, write_run_manifest, EvidenceLayout};
 use tomorrowci_report::{write_html_report, write_json_report};
@@ -27,16 +30,23 @@ pub struct ScanOutcome {
     pub terminal_summary: String,
 }
 
-/// Run a full local scan using Python adapter when detected.
+/// Auto-detect ecosystem and run a full local scan.
 pub fn scan_local(repo: &Path, opts: ScanOptions) -> Result<ScanOutcome> {
-    let adapter = PythonAdapter;
-    let det = adapter.detect(repo);
-    if !det.supported {
-        return Err(TcError::Unsupported(
-            "not a supported Python project for M1/M2 vertical slice".into(),
-        ));
+    let py = PythonAdapter.detect(repo);
+    if py.supported {
+        return scan_with_adapter(repo, &PythonAdapter, opts, py.detection);
     }
-    scan_with_adapter(repo, &adapter, opts, det.detection)
+    let node = NodeAdapter.detect(repo);
+    if node.supported {
+        return scan_with_adapter(repo, &NodeAdapter, opts, node.detection);
+    }
+    let rust = RustAdapter.detect(repo);
+    if rust.supported {
+        return scan_with_adapter(repo, &RustAdapter, opts, rust.detection);
+    }
+    Err(TcError::Unsupported(
+        "no supported ecosystem detected (need Python, Node/npm, or Rust/cargo manifests)".into(),
+    ))
 }
 
 pub fn scan_with_adapter(
@@ -89,10 +99,11 @@ pub fn scan_with_adapter(
     let mut confirmed_first_fail = false;
     let mut first_fail_scenario: Option<String> = None;
 
+    let eco = detection.ecosystem;
+
     for scenario in &plan.scenarios {
         let mut env = adapter.materialize(scenario, &work)?;
-        // Normalize python image tags
-        env.image = normalize_python_image(&scenario.runtime);
+        env.image = normalize_image(eco, &scenario.runtime);
         env.memory_mb = config.sandbox.memory_mb;
         env.cpus = config.sandbox.cpus;
         env.pids_limit = config.sandbox.pids_limit;
@@ -102,10 +113,9 @@ pub fn scan_with_adapter(
 
         let commands = build_scenario_commands(adapter, scenario, &config, &work)?;
 
-        // Fetch phase (network) then test phase (no network) when deps not locked-only
-        let needs_fetch = scenario.dependencies != "locked"
-            && scenario.dependencies != baseline.dependencies
-            || scenario.dependencies == "latest-allowed";
+        // Fetch phase (network) then test phase (network none). Always fetch for
+        // language ecosystems that need installed deps; upgrade only when latest-allowed.
+        let fetch_cmds = fetch_commands(eco, scenario);
 
         let sc_dir = layout.ensure_scenario(&scenario.id)?;
         layout_write_scenario_meta(&sc_dir, scenario, &env, &commands)?;
@@ -121,26 +131,12 @@ pub fn scan_with_adapter(
         let mut last_raw = None;
 
         for attempt in 1..=reruns {
-            // optional fetch
-            if needs_fetch {
-                let fetch_cmds = vec![CommandSpec {
-                    argv: vec![
-                        "pip".into(),
-                        "install".into(),
-                        "-q".into(),
-                        "-r".into(),
-                        "requirements.txt".into(),
-                        "--upgrade".into(),
-                    ],
-                    cwd: Some("/work".into()),
-                    network: true,
-                    phase: "fetch".into(),
-                }];
+            if let Some(ref fcmds) = fetch_cmds {
                 let _ = executor.execute(&ExecutionContext {
                     workspace: &work,
                     scenario,
                     environment: &env,
-                    commands: &fetch_cmds,
+                    commands: fcmds,
                     timeout: Duration::from_secs(config.execution.timeout_seconds.min(300)),
                     network: "bridge",
                 });
@@ -501,13 +497,103 @@ fn dependency_candidates(baseline: &Baseline, config: &Config) -> Vec<tomorrowci
     out
 }
 
-fn normalize_python_image(runtime: &str) -> String {
-    if runtime.starts_with("python:") {
-        runtime.to_string()
-    } else if runtime.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
-        format!("python:{runtime}-slim")
-    } else {
-        format!("python:{runtime}")
+fn normalize_image(eco: Ecosystem, runtime: &str) -> String {
+    match eco {
+        Ecosystem::Python => {
+            if runtime.starts_with("python:") {
+                runtime.to_string()
+            } else if runtime
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
+            {
+                format!("python:{runtime}-slim")
+            } else {
+                format!("python:{runtime}")
+            }
+        }
+        Ecosystem::Node => {
+            if runtime.starts_with("node:") {
+                runtime.to_string()
+            } else {
+                format!("node:{}", runtime.trim_start_matches("node:"))
+            }
+        }
+        Ecosystem::Rust => {
+            // Prefer concrete bookworm tags for MSRV pins like 1.74
+            if runtime.starts_with("rust:") {
+                runtime.to_string()
+            } else if runtime
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
+            {
+                format!("rust:{runtime}-bookworm")
+            } else {
+                // stable | beta | nightly
+                format!("rust:{runtime}-bookworm")
+            }
+        }
+        Ecosystem::Unknown => runtime.to_string(),
+    }
+}
+
+fn fetch_commands(eco: Ecosystem, scenario: &Scenario) -> Option<Vec<CommandSpec>> {
+    let upgrade = scenario.dependencies == "latest-allowed"
+        || scenario.dependencies == "prerelease";
+    match eco {
+        Ecosystem::Python => {
+            let mut argv = vec![
+                "pip".into(),
+                "install".into(),
+                "-q".into(),
+                "-r".into(),
+                "requirements.txt".into(),
+            ];
+            if upgrade {
+                argv.push("--upgrade".into());
+            }
+            Some(vec![CommandSpec {
+                argv,
+                cwd: Some("/work".into()),
+                network: true,
+                phase: "fetch".into(),
+            }])
+        }
+        Ecosystem::Node => {
+            let argv: Vec<String> = if upgrade {
+                vec![
+                    "npm".into(),
+                    "install".into(),
+                    "--no-audit".into(),
+                    "--no-fund".into(),
+                ]
+            } else {
+                vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi".into(),
+                ]
+            };
+            Some(vec![CommandSpec {
+                argv,
+                cwd: Some("/work".into()),
+                network: true,
+                phase: "fetch".into(),
+            }])
+        }
+        Ecosystem::Rust => {
+            // Networked resolve once; tests run offline afterward
+            Some(vec![CommandSpec {
+                argv: vec!["cargo".into(), "fetch".into()],
+                cwd: Some("/work".into()),
+                network: true,
+                phase: "fetch".into(),
+            }])
+        }
+        Ecosystem::Unknown => None,
     }
 }
 
@@ -592,10 +678,11 @@ pub fn render_terminal_summary(m: &RunManifest) -> String {
         let sc = m.plan.scenarios.iter().find(|s| s.id == r.scenario_id);
         let label = sc
             .map(|s| {
+                let eco = format!("{:?}", m.detection.ecosystem);
                 if s.is_baseline {
                     format!("Baseline: {} + {}", s.runtime, s.dependencies)
                 } else {
-                    format!("Python {} + {} dependencies", s.runtime, s.dependencies)
+                    format!("{eco} {} + {} deps", s.runtime, s.dependencies)
                 }
             })
             .unwrap_or_else(|| r.scenario_id.clone());

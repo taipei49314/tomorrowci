@@ -1,0 +1,8 @@
+[package]
+name = "rust-msrv-break"
+version = "0.1.0"
+edition = "2021"
+# Declares intent; break is via LazyCell (stabilized 1.80) on older toolchains.
+rust-version = "1.80"
+
+[dependencies]

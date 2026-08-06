@@ -1,0 +1,26 @@
+version: 1
+project:
+  ecosystem: rust
+  test_command: cargo test
+baseline:
+  runtime: "1.83"
+  dependencies: locked
+candidates:
+  runtime:
+    channels: [stable]
+    max_versions: 2
+  dependencies:
+    latest_allowed: false
+    prerelease: false
+execution:
+  max_scenarios: 6
+  timeout_seconds: 600
+  reruns_on_failure: 2
+sandbox:
+  engine: auto
+  memory_mb: 4096
+  cpus: 2
+  pids_limit: 512
+report:
+  html: true
+  json: true

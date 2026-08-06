@@ -10,6 +10,8 @@ tomorrowci-core = { workspace = true }
 tomorrowci-sandbox = { workspace = true }
 tomorrowci-adapters = { workspace = true }
 tomorrowci-adapter-python = { workspace = true }
+tomorrowci-adapter-node = { workspace = true }
+tomorrowci-adapter-rust = { workspace = true }
 tomorrowci-evidence = { workspace = true }
 tomorrowci-report = { workspace = true }
 serde = { workspace = true }

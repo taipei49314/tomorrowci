@@ -30,7 +30,7 @@ No breakage claim without replayable evidence.
 | Evidence bundle + HTML/JSON report + replay scripts | Done |
 | Scripted pipeline tests (no Docker) | Done — PASS |
 | Live Docker e2e on fixtures | **BLOCKED** if Docker Desktop daemon is down |
-| Node/Rust full execution | Milestone 3 |
+| Node/Rust full execution (M3) | Done (same evidence contract; scripted tests PASS) |
 | React report UI + Action dogfood | Milestone 4 |
 
 ## Quick start

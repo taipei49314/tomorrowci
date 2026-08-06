@@ -126,46 +126,52 @@ fn cmd_scan(target: &str, config_path: Option<&Path>) -> Result<()> {
     let node = NodeAdapter.detect(&root);
     let rust = RustAdapter.detect(&root);
 
-    if py.supported {
-        println!("ecosystem: python");
-        match scan_local(
-            &root,
-            ScanOptions {
-                config: cfg,
-                allow_scripted: false,
-            },
-        ) {
-            Ok(out) => {
-                println!("{}", out.terminal_summary);
-                println!("report: {}", out.evidence_root.join("report.html").display());
-                Ok(())
-            }
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("BLOCKED") || msg.contains("sandbox") || msg.contains("Docker") {
-                    println!("verdict: BLOCKED");
-                    println!("{msg}");
-                    println!("detection still works; start Docker Desktop to execute scenarios.");
-                    // still print detection
-                    Ok(())
-                } else {
-                    Err(e.into())
-                }
-            }
-        }
+    let eco = if py.supported {
+        "python"
     } else if node.supported {
-        println!("ecosystem: node ({:?})", node.detection.ecosystem);
-        println!("detection: PASS");
-        println!("execution: NOT_RUN (Node full execution is Milestone 3)");
-        Ok(())
+        "node"
     } else if rust.supported {
-        println!("ecosystem: rust");
-        println!("detection: PASS");
-        println!("execution: NOT_RUN (Rust full execution is Milestone 3)");
-        Ok(())
+        "rust"
     } else {
         println!("verdict: UNSUPPORTED");
-        Ok(())
+        println!("note: need Python, Node/npm, or Rust/cargo project manifests");
+        return Ok(());
+    };
+    println!("ecosystem: {eco}");
+    println!("detection: PASS");
+
+    match scan_local(
+        &root,
+        ScanOptions {
+            config: cfg,
+            allow_scripted: false,
+        },
+    ) {
+        Ok(out) => {
+            println!("{}", out.terminal_summary);
+            println!("report: {}", out.evidence_root.join("report.html").display());
+            Ok(())
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("BLOCKED")
+                || msg.contains("sandbox")
+                || msg.contains("Docker")
+                || msg.contains("Podman")
+                || msg.contains("daemon")
+            {
+                println!("verdict: BLOCKED");
+                println!("{msg}");
+                println!("start Docker Desktop (or Podman) for container execution.");
+                Ok(())
+            } else if msg.contains("UNSUPPORTED") {
+                println!("verdict: UNSUPPORTED");
+                println!("{msg}");
+                Ok(())
+            } else {
+                Err(e.into())
+            }
+        }
     }
 }
 
