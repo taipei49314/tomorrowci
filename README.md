@@ -13,7 +13,8 @@ TomorrowCI turns future-facing compatibility into an executable, replayable clai
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](apps/cli)
 
-**Public repo:** https://github.com/taipei49314/tomorrowci
+**Public repo:** https://github.com/taipei49314/tomorrowci  
+Related lab fixtures: [tomorrowci-lab](https://github.com/taipei49314/tomorrowci-lab)
 
 ---
 
@@ -50,7 +51,7 @@ TomorrowCI turns future-facing compatibility into an executable, replayable clai
 ### Build
 
 ```bash
-git clone https://github.com/tomorrowci/tomorrowci.git
+git clone https://github.com/taipei49314/tomorrowci.git
 cd tomorrowci
 cargo build -p tomorrowci --release
 ./target/release/tomorrowci doctor
