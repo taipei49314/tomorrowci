@@ -1,0 +1,548 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-08-09",
+  "timezone": "Asia/Taipei",
+  "repository": {
+    "url": "https://github.com/taipei49314/tomorrowci",
+    "default_branch": "master",
+    "kickoff_sha": "1f42003a561630164699f94f274727be23f2c1a8",
+    "live_default_sha": "1f42003a561630164699f94f274727be23f2c1a8",
+    "working_branch": "agent/evidence-trust-core",
+    "open_issues": 0,
+    "open_pull_requests": 0
+  },
+  "status_definitions": {
+    "DONE": "The point-in-time acceptance condition has inspected evidence.",
+    "OPEN": "Project work or qualification evidence is still required.",
+    "BLOCKED_LOCAL": "The current audit host cannot execute the path; this is not a product PASS.",
+    "BLOCKED_EXTERNAL": "A genuinely independent external party is required; the implementer cannot self-attest it.",
+    "BLOCKED_BY_GATES": "The item must not proceed until its listed prerequisite gates are closed."
+  },
+  "observed_evidence": {
+    "public_ci": {
+      "status": "PASS",
+      "run_id": 31185394369,
+      "run_url": "https://github.com/taipei49314/tomorrowci/actions/runs/31185394369",
+      "head_sha": "1f42003a561630164699f94f274727be23f2c1a8",
+      "container_job_url": "https://github.com/taipei49314/tomorrowci/actions/runs/31185394369/job/92889106516",
+      "container_measure_step_url": "https://github.com/taipei49314/tomorrowci/actions/runs/31185394369/job/92889106516#step:5:1",
+      "action_dogfood_job_url": "https://github.com/taipei49314/tomorrowci/actions/runs/31185394369/job/92889107297",
+      "artifact": {
+        "id": 8996743664,
+        "url": "https://github.com/taipei49314/tomorrowci/actions/runs/31185394369/artifacts/8996743664",
+        "name": "tomorrowci-ci-evidence",
+        "size_bytes": 186485,
+        "sha256": "dfec205e46a4cf8d00d916ef3dc7a2f8a48329e4dc8a7134a14690dd6ed7cf60",
+        "matches_github_digest": true,
+        "checksum_manifests_checked": 26,
+        "listed_files_checked": 253,
+        "missing_files": 0,
+        "mismatched_files": 0,
+        "scope_note": "This verifies artifact download and listed-file integrity only; it is not replay execution or independent verification."
+      },
+      "container_engine": "docker 28.0.4 at /usr/bin/docker",
+      "fixture_claim_counts": {
+        "pass": 51,
+        "fail": 0
+      },
+      "combined_measure_claim_counts": {
+        "pass": 56,
+        "fail": 0,
+        "blocked": 0,
+        "not_run": 0,
+        "skip": 0
+      },
+      "replay_executed": false,
+      "verify_executed": false,
+      "verify_subcommand_present_at_baseline": false
+    },
+    "fixture_runs": [
+      {
+        "fixture": "python-runtime-break",
+        "claim_status": "PASS",
+        "run_id": "ef029be6b9d5",
+        "scenario_count": 5,
+        "scenario_verdicts": [
+          "BASELINE_PASS",
+          "FUTURE_FAIL",
+          "FUTURE_FAIL",
+          "FUTURE_FAIL",
+          "FUTURE_FAIL"
+        ],
+        "horizon": "Python 3.10 + locked dependencies",
+        "source": "public project-operated Docker CI artifact"
+      },
+      {
+        "fixture": "baseline-fail",
+        "claim_status": "PASS",
+        "run_id": "6a412adc66e6",
+        "scenario_count": 1,
+        "scenario_verdicts": [
+          "BASELINE_INVALID"
+        ],
+        "horizon": null,
+        "source": "public project-operated Docker CI artifact"
+      },
+      {
+        "fixture": "flaky-project",
+        "claim_status": "PASS",
+        "run_id": "812ea6b0283a",
+        "scenario_count": 1,
+        "scenario_verdicts": [
+          "FLAKY"
+        ],
+        "horizon": null,
+        "source": "public project-operated Docker CI artifact"
+      },
+      {
+        "fixture": "python-dependency-break",
+        "claim_status": "PASS",
+        "run_id": "7300e5a313ad",
+        "scenario_count": 4,
+        "scenario_verdicts": [
+          "BASELINE_PASS",
+          "FUTURE_PASS",
+          "FUTURE_FAIL",
+          "FUTURE_FAIL"
+        ],
+        "horizon": "Python 3.11 + latest allowed dependencies",
+        "dependency_axis_evidence_grade": "SIMULATED",
+        "source": "public project-operated Docker CI artifact"
+      },
+      {
+        "fixture": "node-dependency-break",
+        "claim_status": "PASS",
+        "run_id": "e326a0db4f72",
+        "scenario_count": 6,
+        "scenario_verdicts": [
+          "BASELINE_PASS",
+          "FUTURE_PASS",
+          "FUTURE_PASS",
+          "FUTURE_FAIL",
+          "FUTURE_FAIL",
+          "FUTURE_FAIL"
+        ],
+        "horizon": "Node.js 20 + latest allowed dependencies",
+        "dependency_axis_evidence_grade": "SIMULATED",
+        "source": "public project-operated Docker CI artifact"
+      },
+      {
+        "fixture": "rust-msrv-break",
+        "claim_status": "PASS",
+        "run_id": "bc1bb22a1a4e",
+        "scenario_count": 3,
+        "scenario_verdicts": [
+          "BASELINE_PASS",
+          "FUTURE_FAIL",
+          "FUTURE_FAIL"
+        ],
+        "horizon": "Rust 1.85 + locked dependencies",
+        "source": "public project-operated Docker CI artifact"
+      }
+    ],
+    "local_checks": [
+      {
+        "command": "cargo fmt --all -- --check",
+        "status": "PASS"
+      },
+      {
+        "command": "cargo clippy --workspace --all-targets -- -D warnings",
+        "status": "PASS"
+      },
+      {
+        "command": "cargo test --workspace",
+        "status": "PASS",
+        "test_count": 52,
+        "observed_group_counts": [
+          2,
+          3,
+          1,
+          37,
+          1,
+          4,
+          2,
+          2
+        ]
+      },
+      {
+        "command": "cargo build -p tomorrowci --release",
+        "status": "PASS"
+      },
+      {
+        "command": "target/release/tomorrowci.exe --version",
+        "status": "PASS",
+        "output": "tomorrowci 0.1.0"
+      },
+      {
+        "command": "target/release/tomorrowci.exe doctor",
+        "status": "BLOCKED_LOCAL",
+        "exit_code": 4,
+        "docker_cli_version": "29.6.2",
+        "docker_daemon_available": false,
+        "podman_command_available": false,
+        "npm_host_version": "12.0.2",
+        "npm_reported_by_doctor": "missing"
+      },
+      {
+        "command": "npm ci",
+        "working_directory": "apps/web",
+        "status": "PASS_WITH_FINDINGS",
+        "audit_vulnerabilities": {
+          "moderate": 3,
+          "high": 1,
+          "critical": 1,
+          "total": 5
+        }
+      },
+      {
+        "command": "npm test -- --run",
+        "working_directory": "apps/web",
+        "status": "PASS",
+        "tests_passed": 3,
+        "tests_total": 3
+      },
+      {
+        "command": "npm run build",
+        "working_directory": "apps/web",
+        "status": "PASS"
+      }
+    ],
+    "existing_release": {
+      "url": "https://github.com/taipei49314/tomorrowci/releases/tag/v0.1.0-grok-session",
+      "tag": "v0.1.0-grok-session",
+      "tag_object_sha": "39011d3bbc30ad943e5e81ef70017fd535942092",
+      "peeled_commit_sha": "7a08c4884761b70e9ae0e63012ee87fdc1e39348",
+      "points_to_current_default_sha": false,
+      "asset_count": 5,
+      "assets": [
+        {
+          "name": "tomorrowci-v0.1.0-grok-session-x86_64-unknown-linux-gnu.tar.gz",
+          "url": "https://github.com/taipei49314/tomorrowci/releases/download/v0.1.0-grok-session/tomorrowci-v0.1.0-grok-session-x86_64-unknown-linux-gnu.tar.gz",
+          "size_bytes": 1004422,
+          "sha256": "08b4fb8632abc7a0d69a54ec8da1b364c598a733145e24e07a6e6617a0abcd24",
+          "readback_status": "PASS",
+          "cli_version": "0.1.0"
+        },
+        {
+          "name": "tomorrowci-v0.1.0-grok-session-x86_64-pc-windows-msvc.zip",
+          "url": "https://github.com/taipei49314/tomorrowci/releases/download/v0.1.0-grok-session/tomorrowci-v0.1.0-grok-session-x86_64-pc-windows-msvc.zip",
+          "size_bytes": 827770,
+          "sha256": "f2ba4b22dc445a8f452908c3bd6fdee8a96b4fa4f171852054c20401339463dd",
+          "readback_status": "PASS",
+          "cli_version": "0.1.0"
+        },
+        {
+          "name": "tomorrowci-v0.1.0-grok-session-x86_64-apple-darwin.tar.gz",
+          "url": "https://github.com/taipei49314/tomorrowci/releases/download/v0.1.0-grok-session/tomorrowci-v0.1.0-grok-session-x86_64-apple-darwin.tar.gz",
+          "size_bytes": 905831,
+          "sha256": "f0bce434b183a35e63cd1fe9ea82b65ba83428d66519ff9950d3886c52be299f",
+          "readback_status": "FAIL",
+          "declared_architecture": "x86_64",
+          "inspected_macho_architecture": "arm64",
+          "execution_status": "NOT_RUN_ON_WINDOWS"
+        },
+        {
+          "name": "SHA256SUMS.txt",
+          "url": "https://github.com/taipei49314/tomorrowci/releases/download/v0.1.0-grok-session/SHA256SUMS.txt",
+          "size_bytes": 383,
+          "sha256": "6c2a46a756b7dbda0bc7a634ed3a77fb48bdccabf49f89ac81f202268d2ce040",
+          "readback_status": "FAIL_INCOMPLETE_COVERAGE",
+          "archive_entries": 3,
+          "archive_entries_verified": 3,
+          "omitted_assets": [
+            "sbom.cdx.json"
+          ]
+        },
+        {
+          "name": "sbom.cdx.json",
+          "url": "https://github.com/taipei49314/tomorrowci/releases/download/v0.1.0-grok-session/sbom.cdx.json",
+          "size_bytes": 219,
+          "sha256": "b6e7d290452775d6374f2c14d2f6a50f408bfb1dd22897fca463481110eaffec",
+          "readback_status": "FAIL_EMPTY_COMPONENTS",
+          "format": "CycloneDX",
+          "spec_version": "1.5",
+          "component_count": 0,
+          "cargo_lock_package_count": 105
+        }
+      ],
+      "provenance_asset_present": false
+    }
+  },
+  "items": [
+    {
+      "id": "QUAL-001",
+      "phase": 1,
+      "area": "evidence",
+      "priority": "P0",
+      "status": "OPEN",
+      "blocks_release": true,
+      "summary": "Add a safe first-class verify command and versioned required evidence inventory.",
+      "baseline_evidence": "The baseline CLI has no verify subcommand; public run 31185394369 did not execute verify.",
+      "acceptance": "scan -> verify succeeds for valid bundles; verification parses fixed data only and never executes target-controlled bytes."
+    },
+    {
+      "id": "QUAL-002",
+      "phase": 1,
+      "area": "evidence",
+      "priority": "P0",
+      "status": "OPEN",
+      "blocks_release": true,
+      "summary": "Finalize checksums after all writers and reject incomplete, extra, mutated, duplicate, or unsafe paths.",
+      "baseline_evidence": "The downloaded CI artifact's listed files were internally consistent, but the baseline does not prove the required-inventory and late-writer boundary or the specified negative cases.",
+      "acceptance": "CLI negative tests reject mutation, deletion, unlisted required files, listed missing files, duplicate or illegal paths, symlink/reparse traversal, absolute paths, parent traversal, and identity mismatch."
+    },
+    {
+      "id": "QUAL-003",
+      "phase": 1,
+      "area": "replay",
+      "priority": "P0",
+      "status": "OPEN",
+      "blocks_release": true,
+      "summary": "Execute two manifest-bound replays and verify equivalence without rediscovery or replanning.",
+      "baseline_evidence": "Run 31185394369 performed measure/scan only. Replay text in its output is a suggested command, not execution evidence.",
+      "acceptance": "scan -> verify -> replay x2 -> verify passes for Python, Node, and Rust fixtures, with immutable per-attempt evidence and non-equivalence failing closed."
+    },
+    {
+      "id": "QUAL-004",
+      "phase": 1,
+      "area": "identity",
+      "priority": "P0",
+      "status": "OPEN",
+      "blocks_release": true,
+      "summary": "Bind source, config, workspace, engine, image tag/digest, timestamps, reports, and replay attempts into the verified model.",
+      "baseline_evidence": "Current fixture evidence is useful scan evidence but has not passed the new closed identity and replay contract.",
+      "acceptance": "Cross-mixed identities and fabricated timestamps are rejected; reports and SARIF derive from the verified model and escape target-controlled text."
+    },
+    {
+      "id": "CI-001",
+      "phase": 3,
+      "area": "ci",
+      "priority": "P0",
+      "status": "OPEN",
+      "blocks_release": true,
+      "summary": "Make doctor fail closed while preserving an explicit expected no-engine classification.",
+      "baseline_evidence": "The default CI doctor step uses a tolerated failure; locally doctor exited 4 and also misreported npm despite host npm 12.0.2.",
+      "acceptance": "CI distinguishes an expected no-engine outcome from a doctor defect without continue-on-error or an unconditional success override."
+    },
+    {
+      "id": "CI-002",
+      "phase": 3,
+      "area": "ci",
+      "priority": "P0",
+      "status": "OPEN",
+      "blocks_release": true,
+      "summary": "Add required Linux, Windows, and macOS CLI/package smoke plus web tests/build to default CI.",
+      "baseline_evidence": "Default run 31185394369 is Ubuntu-centered and has no web job; web checks passed only on the local Windows audit host.",
+      "acceptance": "All three OS jobs build and exercise the packaged CLI, and required web install/test/build gates run on the exact candidate SHA."
+    },
+    {
+      "id": "CI-003",
+      "phase": 3,
+      "area": "podman",
+      "priority": "P0",
+      "status": "OPEN",
+      "blocks_release": true,
+      "summary": "Run the live fixture contract with Podman in required CI.",
+      "baseline_evidence": "Podman is missing on the local host, and the inspected public container job used Docker 28.0.4 only.",
+      "acceptance": "A public exact-SHA Podman job runs the required fixture/verify/replay contract and uploads inspectable evidence."
+    },
+    {
+      "id": "CI-004",
+      "phase": 3,
+      "area": "source_quality",
+      "priority": "P1",
+      "status": "OPEN",
+      "blocks_release": true,
+      "summary": "Add required dependency/security audit and substantive schema validation to default CI.",
+      "baseline_evidence": "The inspected schema job checks only that the schema file exists; no dedicated dependency/security audit job was inspected.",
+      "acceptance": "Pinned audit tooling and schema validation run on the exact candidate SHA with a documented, fail-closed policy."
+    },
+    {
+      "id": "LOCAL-001",
+      "phase": 0,
+      "area": "local_environment",
+      "priority": "P2",
+      "status": "BLOCKED_LOCAL",
+      "blocks_release": false,
+      "summary": "Local live container rerun is unavailable on the current Windows audit host.",
+      "baseline_evidence": "Docker CLI 29.6.2 is installed but the daemon is unavailable; Podman command is missing; doctor exits 4.",
+      "acceptance": "Re-run locally only after a working daemon/engine is available; do not convert this blocker into a product PASS."
+    },
+    {
+      "id": "WEB-001",
+      "phase": 3,
+      "area": "web_security",
+      "priority": "P1",
+      "status": "OPEN",
+      "blocks_release": true,
+      "summary": "Resolve or explicitly gate the five npm audit findings.",
+      "baseline_evidence": "npm ci completed but reported 3 moderate, 1 high, and 1 critical vulnerability.",
+      "acceptance": "The release policy records and enforces an approved vulnerability result on the candidate lockfile."
+    },
+    {
+      "id": "PRODUCT-001",
+      "phase": 2,
+      "area": "backtest",
+      "priority": "P0",
+      "status": "OPEN",
+      "blocks_release": true,
+      "summary": "Qualify historical backtest against pinned, content-addressed Python, npm, and Cargo registry snapshots.",
+      "baseline_evidence": "No inspected baseline evidence proves historical registry/index reconstruction.",
+      "acceptance": "Pinned source plus pinned registry snapshot replays for all three ecosystems, and missing snapshots fail closed as INCONCLUSIVE or SCHEDULED_RISK."
+    },
+    {
+      "id": "PRODUCT-002",
+      "phase": 2,
+      "area": "weather_map",
+      "priority": "P1",
+      "status": "OPEN",
+      "blocks_release": true,
+      "summary": "Implement and qualify an ecosystem weather map derived only from verified runs.",
+      "baseline_evidence": "No inspected baseline evidence closes the north-star weather-map acceptance criteria.",
+      "acceptance": "JSON and human reports share one typed model and preserve denominator, selection policy, coverage, uncertainty, BLOCKED, and UNSUPPORTED outcomes."
+    },
+    {
+      "id": "PRODUCT-003",
+      "phase": 2,
+      "area": "patch_lab",
+      "priority": "P1",
+      "status": "OPEN",
+      "blocks_release": true,
+      "summary": "Implement and qualify the isolated patch laboratory without rewriting original verdicts.",
+      "baseline_evidence": "No inspected baseline evidence closes the north-star patch-lab acceptance criteria.",
+      "acceptance": "A patch runs in a new disposable sandbox and produces separately verifiable evidence linked to the immutable original run and diff."
+    },
+    {
+      "id": "PRODUCT-004",
+      "phase": 2,
+      "area": "adapter_sdk",
+      "priority": "P1",
+      "status": "OPEN",
+      "blocks_release": true,
+      "summary": "Implement and qualify the versioned adapter SDK, conformance suite, and least-privilege plugin boundary.",
+      "baseline_evidence": "No inspected baseline evidence closes the north-star adapter-SDK acceptance criteria.",
+      "acceptance": "Built-in adapters and a minimal external example pass version, capability, compatibility, and security rejection tests."
+    },
+    {
+      "id": "PRODUCT-005",
+      "phase": 2,
+      "area": "cli_and_remote_scan",
+      "priority": "P0",
+      "status": "OPEN",
+      "blocks_release": true,
+      "summary": "Qualify every documented CLI command and bounded remote GitHub scan path end to end.",
+      "baseline_evidence": "The inspected public run exercises local fixtures and Action dogfood; it does not close all documented CLI commands or the bounded remote-clone security contract.",
+      "acceptance": "Executable acceptance covers documented commands, all three ecosystems, supported/unsupported classification, allowlisted HTTPS GitHub URLs, redirects, submodules/LFS/credential boundaries, resource limits, resolved origin, and exact cloned SHA."
+    },
+    {
+      "id": "RELEASE-001",
+      "phase": 4,
+      "area": "artifact_architecture",
+      "priority": "P0",
+      "status": "OPEN",
+      "blocks_release": true,
+      "summary": "Produce a macOS archive whose name, target, and Mach-O architecture agree.",
+      "baseline_evidence": "The existing x86_64-apple-darwin archive contains an arm64 Mach-O binary.",
+      "acceptance": "Clean extraction and architecture inspection on macOS match the declared target, followed by CLI version/doctor/report/verify smoke."
+    },
+    {
+      "id": "RELEASE-002",
+      "phase": 4,
+      "area": "sbom",
+      "priority": "P0",
+      "status": "OPEN",
+      "blocks_release": true,
+      "summary": "Generate a real CycloneDX or SPDX SBOM and fail release creation if generation fails.",
+      "baseline_evidence": "The existing 219-byte CycloneDX file has zero components while Cargo.lock has 105 packages.",
+      "acceptance": "Schema-valid SBOM contains exact locked packages and versions; no placeholder or best-effort fallback is accepted."
+    },
+    {
+      "id": "RELEASE-003",
+      "phase": 4,
+      "area": "checksums",
+      "priority": "P0",
+      "status": "OPEN",
+      "blocks_release": true,
+      "summary": "Cover the exact release inventory with one verified checksum manifest.",
+      "baseline_evidence": "The existing SHA256SUMS.txt verifies the three archives but omits sbom.cdx.json.",
+      "acceptance": "Publish accepts an exact allowlisted inventory and verifies every required payload asset before upload; extra or missing files fail."
+    },
+    {
+      "id": "RELEASE-004",
+      "phase": 4,
+      "area": "release_gates",
+      "priority": "P0",
+      "status": "OPEN",
+      "blocks_release": true,
+      "summary": "Require full acceptance, version identity, deterministic packaging, provenance, and clean-download read-back before publish.",
+      "baseline_evidence": "The historical five-asset release has no provenance asset and is not tied to the current default SHA.",
+      "acceptance": "A dry-run candidate from the exact merged SHA passes required CI, reproducibility, checksum, SBOM, attestation, three-platform extraction, and verify/replay read-back gates."
+    },
+    {
+      "id": "CLAIM-001",
+      "phase": 0,
+      "area": "claim_ledger",
+      "priority": "P0",
+      "status": "DONE",
+      "blocks_release": false,
+      "summary": "Replace the stale GitHub Action dogfood NOT_RUN claim with exact public evidence.",
+      "baseline_evidence": "Action dogfood job 92889107297 passed on run 31185394369 at exact SHA 1f42003a561630164699f94f274727be23f2c1a8.",
+      "acceptance": "CLAIM_EVIDENCE.md links the exact run/job and does not generalize the result beyond that SHA."
+    },
+    {
+      "id": "EXTERNAL-001",
+      "phase": 5,
+      "area": "external_targets",
+      "priority": "P0",
+      "status": "OPEN",
+      "blocks_release": true,
+      "summary": "Pre-register and run one non-project-owned public repository per supported ecosystem on the final candidate.",
+      "baseline_evidence": "The six inspected runs are project fixtures on project-operated CI, not an external corpus.",
+      "acceptance": "Python, Node, and Rust target runs preserve pre-registration, exact source SHA, candidate digest, engine/image identity, raw evidence, and verified outcomes without cherry-picking."
+    },
+    {
+      "id": "EXTERNAL-002",
+      "phase": 5,
+      "area": "independent_audit",
+      "priority": "P0",
+      "status": "BLOCKED_EXTERNAL",
+      "blocks_release": true,
+      "summary": "Obtain one genuinely independent downstream maintainer or auditor replay against the final exact candidate.",
+      "baseline_evidence": "No independent adopter/auditor evidence was inspected. Project-owned CI and another agent cannot satisfy this trust root.",
+      "acceptance": "An independent party publishes an exact-candidate scan/verify/replay result with repository/commit, tool artifact digest, engine/image digest, evidence hash, result, and identity."
+    },
+    {
+      "id": "RELEASE-005",
+      "phase": 6,
+      "area": "new_release",
+      "priority": "P0",
+      "status": "BLOCKED_BY_GATES",
+      "blocks_release": true,
+      "summary": "Do not create a new stable tag or release yet.",
+      "depends_on": [
+        "QUAL-001",
+        "QUAL-002",
+        "QUAL-003",
+        "QUAL-004",
+        "CI-001",
+        "CI-002",
+        "CI-003",
+        "CI-004",
+        "WEB-001",
+        "PRODUCT-001",
+        "PRODUCT-002",
+        "PRODUCT-003",
+        "PRODUCT-004",
+        "PRODUCT-005",
+        "RELEASE-001",
+        "RELEASE-002",
+        "RELEASE-003",
+        "RELEASE-004",
+        "EXTERNAL-001",
+        "EXTERNAL-002"
+      ],
+      "baseline_evidence": "The baseline has open technical gates, old release defects, missing verify/replay evidence, missing Podman evidence, and a genuinely external blocker.",
+      "acceptance": "All prerequisite items are closed on the exact merged default SHA, then the annotated tag, promoted assets, public release workflow, and clean-download read-back all match the audited candidate."
+    }
+  ]
+}
