@@ -1,7 +1,6 @@
 //! Self-contained backtest timeline HTML (real BacktestReport JSON).
 
 use crate::Result;
-use std::fs;
 use std::path::Path;
 use tomorrowci_core::backtest::BacktestReport;
 use tomorrowci_core::safety::escape_html;
@@ -85,7 +84,7 @@ code {{ font-family:ui-monospace,monospace; }}
         max_s = report.request.max_scenarios_per_point,
         target = escape_html(&report.request.target),
     );
-    fs::write(path, html)?;
+    super::atomic_write(path, html.as_bytes())?;
     Ok(())
 }
 
@@ -93,6 +92,7 @@ code {{ font-family:ui-monospace,monospace; }}
 mod tests {
     use super::*;
     use chrono::NaiveDate;
+    use std::fs;
     use tempfile::tempdir;
     use tomorrowci_core::backtest::{BacktestPoint, BacktestPointStatus, BacktestRequest};
 

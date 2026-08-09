@@ -37,6 +37,16 @@ jobs:
         run: cargo build -p tomorrowci --release
       - name: measure all (instruments → trust)
         run: ./target/release/tomorrowci measure all --out .tomorrowci/measure --evidence-root .tomorrowci
+      - name: verify every sealed fixture run
+        run: |
+          set -euo pipefail
+          count=0
+          for run in .tomorrowci/runs/*; do
+            test -d "$run"
+            ./target/release/tomorrowci verify "$run"
+            count=$((count + 1))
+          done
+          test "$count" -eq 6
       - name: upload evidence
         if: always()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
@@ -45,6 +55,17 @@ jobs:
           path: |
             .tomorrowci/runs/
             .tomorrowci/measure/
+
+  windows-verifier:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: verifier and Windows filesystem regressions
+        shell: pwsh
+        run: cargo test -p tomorrowci-evidence -p tomorrowci --all-targets
 
   action-dogfood:
     runs-on: ubuntu-latest

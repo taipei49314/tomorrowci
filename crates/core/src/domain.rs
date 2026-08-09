@@ -157,6 +157,7 @@ impl std::fmt::Display for DependencyMode {
 
 /// Snapshot of the repository under test (never mutated).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RepositorySnapshot {
     pub source: String,
     pub path: PathBuf,
@@ -169,6 +170,7 @@ pub struct RepositorySnapshot {
 
 /// Detection result from an adapter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectDetection {
     pub ecosystem: Ecosystem,
     pub package_manager: String,
@@ -181,6 +183,7 @@ pub struct ProjectDetection {
 
 /// Baseline environment definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Baseline {
     pub ecosystem: Ecosystem,
     pub runtime_label: String,
@@ -192,6 +195,7 @@ pub struct Baseline {
 
 /// A concrete future (or mutated) candidate environment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Candidate {
     pub id: String,
     pub axis: EnvironmentAxis,
@@ -207,6 +211,7 @@ pub struct Candidate {
 
 /// Full scenario to execute.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Scenario {
     pub id: ScenarioId,
     pub kind: ScenarioKind,
@@ -233,6 +238,7 @@ pub enum ScenarioKind {
 
 /// Ordered execution plan produced by the planner.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionPlan {
     pub run_id: RunId,
     pub scenarios: Vec<Scenario>,
@@ -249,6 +255,7 @@ fn default_max_parallel() -> usize {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlanDecisionRecord {
     pub scenario_id: Option<String>,
     pub action: String,
@@ -256,6 +263,7 @@ pub struct PlanDecisionRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UntestedArea {
     pub axis: EnvironmentAxis,
     pub label: String,
@@ -264,6 +272,7 @@ pub struct UntestedArea {
 
 /// A single command as an argument array (not a shell string).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CommandSpec {
     pub phase: CommandPhase,
     pub program: String,
@@ -284,6 +293,7 @@ pub enum CommandPhase {
 
 /// Environment specification materialized for the sandbox.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnvironmentSpec {
     pub image_ref: String,
     pub image_digest: Option<String>,
@@ -300,6 +310,7 @@ pub struct EnvironmentSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MountSpec {
     pub host_path: PathBuf,
     pub container_path: String,
@@ -316,6 +327,7 @@ pub enum NetworkMode {
 
 /// Raw runner output before normalization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawExecutionResult {
     pub exit_code: Option<i32>,
     pub signal: Option<i32>,
@@ -329,6 +341,7 @@ pub struct RawExecutionResult {
 
 /// Normalized execution result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionResult {
     pub scenario_id: ScenarioId,
     pub attempt: u32,
@@ -349,6 +362,7 @@ pub struct ExecutionResult {
 
 /// Normalized failure signature (not ad-hoc terminal parsing in verdict engine).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FailureSignature {
     pub kind: String,
     pub summary: String,
@@ -372,6 +386,7 @@ impl FailureSignature {
 
 /// Reference into the evidence directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvidenceReference {
     pub run_id: RunId,
     pub scenario_id: ScenarioId,
@@ -381,6 +396,7 @@ pub struct EvidenceReference {
 
 /// Scenario-level classified outcome.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScenarioVerdict {
     pub scenario_id: ScenarioId,
     pub label: String,
@@ -394,6 +410,7 @@ pub struct ScenarioVerdict {
 
 /// Minimal failure frontier (breakage horizon).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BreakageFrontier {
     pub observed: bool,
     pub horizon_label: Option<String>,
@@ -409,6 +426,7 @@ pub struct BreakageFrontier {
 
 /// Top-level run manifest.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunManifest {
     pub run_id: RunId,
     pub tool_version: String,
@@ -436,6 +454,7 @@ pub enum RunStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HostInfo {
     pub os: String,
     pub arch: String,

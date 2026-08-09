@@ -40,6 +40,20 @@ pub fn redact_secrets(input: &str) -> String {
     out
 }
 
+/// Render untrusted text without terminal control sequences. Newlines and tabs
+/// remain readable; every other control code is converted to visible text.
+pub fn sanitize_terminal(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '\n' | '\t' => out.push(ch),
+            ch if ch.is_control() => out.push_str(&format!("\\u{{{:04x}}}", ch as u32)),
+            ch => out.push(ch),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,5 +71,13 @@ mod tests {
         let s = "token ghp_abcdefghijklmnopqrstuvwxyz012345";
         let r = redact_secrets(s);
         assert!(r.contains("REDACTED") || !r.contains("ghp_abcdefghijklmnop"));
+    }
+
+    #[test]
+    fn terminal_text_makes_ansi_and_carriage_returns_visible() {
+        let sanitized = sanitize_terminal("safe\u{1b}[2J\rrewritten\nnext\tfield");
+        assert_eq!(sanitized, "safe\\u{001b}[2J\\u{000d}rewritten\nnext\tfield");
+        assert!(!sanitized.contains('\u{1b}'));
+        assert!(!sanitized.contains('\r'));
     }
 }
