@@ -2,7 +2,7 @@
 
 Qualification snapshot: 2026-08-09 (Asia/Taipei), baseline SHA `1f42003a561630164699f94f274727be23f2c1a8`.
 
-The local audit host is Windows. Docker CLI 29.6.2 is present but its daemon is unavailable; the Podman command is missing. A blocked path is not a product PASS. Public CI evidence is identified separately and applies only to its exact SHA. Full commands, fixture outcomes, release hashes, and truth boundaries are in [`docs/qualification/BASELINE.md`](docs/qualification/BASELINE.md); machine-readable open gates are in [`docs/qualification/BACKLOG.json`](docs/qualification/BACKLOG.json).
+The local audit host is Windows. Docker CLI 29.6.2 was present but its daemon was unavailable during the initial baseline; Docker Desktop 29.6.2 subsequently became available for the exact branch-candidate run recorded below. The Podman command remains missing. Public CI evidence is identified separately and applies only to its exact SHA. Local project-owned evidence does not count as independent external adoption. Full commands, fixture outcomes, release hashes, and truth boundaries are in [`docs/qualification/BASELINE.md`](docs/qualification/BASELINE.md); machine-readable open gates are in [`docs/qualification/BACKLOG.json`](docs/qualification/BACKLOG.json).
 
 | Claim | Status | Command / scope | Result | Evidence |
 |---|---|---|---|---|
@@ -13,6 +13,7 @@ The local audit host is Windows. Docker CLI 29.6.2 is present but its daemon is 
 | CLI version | PASS | `target/release/tomorrowci.exe --version` | `tomorrowci 0.1.0` | Local baseline |
 | Doctor finds a usable local sandbox | BLOCKED_LOCAL | `target/release/tomorrowci.exe doctor` | exit 4; Docker daemon unavailable; Podman missing; npm false-negative also observed | Local baseline |
 | Six built-in Docker fixture expectations | PASS_PUBLIC_CI | `measure all` / scan on exact default SHA | all six expectation contracts passed; combined claim count `56 PASS`, `0` other | [container job](https://github.com/taipei49314/tomorrowci/actions/runs/31185394369/job/92889106516), [step 5](https://github.com/taipei49314/tomorrowci/actions/runs/31185394369/job/92889106516#step:5:1), [baseline detail](docs/qualification/BASELINE.md#six-built-in-fixture-outcomes) |
+| Six local Docker fixtures plus bundle verification | PASS_LOCAL_CANDIDATE | Docker Desktop 29.6.2 on Windows; exact commit `aeb51a81d2e1288b9d5f16b5ea4e8ed39c9ff544`; `2026-08-09T12:00:00Z`–`2026-08-09T12:12:57Z` | six fixtures; `trustworthy=true`; `56 PASS`, `0` other; all six run bundles verified PASS | Local project-owned `%TEMP%` evidence: `5234ee587e61`/64 files, `5f6f01c0e9e4`/21, `83b8bfa7a323`/52, `bc8cb37e8bb4`/42, `c8d5dd2d8165`/73, `f31d689fe013`/21; [detail](docs/qualification/BASELINE.md#subsequent-local-docker-branch-candidate-evidence) |
 | Live Podman fixture suite | NOT_RUN | Local Podman command absent; inspected public job used Docker only | no Podman evidence | [`CI-003`](docs/qualification/BACKLOG.json) |
 | End-to-end replay | NOT_RUN | required `scan -> verify -> replay x2 -> verify` | public measure run scanned only; replay text was a suggested command | [`QUAL-003`](docs/qualification/BACKLOG.json) |
 | First-class evidence verification | OPEN | baseline CLI surface | no `verify` subcommand at this SHA | [`QUAL-001`](docs/qualification/BACKLOG.json) |

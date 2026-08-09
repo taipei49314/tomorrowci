@@ -140,6 +140,72 @@
         "source": "public project-operated Docker CI artifact"
       }
     ],
+    "local_docker_branch_candidate": {
+      "status": "PASS",
+      "source": "local project-owned Windows host",
+      "is_external_adoption_evidence": false,
+      "head_sha": "aeb51a81d2e1288b9d5f16b5ea4e8ed39c9ff544",
+      "started_at": "2026-08-09T12:00:00Z",
+      "finished_at": "2026-08-09T12:12:57Z",
+      "container_environment": "Windows Docker Desktop 29.6.2",
+      "evidence_storage": "temporary %TEMP% directory",
+      "fixture_count": 6,
+      "fixtures": [
+        "python-runtime-break",
+        "baseline-fail",
+        "flaky-project",
+        "python-dependency-break",
+        "node-dependency-break",
+        "rust-msrv-break"
+      ],
+      "suite_trustworthy": true,
+      "combined_measure_claim_counts": {
+        "pass": 56,
+        "fail": 0,
+        "blocked": 0,
+        "not_run": 0,
+        "skip": 0
+      },
+      "verify": {
+        "runs_checked": 6,
+        "runs_passed": 6,
+        "runs_failed": 0,
+        "runs": [
+          {
+            "run_id": "5234ee587e61",
+            "file_count": 64,
+            "status": "PASS"
+          },
+          {
+            "run_id": "5f6f01c0e9e4",
+            "file_count": 21,
+            "status": "PASS"
+          },
+          {
+            "run_id": "83b8bfa7a323",
+            "file_count": 52,
+            "status": "PASS"
+          },
+          {
+            "run_id": "bc8cb37e8bb4",
+            "file_count": 42,
+            "status": "PASS"
+          },
+          {
+            "run_id": "c8d5dd2d8165",
+            "file_count": 73,
+            "status": "PASS"
+          },
+          {
+            "run_id": "f31d689fe013",
+            "file_count": 21,
+            "status": "PASS"
+          }
+        ]
+      },
+      "replay_executed": false,
+      "scope_note": "This is local project-owned candidate evidence in a temporary directory. It is not public exact-SHA CI, independent external adoption, replay qualification, or stable-release evidence."
+    },
     "local_checks": [
       {
         "command": "cargo fmt --all -- --check",
@@ -362,10 +428,11 @@
       "phase": 0,
       "area": "local_environment",
       "priority": "P2",
-      "status": "BLOCKED_LOCAL",
+      "status": "DONE",
       "blocks_release": false,
-      "summary": "Local live container rerun is unavailable on the current Windows audit host.",
+      "summary": "The local live Docker fixture rerun completed after the Windows engine became available.",
       "baseline_evidence": "Docker CLI 29.6.2 is installed but the daemon is unavailable; Podman command is missing; doctor exits 4.",
+      "closure_evidence": "Docker Desktop 29.6.2 subsequently ran all six built-in fixtures at exact branch commit aeb51a81d2e1288b9d5f16b5ea4e8ed39c9ff544 from 2026-08-09T12:00:00Z through 2026-08-09T12:12:57Z. The suite recorded trustworthy=true and 56 PASS with 0 other claims; verify passed all six run bundles. Evidence is local, project-owned, and stored under a temporary %TEMP% directory.",
       "acceptance": "Re-run locally only after a working daemon/engine is available; do not convert this blocker into a product PASS."
     },
     {

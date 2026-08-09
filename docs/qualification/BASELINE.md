@@ -67,7 +67,26 @@ These checks ran from the clean baseline source on Windows. A command passing me
 | `npm test -- --run` in `apps/web` | PASS | Vitest `3/3`. |
 | `npm run build` in `apps/web` | PASS | Production build completed. |
 
-Local live Docker execution is `BLOCKED_LOCAL`, and local Podman execution is `NOT_RUN` because the command is missing. The public CI evidence above closes the Docker fixture observation for that exact GitHub SHA only. There is no inspected public Podman fixture run.
+At the initial baseline, local live Docker execution was `BLOCKED_LOCAL`, and local Podman execution was `NOT_RUN` because the command was missing. The public CI evidence above closes the Docker fixture observation for that exact GitHub SHA only. A later local branch-candidate run is recorded below; there is still no inspected public Podman fixture run.
+
+### Subsequent local Docker branch-candidate evidence
+
+After Docker Desktop became available on the same Windows host, the six built-in fixtures were run locally with Docker Desktop 29.6.2 using exact commit `aeb51a81d2e1288b9d5f16b5ea4e8ed39c9ff544`. The observed run window was `2026-08-09T12:00:00Z` through `2026-08-09T12:12:57Z`.
+
+- All six fixture expectation contracts completed, and the suite recorded `trustworthy=true`.
+- The combined claim count was `PASS=56`, with `FAIL=0`, `BLOCKED=0`, `NOT_RUN=0`, and `SKIP=0`.
+- The candidate's `verify` command separately returned PASS for each of the six generated run bundles.
+- Evidence was written under a temporary `%TEMP%` directory. It is local, project-owned evidence, not durable public CI evidence and not independent external-adoption evidence.
+- This run did not execute the required replay contract and does not close the replay, external, or stable-release gates.
+
+| Run ID | Verified file count | `verify` result |
+| --- | ---: | --- |
+| `5234ee587e61` | 64 | PASS |
+| `5f6f01c0e9e4` | 21 | PASS |
+| `83b8bfa7a323` | 52 | PASS |
+| `bc8cb37e8bb4` | 42 | PASS |
+| `c8d5dd2d8165` | 73 | PASS |
+| `f31d689fe013` | 21 | PASS |
 
 ## Existing release read-back
 
@@ -93,7 +112,7 @@ No provenance or artifact-attestation asset appears in the five-asset release in
 
 - Source formatting, lint, tests, release build, CLI version, web tests, and web build passed locally.
 - All six built-in fixture expectations passed on public Docker CI at the exact default SHA.
-- Local Docker is blocked, Podman is missing locally, and no public Podman fixture evidence was inspected.
+- The initial local Docker check was blocked; a subsequent local Docker Desktop 29.6.2 run at exact branch commit `aeb51a81d2e1288b9d5f16b5ea4e8ed39c9ff544` passed all six fixture expectations and verified all six generated run bundles. Podman remains missing locally, and no public Podman fixture evidence was inspected.
 - End-to-end `scan -> verify -> replay x2 -> verify` is **NOT_RUN** and cannot exist at this baseline because the CLI lacks `verify`; the public measure run performed scans only.
 - The existing release has three material qualification failures: mislabeled macOS architecture, an empty dependency SBOM, and incomplete checksum coverage.
 - Independent external maintainer/adopter/auditor evidence is **BLOCKED_EXTERNAL** and must not be self-attested.
