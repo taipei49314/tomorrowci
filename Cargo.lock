@@ -894,6 +894,7 @@ dependencies = [
  "clap",
  "serde_json",
  "serde_yaml",
+ "tempfile",
  "tokio",
  "tomorrowci-core",
  "tomorrowci-evidence",
@@ -992,6 +993,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tomorrowci-core",
+ "tomorrowci-report",
  "tracing",
 ]
 

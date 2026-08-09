@@ -1,10 +1,15 @@
 //! TomorrowCI CLI — Continuous Integration Against the Future.
 
 use clap::{Parser, Subcommand, ValueEnum};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tomorrowci_core::backtest::BacktestRequest;
 use tomorrowci_core::policy::PolicyConfig;
+use tomorrowci_core::redaction::{redact_secrets, sanitize_terminal};
 use tomorrowci_core::Config;
+use tomorrowci_evidence::{verify_bundle, BundleKind, EvidenceStore};
 use tomorrowci_measure::{
     default_catalog, run_benches, run_fixture_suite, ClaimStatus, SuiteOptions,
 };
@@ -46,6 +51,11 @@ enum Commands {
     },
     /// Show scenarios and verdicts for a run
     Show { run_id: String },
+    /// Verify a sealed evidence bundle without executing its contents
+    Verify {
+        /// Run id, or an explicit absolute/./relative bundle path
+        run: String,
+    },
     /// Replay one exact scenario from recorded evidence
     Replay {
         run_id: String,
@@ -152,8 +162,18 @@ enum ReportFormat {
     Sarif,
 }
 
+static OUTPUT_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() {
+    if let Err(error) = run().await {
+        let message = sanitize_terminal(&redact_secrets(&format!("{error:#}")));
+        eprintln!("Error: {message}");
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -178,26 +198,41 @@ async fn main() -> anyhow::Result<()> {
             })
             .await?;
             print!("{}", outcome.terminal_summary);
-            // Non-zero if baseline invalid or policy-relevant fail
-            if outcome
-                .verdicts
-                .iter()
-                .any(|v| v.verdict == tomorrowci_core::Verdict::BaselineInvalid)
-            {
-                std::process::exit(2);
-            }
-            if outcome.frontier.observed {
-                std::process::exit(3);
-            }
-            if outcome.manifest.status == tomorrowci_core::RunStatus::Blocked {
-                std::process::exit(4);
+            if let Some(code) = scan_exit_code(
+                &outcome.verdicts,
+                outcome.manifest.status,
+                outcome.frontier.observed,
+            ) {
+                std::process::exit(code);
             }
         }
         Commands::Show { run_id } => {
             print!("{}", show_run(&evidence_root, &run_id)?);
         }
+        Commands::Verify { run } => {
+            let candidate = PathBuf::from(&run);
+            let verified = if is_explicit_bundle_path(&run, &candidate) {
+                verify_bundle(&candidate)?
+            } else {
+                EvidenceStore::open(&evidence_root, &run)?.verify()?
+            };
+            if verified.kind != BundleKind::Run {
+                anyhow::bail!(
+                    "verify requires a run bundle, found {}",
+                    bundle_kind_label(verified.kind)
+                );
+            }
+            println!(
+                "PASS version={} kind={} file_count={} root={}",
+                verified.version,
+                bundle_kind_label(verified.kind),
+                verified.file_count,
+                serde_json::to_string(&verified.root.to_string_lossy())?
+            );
+        }
         Commands::Replay { run_id, scenario } => {
-            let msg = replay(&evidence_root, &run_id, &scenario, None).await?;
+            let trusted_workspace = work_root.join("workspaces").join(&run_id);
+            let msg = replay(&evidence_root, &run_id, &scenario, Some(&trusted_workspace)).await?;
             println!("{msg}");
         }
         Commands::Explain { run_id } => {
@@ -208,24 +243,46 @@ async fn main() -> anyhow::Result<()> {
             format,
             output,
         } => {
-            let store = tomorrowci_evidence::EvidenceStore::open(&evidence_root, &run_id)?;
-            let dest = output.unwrap_or_else(|| match format {
-                ReportFormat::Html => store.root.join("report.html"),
-                ReportFormat::Json => store.root.join("report.json"),
-                ReportFormat::Sarif => store.root.join("report.sarif"),
+            let store = EvidenceStore::open(&evidence_root, &run_id)?;
+            let verified = store.verify()?;
+            let dest = output.unwrap_or_else(|| {
+                let extension = match &format {
+                    ReportFormat::Html => "html",
+                    ReportFormat::Json => "json",
+                    ReportFormat::Sarif => "sarif",
+                };
+                evidence_root
+                    .join("reports")
+                    .join(format!("{run_id}.{extension}"))
             });
-            // Re-load data
-            let run = store.load_run()?;
-            let verdicts = store.load_verdicts()?;
-            let frontier = store.load_frontier()?;
-            let plan = std::fs::read_to_string(store.root.join("plan.json"))
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or(serde_json::json!({}));
-            let candidates = std::fs::read_to_string(store.root.join("candidates.json"))
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or(serde_json::json!([]));
+            if path_would_be_within(&dest, &store.root)? {
+                anyhow::bail!(
+                    "report output must be outside sealed run bundle {}",
+                    store.root.display()
+                );
+            }
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            if path_would_be_within(&dest, &store.root)? {
+                anyhow::bail!(
+                    "report output resolved inside sealed run bundle {}",
+                    store.root.display()
+                );
+            }
+            let run = verified.read_json("run.json")?;
+            let verdicts = verified.read_json("verdicts.json")?;
+            let frontier = verified.read_json("frontier.json")?;
+            let plan = if verified.contains("plan.json") {
+                verified.read_json("plan.json")?
+            } else {
+                serde_json::json!({})
+            };
+            let candidates = if verified.contains("candidates.json") {
+                verified.read_json("candidates.json")?
+            } else {
+                serde_json::json!([])
+            };
             let data = tomorrowci_report::ReportData {
                 run,
                 verdicts,
@@ -275,7 +332,7 @@ async fn main() -> anyhow::Result<()> {
             if let Some(parent) = output.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&output, GITHUB_ACTION_WORKFLOW)?;
+            atomic_write_output(&output, GITHUB_ACTION_WORKFLOW.as_bytes())?;
             println!("Wrote safe GitHub Actions workflow to {}", output.display());
             println!(
                 "Default permissions: contents: read only. No secrets forwarded to untrusted code."
@@ -299,7 +356,7 @@ async fn main() -> anyhow::Result<()> {
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&dest, serde_json::to_string_pretty(&report)?)?;
+            atomic_write_output(&dest, serde_json::to_string_pretty(&report)?.as_bytes())?;
             println!("Wrote {}", dest.display());
             if report.decision == tomorrowci_core::PolicyDecision::Fail {
                 std::process::exit(6);
@@ -316,7 +373,7 @@ async fn main() -> anyhow::Result<()> {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&path, serde_json::to_string_pretty(&cmp)?)?;
+            atomic_write_output(&path, serde_json::to_string_pretty(&cmp)?.as_bytes())?;
             println!("Wrote {}", path.display());
             if fail_on_regression && cmp.is_regression {
                 std::process::exit(5);
@@ -349,7 +406,7 @@ async fn main() -> anyhow::Result<()> {
             if let Some(parent) = out.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&out, serde_json::to_string_pretty(&report)?)?;
+            atomic_write_output(&out, serde_json::to_string_pretty(&report)?.as_bytes())?;
             let html_path = out.with_extension("html");
             if let Err(e) = tomorrowci_report::write_backtest_html(&html_path, &report) {
                 eprintln!("warning: backtest html: {e}");
@@ -391,7 +448,7 @@ async fn main() -> anyhow::Result<()> {
                 let report = run_benches(&root);
                 std::fs::create_dir_all(&out)?;
                 let path = out.join("bench-report.json");
-                std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+                atomic_write_output(&path, serde_json::to_string_pretty(&report)?.as_bytes())?;
                 print!("{}", report.ledger.render_table());
                 println!("\n{}\nreport={}", report.note, path.display());
                 if report.ledger.counts().fail > 0 {
@@ -402,9 +459,9 @@ async fn main() -> anyhow::Result<()> {
                 let root = std::env::current_dir()?;
                 std::fs::create_dir_all(&out)?;
                 let benches = run_benches(&root);
-                std::fs::write(
-                    out.join("bench-report.json"),
-                    serde_json::to_string_pretty(&benches)?,
+                atomic_write_output(
+                    &out.join("bench-report.json"),
+                    serde_json::to_string_pretty(&benches)?.as_bytes(),
                 )?;
                 println!("=== Benches ===");
                 print!("{}", benches.ledger.render_table());
@@ -417,7 +474,10 @@ async fn main() -> anyhow::Result<()> {
                     combined.push(c);
                 }
                 let combined_path = out.join("claim-ledger.json");
-                std::fs::write(&combined_path, serde_json::to_string_pretty(&combined)?)?;
+                atomic_write_output(
+                    &combined_path,
+                    serde_json::to_string_pretty(&combined)?.as_bytes(),
+                )?;
                 let summary = serde_json::json!({
                     "generated_at": chrono::Utc::now().to_rfc3339(),
                     "tool_version": TOOL_VERSION,
@@ -428,9 +488,9 @@ async fn main() -> anyhow::Result<()> {
                     "suite_report": out.join("suite-report.json"),
                     "ledger": combined_path,
                 });
-                std::fs::write(
-                    out.join("summary.json"),
-                    serde_json::to_string_pretty(&summary)?,
+                atomic_write_output(
+                    &out.join("summary.json"),
+                    serde_json::to_string_pretty(&summary)?.as_bytes(),
                 )?;
                 println!("\n=== Combined ===\n{}", combined.render_table());
                 println!("summary={}", out.join("summary.json").display());
@@ -445,6 +505,80 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn atomic_write_output(path: &std::path::Path, contents: &[u8]) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("output path has no parent: {}", path.display()))?;
+    std::fs::create_dir_all(parent)?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("output filename is not UTF-8: {}", path.display()))?;
+    let mut temporary = None;
+    for _ in 0..100 {
+        let sequence = OUTPUT_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(".{name}.tmp-{}-{sequence}", std::process::id()));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                temporary = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let (temporary_path, mut file) = temporary.ok_or_else(|| {
+        anyhow::anyhow!("could not allocate temporary output for {}", path.display())
+    })?;
+    if let Err(error) = file.write_all(contents).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = std::fs::remove_file(&temporary_path);
+        return Err(error.into());
+    }
+    drop(file);
+    if let Err(error) = std::fs::rename(&temporary_path, path) {
+        let _ = std::fs::remove_file(&temporary_path);
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+fn scan_exit_code(
+    verdicts: &[tomorrowci_core::ScenarioVerdict],
+    status: tomorrowci_core::RunStatus,
+    frontier_observed: bool,
+) -> Option<i32> {
+    use tomorrowci_core::Verdict;
+    if verdicts
+        .iter()
+        .any(|verdict| verdict.verdict == Verdict::BaselineInvalid)
+    {
+        return Some(2);
+    }
+    if frontier_observed {
+        return Some(3);
+    }
+    if status == tomorrowci_core::RunStatus::Blocked
+        || verdicts.iter().any(|verdict| {
+            matches!(
+                verdict.verdict,
+                Verdict::FutureFail
+                    | Verdict::Flaky
+                    | Verdict::Blocked
+                    | Verdict::Unsupported
+                    | Verdict::Inconclusive
+            )
+        })
+    {
+        return Some(4);
+    }
+    None
 }
 
 async fn run_measure_suite(
@@ -469,13 +603,13 @@ async fn run_measure_suite(
     })
     .await;
     std::fs::create_dir_all(out)?;
-    std::fs::write(
-        out.join("suite-report.json"),
-        serde_json::to_string_pretty(&report)?,
+    atomic_write_output(
+        &out.join("suite-report.json"),
+        serde_json::to_string_pretty(&report)?.as_bytes(),
     )?;
-    std::fs::write(
-        out.join("claim-ledger.json"),
-        serde_json::to_string_pretty(&report.ledger)?,
+    atomic_write_output(
+        &out.join("claim-ledger.json"),
+        serde_json::to_string_pretty(&report.ledger)?.as_bytes(),
     )?;
     // Human markdown
     let mut md = String::from("# TomorrowCI measure suite\n\n");
@@ -493,7 +627,7 @@ async fn run_measure_suite(
             c.detail.replace('|', "\\|")
         ));
     }
-    std::fs::write(out.join("CLAIM_LEDGER.md"), md)?;
+    atomic_write_output(&out.join("CLAIM_LEDGER.md"), md.as_bytes())?;
     let _ = ClaimStatus::Pass; // keep import used if optimized
     Ok(report)
 }
@@ -508,6 +642,54 @@ fn load_config(path: Option<&std::path::Path>) -> anyhow::Result<Config> {
     } else {
         Ok(Config::default())
     }
+}
+
+fn bundle_kind_label(kind: BundleKind) -> &'static str {
+    match kind {
+        BundleKind::Run => "run",
+        BundleKind::Scenario => "scenario",
+        BundleKind::Generic => "generic",
+    }
+}
+
+fn is_explicit_bundle_path(selector: &str, path: &std::path::Path) -> bool {
+    path.is_absolute()
+        || selector == "."
+        || selector == ".."
+        || selector.contains('/')
+        || selector.contains('\\')
+}
+
+fn path_would_be_within(path: &std::path::Path, root: &std::path::Path) -> anyhow::Result<bool> {
+    let canonical_root = std::fs::canonicalize(root)?;
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    if absolute
+        .components()
+        .any(|component| component == std::path::Component::ParentDir)
+    {
+        anyhow::bail!("report output must not contain parent-directory components");
+    }
+
+    let mut ancestor = absolute.as_path();
+    let mut missing = Vec::new();
+    while !ancestor.exists() {
+        let name = ancestor
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("report output has no existing ancestor"))?;
+        missing.push(name.to_os_string());
+        ancestor = ancestor
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("report output has no existing ancestor"))?;
+    }
+    let mut resolved = std::fs::canonicalize(ancestor)?;
+    for component in missing.into_iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved.starts_with(canonical_root))
 }
 
 const GITHUB_ACTION_WORKFLOW: &str = r###"# Generated by `tomorrowci init-action`
@@ -541,3 +723,65 @@ jobs:
           base-ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
           fail-on-regression: "false"
 "###;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+    use tomorrowci_core::{EvidenceGrade, ScenarioId, ScenarioVerdict, Verdict};
+
+    fn verdict(kind: Verdict) -> ScenarioVerdict {
+        ScenarioVerdict {
+            scenario_id: ScenarioId::new("fixture"),
+            label: "fixture".into(),
+            verdict: kind,
+            evidence_grade: EvidenceGrade::Inconclusive,
+            attempts: 0,
+            failure_signature: None,
+            evidence: None,
+            notes: vec![],
+        }
+    }
+
+    #[test]
+    fn unsupported_and_inconclusive_scans_are_never_green() {
+        assert_eq!(
+            scan_exit_code(
+                &[verdict(Verdict::Unsupported)],
+                tomorrowci_core::RunStatus::Completed,
+                false
+            ),
+            Some(4)
+        );
+        assert_eq!(
+            scan_exit_code(
+                &[verdict(Verdict::Inconclusive)],
+                tomorrowci_core::RunStatus::Completed,
+                false
+            ),
+            Some(4)
+        );
+        assert_eq!(
+            scan_exit_code(
+                &[verdict(Verdict::BaselinePass)],
+                tomorrowci_core::RunStatus::Completed,
+                false
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn atomic_cli_output_does_not_truncate_a_hardlink_alias() {
+        let dir = tempdir().unwrap();
+        let sealed = dir.path().join("run.json");
+        let output = dir.path().join("policy.json");
+        std::fs::write(&sealed, b"sealed").unwrap();
+        std::fs::hard_link(&sealed, &output).unwrap();
+
+        atomic_write_output(&output, b"derived").unwrap();
+
+        assert_eq!(std::fs::read(&sealed).unwrap(), b"sealed");
+        assert_eq!(std::fs::read(&output).unwrap(), b"derived");
+    }
+}

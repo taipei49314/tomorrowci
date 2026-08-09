@@ -5,8 +5,10 @@
 pub mod backtest_html;
 
 use serde::Serialize;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 use tomorrowci_core::{
     safety::escape_html, BreakageFrontier, RunManifest, ScenarioVerdict, Verdict,
@@ -23,6 +25,7 @@ pub enum ReportError {
 }
 
 pub type Result<T> = std::result::Result<T, ReportError>;
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ReportData {
@@ -33,12 +36,23 @@ pub struct ReportData {
     pub candidates: serde_json::Value,
 }
 
+pub fn render_json_report(data: &ReportData) -> Result<Vec<u8>> {
+    Ok(serde_json::to_vec_pretty(data)?)
+}
+
 pub fn write_json_report(path: &Path, data: &ReportData) -> Result<()> {
-    fs::write(path, serde_json::to_string_pretty(data)?)?;
+    atomic_write(path, &render_json_report(data)?)?;
     Ok(())
 }
 
-pub fn write_sarif_report(path: &Path, data: &ReportData) -> Result<()> {
+pub fn render_sarif_report(data: &ReportData) -> Result<Vec<u8>> {
+    render_sarif_report_with_version(data, env!("CARGO_PKG_VERSION"))
+}
+
+pub fn render_sarif_report_with_version(
+    data: &ReportData,
+    renderer_version: &str,
+) -> Result<Vec<u8>> {
     let mut results = Vec::new();
     for v in &data.verdicts {
         if matches!(v.verdict, Verdict::FutureFail | Verdict::BaselineInvalid) {
@@ -67,7 +81,7 @@ pub fn write_sarif_report(path: &Path, data: &ReportData) -> Result<()> {
                 "driver": {
                     "name": "TomorrowCI",
                     "informationUri": "https://github.com/tomorrowci/tomorrowci",
-                    "version": env!("CARGO_PKG_VERSION"),
+                    "version": renderer_version,
                     "rules": [{
                         "id": "tomorrowci/future-fail",
                         "shortDescription": { "text": "Future environment failure" },
@@ -78,12 +92,23 @@ pub fn write_sarif_report(path: &Path, data: &ReportData) -> Result<()> {
             "results": results
         }]
     });
-    fs::write(path, serde_json::to_string_pretty(&sarif)?)?;
+    Ok(serde_json::to_vec_pretty(&sarif)?)
+}
+
+pub fn write_sarif_report(path: &Path, data: &ReportData) -> Result<()> {
+    atomic_write(path, &render_sarif_report(data)?)?;
     Ok(())
 }
 
 /// Generate accessible, self-contained HTML from real run data.
-pub fn write_html_report(path: &Path, data: &ReportData) -> Result<()> {
+pub fn render_html_report(data: &ReportData) -> Result<String> {
+    render_html_report_with_version(data, env!("CARGO_PKG_VERSION"))
+}
+
+pub fn render_html_report_with_version(
+    data: &ReportData,
+    renderer_version: &str,
+) -> Result<String> {
     let json = serde_json::to_string(data)?;
     // Embed as JSON in script type application/json — escaped for script safety
     let json_safe = json
@@ -296,10 +321,67 @@ pub fn write_html_report(path: &Path, data: &ReportData) -> Result<()> {
                 .unwrap_or_else(|| "No failure signature".into())
         ),
         replay = escape_html(data.frontier.replay_command.as_deref().unwrap_or("n/a")),
-        version = env!("CARGO_PKG_VERSION"),
+        version = escape_html(renderer_version),
     );
 
-    fs::write(path, html)?;
+    Ok(html)
+}
+
+/// Generate accessible, self-contained HTML from real run data.
+pub fn write_html_report(path: &Path, data: &ReportData) -> Result<()> {
+    atomic_write(path, render_html_report(data)?.as_bytes())?;
+    Ok(())
+}
+
+fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("report path has no parent: {}", path.display()),
+        )
+    })?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("report filename is not UTF-8: {}", path.display()),
+            )
+        })?;
+    let mut temporary = None;
+    for _ in 0..100 {
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(".{name}.tmp-{}-{sequence}", std::process::id()));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                temporary = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let (temporary_path, mut file) = temporary.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("could not allocate temporary report for {}", path.display()),
+        )
+    })?;
+    if let Err(error) = file.write_all(contents).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(&temporary_path);
+        return Err(error.into());
+    }
+    drop(file);
+    if let Err(error) = fs::rename(&temporary_path, path) {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(error.into());
+    }
     Ok(())
 }
 
@@ -400,5 +482,23 @@ mod tests {
         let html = fs::read_to_string(path).unwrap();
         assert!(!html.contains("<script>alert(1)</script>"));
         assert!(html.contains("&lt;script&gt;") || html.contains("\\u003c"));
+
+        let html = render_html_report_with_version(&data, "</p><script>alert(2)</script>").unwrap();
+        assert!(!html.contains("</p><script>alert(2)</script>"));
+        assert!(html.contains("&lt;/p&gt;&lt;script&gt;alert(2)&lt;/script&gt;"));
+    }
+
+    #[test]
+    fn atomic_output_does_not_truncate_a_hardlink_alias() {
+        let dir = tempdir().unwrap();
+        let outside = dir.path().join("sealed-run.json");
+        let output = dir.path().join("report.json");
+        fs::write(&outside, b"sealed-evidence").unwrap();
+        fs::hard_link(&outside, &output).unwrap();
+
+        atomic_write(&output, b"derived-report").unwrap();
+
+        assert_eq!(fs::read(&outside).unwrap(), b"sealed-evidence");
+        assert_eq!(fs::read(&output).unwrap(), b"derived-report");
     }
 }

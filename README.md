@@ -101,16 +101,44 @@ Honest limit: applies **current** published candidates to historical source tree
 ./target/release/tomorrowci scan https://github.com/owner/repo
 ```
 
-### Inspect, explain, replay
+### Inspect, verify, explain, replay
 
 ```bash
 ./target/release/tomorrowci show <run-id>
+./target/release/tomorrowci verify <run-id|run-path>
 ./target/release/tomorrowci explain <run-id>
 ./target/release/tomorrowci replay <run-id> --scenario <scenario-id>
 ./target/release/tomorrowci report <run-id> --format html
 ```
 
-Evidence is written to `.tomorrowci/runs/<run-id>/` (JSON, logs, checksums, HTML).
+Evidence is written to `.tomorrowci/runs/<run-id>/` (JSON, logs, checksums,
+HTML). New bundles use a v1 sealed, recursive SHA-256 inventory. `verify`
+accepts either an explicit absolute/`./relative` bundle path or a run ID under
+`<evidence-root>/runs/`. A bare selector is always a run ID, so an untrusted
+directory in the current working directory cannot shadow it. A run ID must
+resolve to a `run` bundle, and an explicit path is accepted only when the
+verified bundle kind is also `run`; `scenario` and `generic` bundles cannot be
+passed to this command. It exits `0` with a `PASS` line only when the exact
+regular-file set, canonical paths, entry types, every digest, and the fixed
+run/scenario cross-file identity checks verify. Verification failures exit `1`
+(CLI usage errors exit `2`).
+
+`verify` parses only the fixed inventory and typed evidence schemas; it never
+executes replay scripts, recorded commands, target code, or containers. Legacy
+unversioned checksum lists fail closed as `UnsealedLegacy`. A verification
+`PASS` proves byte integrity and internal identity consistency relative to that
+co-located inventory, not producer authenticity, claim correctness, or a
+successful replay. It does not yet prove the two successful replay attempts
+required to complete the Phase 1 acceptance criteria. See
+[Report format](docs/report-format.md) for the exact contract.
+
+Configured reports inside a sealed run are deterministically reconstructed
+from that run's verified evidence model and compared byte for byte. Evidence
+consumers retain the verified inventory generation and recheck bytes against
+it when reading; bounded inventory, file-count, nesting, total-byte, individual
+read, and typed-JSON limits fail closed. These checks detect observed changes
+but do not create an atomic filesystem snapshot, so evidence directories must
+not have concurrent writers while they are verified or consumed.
 
 ---
 
