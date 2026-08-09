@@ -589,9 +589,28 @@ async fn run_scenario_with_reruns(
     let mut last_blocked = None;
     let mut original_attempts = Vec::new();
     let mut replay_manifest = None;
+    let original_workspace = disposable_workspace(workspace);
 
     // First attempt
-    let first = execute_one(adapter, engine, config, workspace, scenario, 1).await;
+    let first = match original_workspace.as_ref() {
+        Ok(original_workspace) => {
+            execute_one(
+                adapter,
+                engine,
+                config,
+                original_workspace.path(),
+                scenario,
+                1,
+            )
+            .await
+        }
+        Err(message) => Err(attempt_failure(
+            engine,
+            1,
+            AttemptKindV2::Original,
+            message.clone(),
+        )),
+    };
     match first {
         Ok(attempt) => {
             log_attempt_provenance(&attempt.provenance);
@@ -629,9 +648,12 @@ async fn run_scenario_with_reruns(
             };
             let environment = recorded.completed.environment.clone();
             let commands = recorded.completed.commands.clone();
-            match execute_recorded_attempt(
+            let original_workspace = original_workspace
+                .as_ref()
+                .expect("a recorded first attempt requires an original workspace");
+            match execute_recorded_attempt_in_workspace(
                 engine,
-                workspace,
+                original_workspace.path(),
                 scenario,
                 &environment,
                 &commands,
@@ -861,7 +883,7 @@ async fn execute_one(
     let commands = adapter
         .commands(scenario, config)
         .map_err(|e| attempt_failure(engine, ordinal, AttemptKindV2::Original, e.to_string()))?;
-    let mut attempt = execute_recorded_attempt(
+    let mut attempt = execute_recorded_attempt_in_workspace(
         engine,
         workspace,
         scenario,
@@ -888,9 +910,31 @@ async fn execute_recorded_attempt(
     ordinal: u32,
     kind: AttemptKindV2,
 ) -> std::result::Result<ExecutedAttempt, AttemptFailure> {
+    let attempt_workspace = disposable_workspace(workspace)
+        .map_err(|message| attempt_failure(engine, ordinal, kind, message))?;
+    execute_recorded_attempt_in_workspace(
+        engine,
+        attempt_workspace.path(),
+        scenario,
+        environment,
+        commands,
+        ordinal,
+        kind,
+    )
+    .await
+}
+
+async fn execute_recorded_attempt_in_workspace(
+    engine: &EngineInfo,
+    attempt_workspace: &Path,
+    scenario: &Scenario,
+    environment: &EnvironmentSpec,
+    commands: &[CommandSpec],
+    ordinal: u32,
+    kind: AttemptKindV2,
+) -> std::result::Result<ExecutedAttempt, AttemptFailure> {
     let started_at = Utc::now();
     let execution = async {
-        let attempt_workspace = disposable_workspace(workspace)?;
         let execution_env = environment_with_exact_image(environment)?;
         ensure_image(engine, &execution_env.image_ref)
             .await
@@ -900,7 +944,7 @@ async fn execute_recorded_attempt(
         let opts = SandboxExecOptions {
             engine: engine.clone(),
             env: execution_env,
-            workspace_host: attempt_workspace.path().to_path_buf(),
+            workspace_host: attempt_workspace.to_path_buf(),
             workspace_container: "/workspace".into(),
             allowlist_env: vec![],
         };
@@ -2643,6 +2687,34 @@ mod tests {
         let second = disposable_workspace(&source).unwrap();
         assert_eq!(
             std::fs::read_to_string(second.path().join("state.txt")).unwrap(),
+            "recorded"
+        );
+    }
+
+    #[test]
+    fn original_rerun_series_shares_state_but_fresh_replay_does_not() {
+        let root = tempdir().unwrap();
+        let recorded = root.path().join("recorded-workspace");
+        std::fs::create_dir_all(&recorded).unwrap();
+        std::fs::write(recorded.join("source.txt"), "recorded").unwrap();
+
+        let original_series = disposable_workspace(&recorded).unwrap();
+        let counter = original_series.path().join("rerun-counter");
+        std::fs::write(&counter, "1").unwrap();
+
+        // A later original rerun executes in this same isolated workspace and
+        // can therefore expose state-dependent flakiness.
+        assert_eq!(std::fs::read_to_string(&counter).unwrap(), "1");
+        std::fs::write(&counter, "2").unwrap();
+        assert_eq!(std::fs::read_to_string(&counter).unwrap(), "2");
+
+        // The sealed recording is not mutated, and qualification/public
+        // replays still start from independent copies of that recording.
+        assert!(!recorded.join("rerun-counter").exists());
+        let replay = disposable_workspace(&recorded).unwrap();
+        assert!(!replay.path().join("rerun-counter").exists());
+        assert_eq!(
+            std::fs::read_to_string(replay.path().join("source.txt")).unwrap(),
             "recorded"
         );
     }
