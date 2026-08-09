@@ -169,7 +169,18 @@ async fn main() {
     if let Err(error) = run().await {
         let message = sanitize_terminal(&redact_secrets(&format!("{error:#}")));
         eprintln!("Error: {message}");
-        std::process::exit(1);
+        std::process::exit(error_exit_code(&error));
+    }
+}
+
+fn error_exit_code(error: &anyhow::Error) -> i32 {
+    if error
+        .chain()
+        .any(|cause| cause.to_string().trim_start().starts_with("BLOCKED:"))
+    {
+        4
+    } else {
+        1
     }
 }
 
@@ -649,6 +660,7 @@ fn bundle_kind_label(kind: BundleKind) -> &'static str {
         BundleKind::Run => "run",
         BundleKind::Scenario => "scenario",
         BundleKind::Generic => "generic",
+        BundleKind::ReplayAttempt => "replay-attempt",
     }
 }
 
@@ -769,6 +781,12 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn blocked_errors_use_the_non_green_blocked_exit() {
+        assert_eq!(error_exit_code(&anyhow::anyhow!("BLOCKED: no engine")), 4);
+        assert_eq!(error_exit_code(&anyhow::anyhow!("invalid evidence")), 1);
     }
 
     #[test]

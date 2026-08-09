@@ -1,6 +1,8 @@
 //! Orchestrates detection → planning → sandboxed execution → evidence → reports.
 
-use chrono::{NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tomorrowci_adapter_node::{baseline_scenario as node_baseline_scenario, NodeAdapter};
@@ -14,13 +16,19 @@ use tomorrowci_core::compare::{compare_horizons, HorizonCompare};
 use tomorrowci_core::ddmin::reduce_axes;
 use tomorrowci_core::policy::{evaluate_policy, PolicyConfig, PolicyReport};
 use tomorrowci_core::{
-    authorize_frontier, classify_scenario,
+    authorize_frontier, canonical_sha256, classify_scenario,
     redaction::{redact_secrets, sanitize_terminal},
-    truncate_log, BreakageFrontier, Config, Ecosystem, EvidenceGrade, EvidenceReference,
-    ExecutionResult, FailureSignature, HostInfo, Planner, ProjectDetection, RepositorySnapshot,
-    RunId, RunManifest, RunStatus, Scenario, ScenarioId, ScenarioVerdict, Verdict,
+    truncate_log, AttemptKindV2, AttemptOutcomeClassV2, BreakageFrontier, CommandSpec, Config,
+    Ecosystem, EngineIdentityV2, EnvironmentSpec, EvidenceGrade, EvidenceReference,
+    ExactEnvironmentV2, ExactReplayManifestV2, ExecutionAttemptResultV2, ExecutionAttemptV2,
+    ExecutionResult, FailureSignature, HostInfo, NormalizedFailureSignatureV2, Planner,
+    ProjectDetection, RawExecutionResult, ReplayCommandV2, ReplayQualificationV2,
+    RepositorySnapshot, RunId, RunManifest, RunStatus, Scenario, ScenarioId, ScenarioVerdict,
+    SourceIdentityKindV2, SourceSnapshotManifestV2, Verdict, REPLAY_SCHEMA_VERSION_V2,
 };
-use tomorrowci_evidence::{EvidenceStore, ReplayManifest, VerifiedBundle};
+use tomorrowci_evidence::{
+    capture_source_snapshot_v2, AttemptEvidenceV2, EvidenceStore, VerifiedBundle,
+};
 use tomorrowci_report::{write_html_report, write_json_report, write_sarif_report};
 use tomorrowci_sandbox::{
     detect_engine, doctor_sandbox, ensure_image, execute_scenario, materialize_workspace,
@@ -56,6 +64,13 @@ pub struct ScanOutcome {
     pub frontier: BreakageFrontier,
     pub manifest: RunManifest,
     pub terminal_summary: String,
+}
+
+#[derive(Debug, Clone)]
+struct ReplayContextV2 {
+    run_id: RunId,
+    source_manifest_sha256: String,
+    config_sha256: String,
 }
 
 pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
@@ -94,6 +109,37 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
         .config
         .config_hash()
         .map_err(|e| RunnerError::Msg(e.to_string()))?;
+    let source_dirty = commit_sha.is_some() && git_worktree_dirty(&source_path);
+    let source_identity = match (&commit_sha, source_dirty) {
+        (Some(_), false) => SourceIdentityKindV2::GitCommit,
+        (Some(_), true) => SourceIdentityKindV2::DirtyWorktree,
+        (None, _) => SourceIdentityKindV2::NonGit,
+    };
+    let source_manifest = capture_source_snapshot_v2(
+        &run_id,
+        &workspace,
+        &source_label,
+        commit_sha.clone(),
+        source_identity,
+        source_dirty,
+        started,
+    )
+    .map_err(|e| RunnerError::Msg(e.to_string()))?;
+    store
+        .write_source_manifest_v2(&source_manifest)
+        .map_err(|e| RunnerError::Msg(e.to_string()))?;
+    // Required even for an early UNSUPPORTED/BLOCKED v2 run; normal scans
+    // overwrite it with every positive and negative qualification record.
+    store
+        .write_replay_qualifications_v2(&[])
+        .map_err(|e| RunnerError::Msg(e.to_string()))?;
+    let replay_context = ReplayContextV2 {
+        run_id: run_id.clone(),
+        source_manifest_sha256: canonical_sha256(&source_manifest)
+            .map_err(|e| RunnerError::Msg(e.to_string()))?,
+        config_sha256: canonical_sha256(&req.config)
+            .map_err(|e| RunnerError::Msg(e.to_string()))?,
+    };
 
     // Adapters
     let py = PythonAdapter::new();
@@ -207,20 +253,30 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
     store
         .write_plan(&plan)
         .map_err(|e| RunnerError::Msg(e.to_string()))?;
-
     let mut verdicts: Vec<ScenarioVerdict> = Vec::new();
     let mut executed_pass: Vec<(Scenario, bool, Option<tomorrowci_core::FailureSignature>)> =
         Vec::new();
+    let mut replay_qualifications = Vec::new();
 
     // Baseline always first (serial) — future work is unauthorized without it.
     let (baseline_scenarios, future_scenarios): (Vec<_>, Vec<_>) =
         plan.scenarios.iter().cloned().partition(|s| s.is_baseline);
 
     for scenario in &baseline_scenarios {
-        let (verdict, passed, sig) =
-            run_scenario_with_reruns(adapter, &engine, &req.config, &workspace, scenario, &store)
-                .await?;
+        let (verdict, passed, sig, qualification) = run_scenario_with_reruns(
+            adapter,
+            &engine,
+            &req.config,
+            &workspace,
+            scenario,
+            &store,
+            &replay_context,
+        )
+        .await?;
         executed_pass.push((scenario.clone(), passed, sig));
+        if let Some(qualification) = qualification {
+            replay_qualifications.push(qualification);
+        }
         verdicts.push(verdict);
         if !passed {
             // No parallel futures when baseline fails.
@@ -247,15 +303,19 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
             &req.config,
             &workspace,
             &store,
+            &replay_context,
             &future_scenarios,
             max_p,
         )
         .await?;
         // Preserve plan order for deterministic terminal output.
         for scenario in &future_scenarios {
-            if let Some((verdict, passed, sig)) = results.get(&scenario.id.0) {
+            if let Some((verdict, passed, sig, qualification)) = results.get(&scenario.id.0) {
                 executed_pass.push((scenario.clone(), *passed, sig.clone()));
                 verdicts.push(verdict.clone());
+                if let Some(qualification) = qualification {
+                    replay_qualifications.push(qualification.clone());
+                }
             }
         }
     }
@@ -300,12 +360,14 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
                     &req.config,
                     &workspace,
                     &store,
+                    &replay_context,
                     &combined,
                     max_p,
                 )
                 .await?;
                 for scenario in &combined {
-                    if let Some((verdict, passed, sig)) = results.get(&scenario.id.0) {
+                    if let Some((verdict, passed, sig, qualification)) = results.get(&scenario.id.0)
+                    {
                         if !passed && verdict.verdict == Verdict::FutureFail {
                             let axes = scenario
                                 .axes_changed
@@ -320,6 +382,9 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
                         }
                         executed_pass.push((scenario.clone(), *passed, sig.clone()));
                         verdicts.push(verdict.clone());
+                        if let Some(qualification) = qualification {
+                            replay_qualifications.push(qualification.clone());
+                        }
                     }
                 }
             }
@@ -330,6 +395,13 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
     // Rewrite the final executed plan before verdicts and checksum sealing.
     store
         .write_plan(&plan)
+        .map_err(|e| RunnerError::Msg(e.to_string()))?;
+    let qualification_records = replay_qualifications
+        .iter()
+        .map(|qualification| qualification.record.clone())
+        .collect::<Vec<_>>();
+    store
+        .write_replay_qualifications_v2(&qualification_records)
         .map_err(|e| RunnerError::Msg(e.to_string()))?;
 
     // Frontier authorization
@@ -367,11 +439,11 @@ pub async fn scan(req: ScanRequest) -> Result<ScanOutcome> {
 
     let has_replay = first_fail
         .as_ref()
-        .map(|f| {
-            store
-                .scenario_dir(&f.scenario_id.0)
-                .join("replay-manifest.json")
-                .exists()
+        .map(|failure| {
+            replay_qualifications.iter().any(|qualification| {
+                qualification.record.scenario_id == failure.scenario_id
+                    && qualification.qualified_against
+            })
         })
         .unwrap_or(false);
     let has_evidence = store.root.exists();
@@ -447,17 +519,26 @@ type ScenarioOutcome = (
     ScenarioVerdict,
     bool,
     Option<tomorrowci_core::FailureSignature>,
+    Option<ScenarioQualification>,
 );
+
+#[derive(Debug, Clone)]
+struct ScenarioQualification {
+    record: ReplayQualificationV2,
+    qualified_against: bool,
+}
 type ScenarioOutcomeMap = std::collections::HashMap<String, ScenarioOutcome>;
 
 /// Run scenarios with bounded concurrency. Results keyed by scenario id.
 /// Ordering of execution is not guaranteed; callers should re-sort by plan order.
+#[allow(clippy::too_many_arguments)]
 async fn run_scenarios_bounded(
     adapter: &dyn EcosystemAdapter,
     engine: &EngineInfo,
     config: &Config,
     workspace: &Path,
     store: &EvidenceStore,
+    replay_context: &ReplayContextV2,
     scenarios: &[Scenario],
     max_parallel: usize,
 ) -> Result<ScenarioOutcomeMap> {
@@ -465,10 +546,17 @@ async fn run_scenarios_bounded(
     let limit = max_parallel.max(1);
     let results: Vec<Result<(String, ScenarioOutcome)>> = stream::iter(scenarios.iter())
         .map(|scenario| async move {
-            let (verdict, passed, sig) =
-                run_scenario_with_reruns(adapter, engine, config, workspace, scenario, store)
-                    .await?;
-            Ok((scenario.id.0.clone(), (verdict, passed, sig)))
+            let (verdict, passed, sig, qualification) = run_scenario_with_reruns(
+                adapter,
+                engine,
+                config,
+                workspace,
+                scenario,
+                store,
+                replay_context,
+            )
+            .await?;
+            Ok((scenario.id.0.clone(), (verdict, passed, sig, qualification)))
         })
         .buffer_unordered(limit)
         .collect()
@@ -489,38 +577,39 @@ async fn run_scenario_with_reruns(
     workspace: &Path,
     scenario: &Scenario,
     store: &EvidenceStore,
+    replay_context: &ReplayContextV2,
 ) -> Result<(
     ScenarioVerdict,
     bool,
     Option<tomorrowci_core::FailureSignature>,
+    Option<ScenarioQualification>,
 )> {
     let mut outcomes = Vec::new();
     let mut last_sig = None;
     let mut last_blocked = None;
-    let mut last_raw = None;
-    let mut last_env = None;
-    let mut last_cmds = None;
-    let mut last_result = None;
-
-    let attempts = if scenario.is_baseline {
-        1 + config.execution.reruns_on_failure // still rerun baseline on failure
-    } else {
-        1
-    };
+    let mut original_attempts = Vec::new();
+    let mut replay_manifest = None;
 
     // First attempt
-    let first = execute_one(adapter, engine, config, workspace, scenario).await;
+    let first = execute_one(adapter, engine, config, workspace, scenario, 1).await;
     match first {
-        Ok((env, cmds, raw, result, sig_opt, passed)) => {
-            outcomes.push(passed);
-            last_sig = sig_opt;
-            last_raw = Some(raw);
-            last_env = Some(env);
-            last_cmds = Some(cmds);
-            last_result = Some(result);
+        Ok(attempt) => {
+            log_attempt_provenance(&attempt.provenance);
+            outcomes.push(attempt.completed.passed);
+            last_sig = attempt.completed.signature.clone();
+            replay_manifest = Some(build_exact_replay_manifest_v2(
+                replay_context,
+                scenario,
+                &attempt.completed.environment,
+                &attempt.completed.commands,
+                engine,
+                attempt.provenance.started_at,
+            )?);
+            original_attempts.push(attempt);
         }
-        Err(e) => {
-            last_blocked = Some(redact_secrets(&e));
+        Err(failure) => {
+            log_attempt_provenance(&failure.provenance);
+            last_blocked = Some(redact_secrets(&failure.message));
             outcomes.clear();
         }
     }
@@ -528,55 +617,48 @@ async fn run_scenario_with_reruns(
     // Rerun on failure
     let need_reruns = outcomes.first().copied() == Some(false) || last_blocked.is_some();
     if need_reruns {
-        for attempt in 1..=config.execution.reruns_on_failure {
-            let _ = attempt;
+        for rerun_index in 0..config.execution.reruns_on_failure {
             if last_blocked.is_some() {
                 // Don't spin on permanent blocks
                 break;
             }
-            match execute_one(adapter, engine, config, workspace, scenario).await {
-                Ok((env, cmds, raw, result, sig_opt, passed)) => {
-                    outcomes.push(passed);
-                    last_sig = sig_opt.or(last_sig);
-                    last_raw = Some(raw);
-                    last_env = Some(env);
-                    last_cmds = Some(cmds);
-                    last_result = Some(result);
+            let ordinal = rerun_index + 2;
+            let Some(recorded) = original_attempts.last() else {
+                last_blocked = Some("rerun has no recorded first attempt".into());
+                break;
+            };
+            let environment = recorded.completed.environment.clone();
+            let commands = recorded.completed.commands.clone();
+            match execute_recorded_attempt(
+                engine,
+                workspace,
+                scenario,
+                &environment,
+                &commands,
+                ordinal,
+                AttemptKindV2::Original,
+            )
+            .await
+            {
+                Ok(mut attempt) => {
+                    log_attempt_provenance(&attempt.provenance);
+                    if !attempt.completed.passed {
+                        let mut signature = adapter.normalize_failure(&attempt.completed.raw);
+                        signature.evidence_grade = scenario.evidence_grade;
+                        attempt.completed.signature = Some(redact_failure_signature(&signature));
+                    }
+                    outcomes.push(attempt.completed.passed);
+                    last_sig = attempt.completed.signature.clone().or(last_sig);
+                    original_attempts.push(attempt);
                 }
-                Err(e) => {
-                    last_blocked = Some(redact_secrets(&e));
+                Err(failure) => {
+                    log_attempt_provenance(&failure.provenance);
+                    last_blocked = Some(redact_secrets(&failure.message));
                     break;
                 }
             }
         }
-    } else {
-        // For success on non-baseline, single run is enough; for horizon fail we need 2 fails.
-        // If first failed we already reran. If we need consistent fail with attempts>=2 for horizon,
-        // ensure failing scenarios get at least one rerun (handled above).
-        let _ = attempts;
     }
-
-    // If first passed but we need nothing else — ok
-    // If failed only once and reruns_on_failure is 0, horizon won't authorize — correct.
-
-    // A later execution-level block means the retained successful/failed
-    // attempt is not the final classified outcome. Until attempts have their
-    // own evidence directories, do not publish that stale attempt as evidence
-    // for the BLOCKED verdict.
-    let has_bundle = if may_publish_final_attempt(last_blocked.as_deref()) {
-        if let (Some(env), Some(cmds), Some(raw), Some(result)) =
-            (&last_env, &last_cmds, &last_raw, &last_result)
-        {
-            store
-                .write_scenario_bundle(scenario, env, cmds, raw, result, last_sig.as_ref())
-                .map_err(|e| RunnerError::Msg(e.to_string()))?;
-            true
-        } else {
-            false
-        }
-    } else {
-        false
-    };
 
     let mut verdict = classify_scenario(
         scenario,
@@ -585,6 +667,108 @@ async fn run_scenario_with_reruns(
         last_blocked.clone(),
         None,
     );
+
+    // A stable FUTURE_FAIL must replay the already-recorded exact manifest in
+    // two independent disposable workspaces before it can authorize a horizon.
+    // Negative attempts are retained just as carefully as positive attempts.
+    let mut replay_attempts = Vec::new();
+    if verdict.verdict == Verdict::FutureFail && last_blocked.is_none() {
+        if let (Some(recorded), Some(manifest)) =
+            (original_attempts.last(), replay_manifest.as_ref())
+        {
+            for ordinal in 1..=2 {
+                match execute_recorded_attempt(
+                    engine,
+                    workspace,
+                    scenario,
+                    &recorded.completed.environment,
+                    &recorded.completed.commands,
+                    ordinal,
+                    AttemptKindV2::Replay,
+                )
+                .await
+                {
+                    Ok(mut attempt) => {
+                        log_attempt_provenance(&attempt.provenance);
+                        if !attempt.completed.passed {
+                            let mut signature = adapter.normalize_failure(&attempt.completed.raw);
+                            signature.evidence_grade = scenario.evidence_grade;
+                            attempt.completed.signature =
+                                Some(redact_failure_signature(&signature));
+                        }
+                        replay_attempts.push(attempt_evidence_v2(
+                            replay_context,
+                            scenario,
+                            manifest,
+                            &attempt,
+                        )?);
+                    }
+                    Err(failure) => {
+                        log_attempt_provenance(&failure.provenance);
+                        replay_attempts.push(attempt_failure_evidence_v2(
+                            replay_context,
+                            scenario,
+                            manifest,
+                            &failure,
+                        )?);
+                    }
+                }
+            }
+        }
+    }
+
+    // A later execution-level block means a prior result is not the final
+    // classified outcome. BLOCKED verdicts intentionally carry no scenario
+    // evidence under the strict run semantics.
+    let mut qualification = None;
+    let has_bundle = if may_publish_final_attempt(last_blocked.as_deref()) {
+        if let (Some(attempt), Some(manifest)) =
+            (original_attempts.last(), replay_manifest.as_ref())
+        {
+            let mut attempt_evidence = original_attempts
+                .iter()
+                .map(|attempt| attempt_evidence_v2(replay_context, scenario, manifest, attempt))
+                .collect::<Result<Vec<_>>>()?;
+            attempt_evidence.extend(replay_attempts);
+            let original_receipts = attempt_evidence
+                .iter()
+                .filter(|evidence| evidence.attempt.kind == AttemptKindV2::Original)
+                .map(|evidence| evidence.attempt.clone())
+                .collect::<Vec<_>>();
+            let replay_receipts = attempt_evidence
+                .iter()
+                .filter(|evidence| evidence.attempt.kind == AttemptKindV2::Replay)
+                .map(|evidence| evidence.attempt.clone())
+                .collect::<Vec<_>>();
+            let (_, persisted) = store
+                .write_scenario_bundle_v2(
+                    scenario,
+                    &attempt.completed.environment,
+                    &attempt.completed.commands,
+                    &attempt.completed.raw,
+                    &attempt.completed.result,
+                    last_sig.as_ref(),
+                    manifest,
+                    &attempt_evidence,
+                )
+                .map_err(|e| RunnerError::Msg(e.to_string()))?;
+            if let Some(record) = persisted {
+                let qualified_against = original_receipts
+                    .last()
+                    .is_some_and(|original| record.qualified_against(original, &replay_receipts));
+                qualification = Some(ScenarioQualification {
+                    record,
+                    qualified_against,
+                });
+            }
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
     verdict.evidence = has_bundle.then(|| EvidenceReference {
         run_id: RunId(store.run_id.clone()),
         scenario_id: scenario.id.clone(),
@@ -596,11 +780,55 @@ async fn run_scenario_with_reruns(
     });
 
     let passed = verdict.verdict.is_pass();
-    Ok((verdict, passed, last_sig))
+    Ok((verdict, passed, last_sig, qualification))
 }
 
 fn may_publish_final_attempt(blocked_reason: Option<&str>) -> bool {
     blocked_reason.is_none()
+}
+
+#[derive(Debug, Clone)]
+struct AttemptProvenance {
+    ordinal: u32,
+    kind: AttemptKindV2,
+    started_at: DateTime<Utc>,
+    finished_at: DateTime<Utc>,
+    engine_kind: String,
+    engine_version: String,
+}
+
+#[derive(Debug)]
+struct ExecutedAttempt {
+    provenance: AttemptProvenance,
+    completed: CompletedAttempt,
+}
+
+#[derive(Debug)]
+struct CompletedAttempt {
+    environment: EnvironmentSpec,
+    commands: Vec<CommandSpec>,
+    raw: RawExecutionResult,
+    result: ExecutionResult,
+    signature: Option<FailureSignature>,
+    passed: bool,
+}
+
+#[derive(Debug)]
+struct AttemptFailure {
+    provenance: AttemptProvenance,
+    message: String,
+}
+
+fn log_attempt_provenance(provenance: &AttemptProvenance) {
+    tracing::debug!(
+        attempt = provenance.ordinal,
+        kind = ?provenance.kind,
+        started_at = %provenance.started_at,
+        finished_at = %provenance.finished_at,
+        engine = %provenance.engine_kind,
+        engine_version = %provenance.engine_version,
+        "scenario attempt finished"
+    );
 }
 
 async fn execute_one(
@@ -609,20 +837,11 @@ async fn execute_one(
     config: &Config,
     workspace: &Path,
     scenario: &Scenario,
-) -> std::result::Result<
-    (
-        tomorrowci_core::EnvironmentSpec,
-        Vec<tomorrowci_core::CommandSpec>,
-        tomorrowci_core::RawExecutionResult,
-        ExecutionResult,
-        Option<tomorrowci_core::FailureSignature>,
-        bool,
-    ),
-    String,
-> {
+    ordinal: u32,
+) -> std::result::Result<ExecutedAttempt, AttemptFailure> {
     let mut env = adapter
         .materialize(scenario, workspace)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| attempt_failure(engine, ordinal, AttemptKindV2::Original, e.to_string()))?;
     env.memory_mb = config.sandbox.memory_mb;
     env.cpus = config.sandbox.cpus;
     env.pids_limit = config.sandbox.pids_limit;
@@ -630,42 +849,379 @@ async fn execute_one(
 
     ensure_image(engine, &env.image_ref)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| attempt_failure(engine, ordinal, AttemptKindV2::Original, e.to_string()))?;
     let (image_ref, digest) = resolve_image_digest(engine, &env.image_ref)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| attempt_failure(engine, ordinal, AttemptKindV2::Original, e.to_string()))?;
     env.image_ref = image_ref;
     env.image_digest = digest;
+    environment_with_exact_image(&env)
+        .map_err(|e| attempt_failure(engine, ordinal, AttemptKindV2::Original, e))?;
 
-    let cmds = adapter
+    let commands = adapter
         .commands(scenario, config)
-        .map_err(|e| e.to_string())?;
-
-    // Filter install -e . if no pyproject (avoid noisy fails) — still recorded
-    let opts = SandboxExecOptions {
-        engine: engine.clone(),
-        env: env.clone(),
-        workspace_host: workspace.to_path_buf(),
-        workspace_container: "/workspace".into(),
-        allowlist_env: vec!["PATH".into(), "HOME".into(), "LANG".into()],
-    };
-
-    let raw = execute_scenario(&opts, &cmds)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let passed = !raw.timed_out && raw.exit_code == Some(0) && raw.error.is_none();
-    let sig = if passed {
-        None
-    } else {
-        let mut signature = adapter.normalize_failure(&raw);
+        .map_err(|e| attempt_failure(engine, ordinal, AttemptKindV2::Original, e.to_string()))?;
+    let mut attempt = execute_recorded_attempt(
+        engine,
+        workspace,
+        scenario,
+        &env,
+        &commands,
+        ordinal,
+        AttemptKindV2::Original,
+    )
+    .await?;
+    if !attempt.completed.passed {
+        let mut signature = adapter.normalize_failure(&attempt.completed.raw);
         signature.evidence_grade = scenario.evidence_grade;
-        Some(redact_failure_signature(&signature))
-    };
+        attempt.completed.signature = Some(redact_failure_signature(&signature));
+    }
+    Ok(attempt)
+}
 
-    let result = ExecutionResult {
+async fn execute_recorded_attempt(
+    engine: &EngineInfo,
+    workspace: &Path,
+    scenario: &Scenario,
+    environment: &EnvironmentSpec,
+    commands: &[CommandSpec],
+    ordinal: u32,
+    kind: AttemptKindV2,
+) -> std::result::Result<ExecutedAttempt, AttemptFailure> {
+    let started_at = Utc::now();
+    let execution = async {
+        let attempt_workspace = disposable_workspace(workspace)?;
+        let execution_env = environment_with_exact_image(environment)?;
+        ensure_image(engine, &execution_env.image_ref)
+            .await
+            .map_err(|e| format!("BLOCKED: exact image unavailable: {e}"))?;
+
+        // Filter install -e . if no pyproject (avoid noisy fails) — still recorded
+        let opts = SandboxExecOptions {
+            engine: engine.clone(),
+            env: execution_env,
+            workspace_host: attempt_workspace.path().to_path_buf(),
+            workspace_container: "/workspace".into(),
+            allowlist_env: vec![],
+        };
+
+        let raw = execute_scenario(&opts, commands)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let passed = replay_target_succeeded(&raw);
+        let result = build_execution_result(scenario, ordinal, environment, commands, &raw);
+
+        Ok(CompletedAttempt {
+            environment: environment.clone(),
+            commands: commands.to_vec(),
+            raw,
+            result,
+            signature: None,
+            passed,
+        })
+    }
+    .await;
+    let provenance = AttemptProvenance {
+        ordinal,
+        kind,
+        started_at,
+        finished_at: Utc::now(),
+        engine_kind: engine.kind.binary().into(),
+        engine_version: engine.version.clone(),
+    };
+    execution
+        .map(|completed| ExecutedAttempt {
+            provenance: provenance.clone(),
+            completed,
+        })
+        .map_err(|message| AttemptFailure {
+            provenance,
+            message,
+        })
+}
+
+fn attempt_failure(
+    engine: &EngineInfo,
+    ordinal: u32,
+    kind: AttemptKindV2,
+    message: String,
+) -> AttemptFailure {
+    let now = Utc::now();
+    AttemptFailure {
+        provenance: AttemptProvenance {
+            ordinal,
+            kind,
+            started_at: now,
+            finished_at: now,
+            engine_kind: engine.kind.binary().into(),
+            engine_version: engine.version.clone(),
+        },
+        message,
+    }
+}
+
+fn build_exact_replay_manifest_v2(
+    context: &ReplayContextV2,
+    scenario: &Scenario,
+    environment: &EnvironmentSpec,
+    commands: &[CommandSpec],
+    engine: &EngineInfo,
+    created_at: DateTime<Utc>,
+) -> Result<ExactReplayManifestV2> {
+    // External host mounts do not have source snapshot identities in v2. Do
+    // not publish an "exact" manifest that could silently bind different host
+    // content during replay.
+    if !environment.mounts.is_empty() {
+        return Err(RunnerError::Msg(
+            "BLOCKED: exact replay cannot bind external host mounts without source identities"
+                .into(),
+        ));
+    }
+    let image_digest = environment.image_digest.clone().ok_or_else(|| {
+        RunnerError::Msg("BLOCKED: exact replay manifest requires an image digest".into())
+    })?;
+    digest_qualified_image_ref(&environment.image_ref, Some(&image_digest))
+        .map_err(RunnerError::Msg)?;
+
+    let cpu_value = environment.cpus * 1000.0;
+    if !cpu_value.is_finite()
+        || cpu_value <= 0.0
+        || cpu_value > u32::MAX as f64
+        || (cpu_value - cpu_value.round()).abs() > f64::EPSILON
+    {
+        return Err(RunnerError::Msg(format!(
+            "BLOCKED: CPU limit cannot be represented exactly in replay manifest: {}",
+            environment.cpus
+        )));
+    }
+
+    let replay_commands = commands
+        .iter()
+        .map(|command| ReplayCommandV2 {
+            schema_version: REPLAY_SCHEMA_VERSION_V2,
+            phase: command.phase,
+            program: command.program.clone(),
+            args: command.args.clone(),
+            workdir: command.workdir.clone(),
+            network_required: command.network_required,
+            env: command
+                .env
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<BTreeMap<_, _>>(),
+        })
+        .collect::<Vec<_>>();
+    let exact_environment = ExactEnvironmentV2 {
+        schema_version: REPLAY_SCHEMA_VERSION_V2,
+        workdir: environment.workdir.clone(),
+        user: environment.user.clone(),
+        env: environment
+            .env
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<BTreeMap<_, _>>(),
+        // The implicit primary workspace mount is carried by the sandbox
+        // options, not EnvironmentSpec.mounts. Only explicit mounts belong in
+        // this exact field (and are rejected above until source-bound).
+        mounts: vec![],
+        network_mode: environment.network_mode,
+        read_only_root: environment.read_only_root,
+        memory_mb: environment.memory_mb,
+        cpu_millis: cpu_value.round() as u32,
+        pids_limit: environment.pids_limit,
+        timeout_seconds: environment.timeout_seconds,
+    };
+    Ok(ExactReplayManifestV2 {
+        schema_version: REPLAY_SCHEMA_VERSION_V2,
+        run_id: context.run_id.clone(),
         scenario_id: scenario.id.clone(),
-        attempt: 1,
+        scenario_kind: scenario.kind,
+        source_manifest_sha256: context.source_manifest_sha256.clone(),
+        config_sha256: context.config_sha256.clone(),
+        scenario_sha256: canonical_sha256(scenario).map_err(|e| RunnerError::Msg(e.to_string()))?,
+        image_ref: environment.image_ref.clone(),
+        image_digest,
+        commands: replay_commands,
+        environment: exact_environment,
+        engine: engine_identity_v2(engine),
+        created_at,
+    })
+}
+
+fn engine_identity_v2(engine: &EngineInfo) -> EngineIdentityV2 {
+    EngineIdentityV2 {
+        schema_version: REPLAY_SCHEMA_VERSION_V2,
+        name: engine.kind.binary().into(),
+        client_version: engine.version.clone(),
+        server_version: Some(engine.version.clone()),
+        api_version: None,
+        os: std::env::consts::OS.into(),
+        arch: std::env::consts::ARCH.into(),
+    }
+}
+
+fn attempt_evidence_v2(
+    context: &ReplayContextV2,
+    scenario: &Scenario,
+    manifest: &ExactReplayManifestV2,
+    attempt: &ExecutedAttempt,
+) -> Result<AttemptEvidenceV2> {
+    let stdout = cap_attempt_log(&redact_secrets(&attempt.completed.raw.stdout));
+    let stderr = cap_attempt_log(&redact_secrets(&attempt.completed.raw.stderr));
+    let outcome_class = if attempt.completed.raw.error.is_some() {
+        AttemptOutcomeClassV2::Blocked
+    } else if attempt.completed.passed {
+        AttemptOutcomeClassV2::Passed
+    } else {
+        AttemptOutcomeClassV2::Failed
+    };
+    let failure_signature = attempt
+        .completed
+        .signature
+        .as_ref()
+        .map(normalized_failure_signature_v2);
+    let replay_manifest_sha256 =
+        canonical_sha256(manifest).map_err(|e| RunnerError::Msg(e.to_string()))?;
+    Ok(AttemptEvidenceV2 {
+        attempt: ExecutionAttemptV2 {
+            schema_version: REPLAY_SCHEMA_VERSION_V2,
+            attempt_id: RunId::new().0,
+            run_id: context.run_id.clone(),
+            scenario_id: scenario.id.clone(),
+            scenario_kind: scenario.kind,
+            source_manifest_sha256: context.source_manifest_sha256.clone(),
+            config_sha256: context.config_sha256.clone(),
+            replay_manifest_sha256,
+            image_ref: manifest.image_ref.clone(),
+            image_digest: manifest.image_digest.clone(),
+            commands: manifest.commands.clone(),
+            environment: manifest.environment.clone(),
+            engine: manifest.engine.clone(),
+            ordinal: attempt.provenance.ordinal,
+            kind: attempt.provenance.kind,
+            started_at: attempt.provenance.started_at,
+            finished_at: attempt.provenance.finished_at,
+            result: ExecutionAttemptResultV2 {
+                schema_version: REPLAY_SCHEMA_VERSION_V2,
+                outcome_class,
+                exit_code: attempt.completed.raw.exit_code,
+                signal: attempt.completed.raw.signal,
+                timed_out: attempt.completed.raw.timed_out,
+                blocked_reason: attempt.completed.raw.error.as_deref().map(redact_secrets),
+                network_used: attempt.completed.raw.network_used,
+                duration_ms: attempt.completed.raw.duration_ms,
+                stdout_sha256: Some(prefixed_sha256(stdout.as_bytes())),
+                stderr_sha256: Some(prefixed_sha256(stderr.as_bytes())),
+            },
+            failure_signature,
+        },
+        stdout,
+        stderr,
+    })
+}
+
+fn attempt_failure_evidence_v2(
+    context: &ReplayContextV2,
+    scenario: &Scenario,
+    manifest: &ExactReplayManifestV2,
+    failure: &AttemptFailure,
+) -> Result<AttemptEvidenceV2> {
+    let stdout = String::new();
+    let stderr = cap_attempt_log(&redact_secrets(&failure.message));
+    let duration_ms = failure
+        .provenance
+        .finished_at
+        .signed_duration_since(failure.provenance.started_at)
+        .num_milliseconds()
+        .max(0) as u64;
+    Ok(AttemptEvidenceV2 {
+        attempt: ExecutionAttemptV2 {
+            schema_version: REPLAY_SCHEMA_VERSION_V2,
+            attempt_id: RunId::new().0,
+            run_id: context.run_id.clone(),
+            scenario_id: scenario.id.clone(),
+            scenario_kind: scenario.kind,
+            source_manifest_sha256: context.source_manifest_sha256.clone(),
+            config_sha256: context.config_sha256.clone(),
+            replay_manifest_sha256: canonical_sha256(manifest)
+                .map_err(|e| RunnerError::Msg(e.to_string()))?,
+            image_ref: manifest.image_ref.clone(),
+            image_digest: manifest.image_digest.clone(),
+            commands: manifest.commands.clone(),
+            environment: manifest.environment.clone(),
+            engine: manifest.engine.clone(),
+            ordinal: failure.provenance.ordinal,
+            kind: failure.provenance.kind,
+            started_at: failure.provenance.started_at,
+            finished_at: failure.provenance.finished_at,
+            result: ExecutionAttemptResultV2 {
+                schema_version: REPLAY_SCHEMA_VERSION_V2,
+                outcome_class: AttemptOutcomeClassV2::Blocked,
+                exit_code: None,
+                signal: None,
+                timed_out: false,
+                blocked_reason: Some(redact_secrets(&failure.message)),
+                network_used: false,
+                duration_ms,
+                stdout_sha256: Some(prefixed_sha256(stdout.as_bytes())),
+                stderr_sha256: Some(prefixed_sha256(stderr.as_bytes())),
+            },
+            failure_signature: None,
+        },
+        stdout,
+        stderr,
+    })
+}
+
+fn normalized_failure_signature_v2(signature: &FailureSignature) -> NormalizedFailureSignatureV2 {
+    NormalizedFailureSignatureV2 {
+        schema_version: REPLAY_SCHEMA_VERSION_V2,
+        kind: signature.kind.clone(),
+        summary: signature.summary.clone(),
+        primary_error: signature.primary_error.clone(),
+        fingerprint: signature.fingerprint.clone(),
+        framework_hints: signature.framework_hints.clone(),
+        evidence_grade: signature.evidence_grade,
+    }
+}
+
+fn cap_attempt_log(value: &str) -> String {
+    const MAX_BYTES: usize = 2 * 1024 * 1024;
+    if value.len() <= MAX_BYTES {
+        return value.to_string();
+    }
+    let half = MAX_BYTES / 2;
+    let mut head_end = half;
+    while head_end > 0 && !value.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = value.len().saturating_sub(half);
+    while tail_start < value.len() && !value.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    format!(
+        "{}\n...[truncated {} bytes]...\n{}",
+        &value[..head_end],
+        tail_start.saturating_sub(head_end),
+        &value[tail_start..]
+    )
+}
+
+fn prefixed_sha256(bytes: &[u8]) -> String {
+    format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
+}
+
+fn build_execution_result(
+    scenario: &Scenario,
+    ordinal: u32,
+    env: &EnvironmentSpec,
+    commands: &[CommandSpec],
+    raw: &RawExecutionResult,
+) -> ExecutionResult {
+    ExecutionResult {
+        scenario_id: scenario.id.clone(),
+        attempt: ordinal,
         exit_code: raw.exit_code,
         signal: raw.signal,
         duration_ms: raw.duration_ms,
@@ -678,10 +1234,77 @@ async fn execute_one(
         blocked_reason: raw.error.as_deref().map(redact_secrets),
         image_ref: env.image_ref.clone(),
         image_digest: env.image_digest.clone(),
-        commands: cmds.clone(),
-    };
+        commands: commands.to_vec(),
+    }
+}
 
-    Ok((env, cmds, raw, result, sig, passed))
+fn disposable_workspace(source: &Path) -> std::result::Result<tempfile::TempDir, String> {
+    let parent = source
+        .parent()
+        .ok_or_else(|| "BLOCKED: workspace has no trusted parent directory".to_string())?;
+    let workspace = tempfile::Builder::new()
+        .prefix(".tomorrowci-attempt-")
+        .tempdir_in(parent)
+        .map_err(|e| format!("BLOCKED: cannot create disposable workspace: {e}"))?;
+    materialize_workspace(source, workspace.path())
+        .map_err(|e| format!("BLOCKED: cannot materialize disposable workspace: {e}"))?;
+    Ok(workspace)
+}
+
+fn environment_with_exact_image(
+    env: &EnvironmentSpec,
+) -> std::result::Result<EnvironmentSpec, String> {
+    let mut exact = env.clone();
+    exact.image_ref = digest_qualified_image_ref(&env.image_ref, env.image_digest.as_deref())?;
+    Ok(exact)
+}
+
+fn digest_qualified_image_ref(
+    image_ref: &str,
+    image_digest: Option<&str>,
+) -> std::result::Result<String, String> {
+    let digest = image_digest.ok_or_else(|| {
+        format!(
+            "BLOCKED: immutable digest is unavailable for image {}",
+            terminal_text(image_ref)
+        )
+    })?;
+    let digest_hex = digest.strip_prefix("sha256:").ok_or_else(|| {
+        format!(
+            "BLOCKED: invalid immutable image digest for {}",
+            terminal_text(image_ref)
+        )
+    })?;
+    if digest_hex.len() != 64
+        || !digest_hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(format!(
+            "BLOCKED: invalid immutable image digest for {}",
+            terminal_text(image_ref)
+        ));
+    }
+
+    let repository = match image_ref.split_once('@') {
+        Some((repository, embedded_digest)) => {
+            if embedded_digest != digest {
+                return Err(format!(
+                    "BLOCKED: recorded image digest does not match image reference {}",
+                    terminal_text(image_ref)
+                ));
+            }
+            repository
+        }
+        None => image_ref,
+    };
+    if repository.is_empty() || repository.contains('@') {
+        return Err(format!(
+            "BLOCKED: invalid image reference {}",
+            terminal_text(image_ref)
+        ));
+    }
+    Ok(format!("{repository}@{digest}"))
 }
 
 fn format_image(eco: Ecosystem, runtime: &str) -> String {
@@ -739,6 +1362,17 @@ fn git_sha(path: &Path) -> Option<String> {
     } else {
         None
     }
+}
+
+fn git_worktree_dirty(path: &Path) -> bool {
+    std::process::Command::new("git")
+        .args(["status", "--porcelain=v1", "--untracked-files=all"])
+        .current_dir(path)
+        .output()
+        .map(|output| !output.status.success() || !output.stdout.is_empty())
+        // If provenance cannot be inspected, never mislabel the captured tree
+        // as a clean commit. The content-addressed snapshot remains exact.
+        .unwrap_or(true)
 }
 
 struct FinalizationContext<'a> {
@@ -1015,8 +1649,14 @@ pub async fn replay(
     workspace_hint: Option<&Path>,
 ) -> Result<String> {
     let (_store, verified) = open_verified_store(output_root, run_id)?;
-    let manifest: ReplayManifest = verified
-        .read_json(&format!("scenarios/{scenario_id}/replay-manifest.json"))
+    let environment: EnvironmentSpec = verified
+        .read_json(&format!("scenarios/{scenario_id}/environment.json"))
+        .map_err(|e| RunnerError::Msg(terminal_text(&e.to_string())))?;
+    let commands: Vec<CommandSpec> = verified
+        .read_json(&format!("scenarios/{scenario_id}/commands.json"))
+        .map_err(|e| RunnerError::Msg(terminal_text(&e.to_string())))?;
+    let scenario: Scenario = verified
+        .read_json(&format!("scenarios/{scenario_id}/scenario.json"))
         .map_err(|e| RunnerError::Msg(terminal_text(&e.to_string())))?;
     let run: RunManifest = verified
         .read_json("run.json")
@@ -1036,24 +1676,44 @@ pub async fn replay(
                 terminal_text(&expected.to_string_lossy())
             ))
         })?;
-        let recorded = run
-            .repository
-            .workspace_copy
-            .canonicalize()
-            .map_err(|error| {
-                RunnerError::Msg(format!(
-                    "BLOCKED: recorded workspace cannot be trusted: {}: {error}",
-                    terminal_text(&run.repository.workspace_copy.to_string_lossy())
-                ))
-            })?;
-        if recorded != expected {
-            return Err(RunnerError::Msg(format!(
-                "BLOCKED: recorded workspace is outside the trusted replay root: {}",
-                terminal_text(&run.repository.workspace_copy.to_string_lossy())
-            )));
-        }
         expected
     };
+    let recorded = run
+        .repository
+        .workspace_copy
+        .canonicalize()
+        .map_err(|error| {
+            RunnerError::Msg(format!(
+                "BLOCKED: recorded workspace cannot be trusted: {}: {error}",
+                terminal_text(&run.repository.workspace_copy.to_string_lossy())
+            ))
+        })?;
+    if recorded != workspace {
+        return Err(RunnerError::Msg(format!(
+            "BLOCKED: recorded workspace is outside the trusted replay root: {}",
+            terminal_text(&run.repository.workspace_copy.to_string_lossy())
+        )));
+    }
+    if verified.contains("source-manifest.json") {
+        let source: SourceSnapshotManifestV2 = verified
+            .read_json("source-manifest.json")
+            .map_err(|e| RunnerError::Msg(terminal_text(&e.to_string())))?;
+        let actual = capture_source_snapshot_v2(
+            &source.run_id,
+            &workspace,
+            &source.repository_source,
+            source.commit_sha.clone(),
+            source.identity_kind,
+            source.dirty,
+            source.captured_at,
+        )
+        .map_err(|e| RunnerError::Msg(format!("BLOCKED: source snapshot mismatch: {e}")))?;
+        if actual.files != source.files || actual.tree_sha256 != source.tree_sha256 {
+            return Err(RunnerError::Msg(
+                "BLOCKED: source snapshot mismatch; recorded replay workspace has changed".into(),
+            ));
+        }
+    }
 
     let engine = detect_engine("auto").map_err(|e| {
         RunnerError::Msg(format!(
@@ -1061,64 +1721,23 @@ pub async fn replay(
         ))
     })?;
 
-    if let Some(digest) = &manifest.image_digest {
-        // Prefer digest if pullable
-        let by_digest = format!(
-            "{}@{}",
-            manifest
-                .image_ref
-                .split('@')
-                .next()
-                .unwrap_or(&manifest.image_ref),
-            digest
-        );
-        if ensure_image(&engine, &by_digest).await.is_err() {
-            ensure_image(&engine, &manifest.image_ref)
-                .await
-                .map_err(|e| {
-                    RunnerError::Msg(format!(
-                        "BLOCKED: external artifact unavailable: image {} (digest {:?}): {e}",
-                        terminal_text(&manifest.image_ref),
-                        manifest.image_digest
-                    ))
-                })?;
-        }
-    } else {
-        ensure_image(&engine, &manifest.image_ref)
-            .await
-            .map_err(|e| {
-                RunnerError::Msg(format!(
-                    "BLOCKED: external artifact unavailable: image {}: {e}",
-                    terminal_text(&manifest.image_ref)
-                ))
-            })?;
-    }
+    let attempt = execute_recorded_attempt(
+        &engine,
+        &workspace,
+        &scenario,
+        &environment,
+        &commands,
+        1,
+        AttemptKindV2::Replay,
+    )
+    .await
+    .map_err(|failure| RunnerError::Msg(terminal_text(&failure.message)))?;
+    log_attempt_provenance(&attempt.provenance);
+    replay_summary(run_id, scenario_id, &attempt.completed.raw)
+}
 
-    let env = tomorrowci_core::EnvironmentSpec {
-        image_ref: manifest.image_ref.clone(),
-        image_digest: manifest.image_digest.clone(),
-        workdir: manifest.workdir.clone(),
-        user: None,
-        env: Default::default(),
-        mounts: vec![],
-        network_mode: tomorrowci_core::NetworkMode::FetchOnly,
-        read_only_root: false,
-        memory_mb: manifest.memory_mb,
-        cpus: manifest.cpus,
-        pids_limit: manifest.pids_limit,
-        timeout_seconds: manifest.timeout_seconds,
-    };
-    let opts = SandboxExecOptions {
-        engine,
-        env,
-        workspace_host: workspace,
-        workspace_container: "/workspace".into(),
-        allowlist_env: vec![],
-    };
-    let raw = execute_scenario(&opts, &manifest.commands)
-        .await
-        .map_err(|e| RunnerError::Msg(terminal_text(&e.to_string())))?;
-    Ok(format!(
+fn replay_summary(run_id: &str, scenario_id: &str, raw: &RawExecutionResult) -> Result<String> {
+    let summary = format!(
         "Replay {} / {} → exit {:?} timed_out={} duration_ms={}\n{}",
         terminal_text(run_id),
         terminal_text(scenario_id),
@@ -1126,7 +1745,16 @@ pub async fn replay(
         raw.timed_out,
         raw.duration_ms,
         truncate_log(&terminal_text(&raw.stderr), 1500)
-    ))
+    );
+    if replay_target_succeeded(raw) {
+        Ok(summary)
+    } else {
+        Err(RunnerError::Msg(format!("REPLAY_FAILED: {summary}")))
+    }
+}
+
+fn replay_target_succeeded(raw: &RawExecutionResult) -> bool {
+    raw.exit_code == Some(0) && !raw.timed_out && raw.error.is_none()
 }
 
 pub fn doctor() -> DoctorReport {
@@ -1866,6 +2494,199 @@ mod tests {
             error.contains("outside the trusted replay root"),
             "unexpected error: {error}"
         );
+    }
+
+    fn exact_test_scenario() -> Scenario {
+        Scenario {
+            id: ScenarioId::new("exact-attempt"),
+            kind: tomorrowci_core::ScenarioKind::Replay,
+            ecosystem: Ecosystem::Python,
+            label: "exact attempt".into(),
+            runtime_version: "3.12".into(),
+            dependency_mode: tomorrowci_core::DependencyMode::Locked,
+            image_ref: "python:3.12-bookworm".into(),
+            axes_changed: vec![],
+            evidence_grade: EvidenceGrade::Observed,
+            is_baseline: false,
+            selection_reason: "test".into(),
+        }
+    }
+
+    fn exact_test_environment() -> EnvironmentSpec {
+        let mut env = EnvironmentSpec {
+            image_ref: "python:3.12-bookworm".into(),
+            image_digest: Some(format!("sha256:{}", "a".repeat(64))),
+            workdir: "/workspace/project".into(),
+            user: Some("1000:1000".into()),
+            env: Default::default(),
+            mounts: vec![tomorrowci_core::MountSpec {
+                host_path: PathBuf::from("fixture-cache"),
+                container_path: "/cache".into(),
+                read_only: true,
+            }],
+            network_mode: tomorrowci_core::NetworkMode::None,
+            read_only_root: true,
+            memory_mb: 768,
+            cpus: 1.5,
+            pids_limit: 64,
+            timeout_seconds: 45,
+        };
+        env.env.insert("LANG".into(), "C.UTF-8".into());
+        env
+    }
+
+    #[test]
+    fn exact_image_binding_requires_one_matching_lowercase_sha256_digest() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        assert_eq!(
+            digest_qualified_image_ref("python:3.12-bookworm", Some(&digest)).unwrap(),
+            format!("python:3.12-bookworm@{digest}")
+        );
+        assert_eq!(
+            digest_qualified_image_ref(
+                &format!("registry.example/python:3.12@{digest}"),
+                Some(&digest)
+            )
+            .unwrap(),
+            format!("registry.example/python:3.12@{digest}")
+        );
+
+        for error in [
+            digest_qualified_image_ref("python:3.12", None).unwrap_err(),
+            digest_qualified_image_ref("python:3.12", Some("sha256:ABC")).unwrap_err(),
+            digest_qualified_image_ref(
+                &format!("python:3.12@sha256:{}", "b".repeat(64)),
+                Some(&digest),
+            )
+            .unwrap_err(),
+        ] {
+            assert!(error.starts_with("BLOCKED:"), "unexpected error: {error}");
+        }
+    }
+
+    #[test]
+    fn exact_image_environment_preserves_every_recorded_execution_field() {
+        let recorded = exact_test_environment();
+        let exact = environment_with_exact_image(&recorded).unwrap();
+        assert_eq!(
+            exact.image_ref,
+            format!("python:3.12-bookworm@sha256:{}", "a".repeat(64))
+        );
+        assert_eq!(exact.image_digest, recorded.image_digest);
+        assert_eq!(exact.workdir, recorded.workdir);
+        assert_eq!(exact.user, recorded.user);
+        assert_eq!(exact.env, recorded.env);
+        assert_eq!(
+            serde_json::to_value(&exact.mounts).unwrap(),
+            serde_json::to_value(&recorded.mounts).unwrap()
+        );
+        assert_eq!(exact.network_mode, recorded.network_mode);
+        assert_eq!(exact.read_only_root, recorded.read_only_root);
+        assert_eq!(exact.memory_mb, recorded.memory_mb);
+        assert_eq!(exact.cpus.to_bits(), recorded.cpus.to_bits());
+        assert_eq!(exact.pids_limit, recorded.pids_limit);
+        assert_eq!(exact.timeout_seconds, recorded.timeout_seconds);
+    }
+
+    #[test]
+    fn normalized_execution_result_keeps_the_real_attempt_ordinal() {
+        let scenario = exact_test_scenario();
+        let environment = exact_test_environment();
+        let commands = vec![tomorrowci_core::CommandSpec {
+            phase: tomorrowci_core::CommandPhase::Test,
+            program: "python".into(),
+            args: vec!["-m".into(), "pytest".into()],
+            workdir: "/workspace/project".into(),
+            network_required: false,
+            env: Default::default(),
+        }];
+        let raw = RawExecutionResult {
+            exit_code: Some(0),
+            signal: None,
+            stdout: "ok".into(),
+            stderr: String::new(),
+            duration_ms: 42,
+            timed_out: false,
+            network_used: false,
+            error: None,
+        };
+        let result = build_execution_result(&scenario, 3, &environment, &commands, &raw);
+        assert_eq!(result.attempt, 3);
+        assert_eq!(result.image_ref, environment.image_ref);
+        assert_eq!(result.image_digest, environment.image_digest);
+        assert_eq!(result.commands.len(), 1);
+    }
+
+    #[test]
+    fn every_disposable_attempt_starts_clean_and_is_removed_after_use() {
+        let root = tempdir().unwrap();
+        let source = root.path().join("recorded-workspace");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("state.txt"), "recorded").unwrap();
+
+        let first_path;
+        {
+            let first = disposable_workspace(&source).unwrap();
+            first_path = first.path().to_path_buf();
+            assert_eq!(
+                std::fs::read_to_string(first.path().join("state.txt")).unwrap(),
+                "recorded"
+            );
+            std::fs::write(first.path().join("state.txt"), "mutated").unwrap();
+        }
+        assert!(!first_path.exists());
+        assert_eq!(
+            std::fs::read_to_string(source.join("state.txt")).unwrap(),
+            "recorded"
+        );
+
+        let second = disposable_workspace(&source).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(second.path().join("state.txt")).unwrap(),
+            "recorded"
+        );
+    }
+
+    #[test]
+    fn replay_target_failure_is_never_a_successful_runner_result() {
+        let mut raw = RawExecutionResult {
+            exit_code: Some(0),
+            signal: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 1,
+            timed_out: false,
+            network_used: false,
+            error: None,
+        };
+        assert!(replay_summary("run", "scenario", &raw).is_ok());
+
+        raw.exit_code = Some(7);
+        assert!(replay_summary("run", "scenario", &raw)
+            .unwrap_err()
+            .to_string()
+            .starts_with("REPLAY_FAILED:"));
+        raw.exit_code = Some(0);
+        raw.timed_out = true;
+        assert!(replay_summary("run", "scenario", &raw).is_err());
+        raw.timed_out = false;
+        raw.error = Some("engine lost target process".into());
+        assert!(replay_summary("run", "scenario", &raw).is_err());
+    }
+
+    #[test]
+    fn attempt_failures_retain_ordinal_kind_and_engine_identity() {
+        let engine = EngineInfo {
+            kind: tomorrowci_sandbox::EngineKind::Docker,
+            path: PathBuf::from("docker"),
+            version: "29.0.0".into(),
+        };
+        let failure = attempt_failure(&engine, 4, AttemptKindV2::Replay, "BLOCKED: fixture".into());
+        assert_eq!(failure.provenance.ordinal, 4);
+        assert_eq!(failure.provenance.kind, AttemptKindV2::Replay);
+        assert_eq!(failure.provenance.engine_kind, "docker");
+        assert_eq!(failure.provenance.engine_version, "29.0.0");
+        assert!(failure.provenance.finished_at >= failure.provenance.started_at);
     }
 
     #[test]

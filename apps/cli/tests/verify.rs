@@ -1,5 +1,6 @@
+use std::ffi::OsString;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use tempfile::tempdir;
 use tomorrowci_core::{
@@ -16,6 +17,111 @@ fn tomorrowci() -> Command {
     Command::new(env!("CARGO_BIN_EXE_tomorrowci"))
 }
 
+fn build_fake_docker(root: &Path) -> PathBuf {
+    const SOURCE: &str = r#"
+use std::env;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::process;
+
+fn main() {
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    if let Some(path) = env::var_os("TOMORROWCI_FAKE_DOCKER_LOG") {
+        let mut log = OpenOptions::new().create(true).append(true).open(path).unwrap();
+        writeln!(log, "{}", args.join("\t")).unwrap();
+    }
+
+    let mode = env::var("TOMORROWCI_FAKE_DOCKER_MODE").unwrap_or_default();
+    match args.first().map(String::as_str) {
+        Some("version") => {
+            println!("29.0.0");
+        }
+        Some("--version") => {
+            println!("Docker version 29.0.0, fake");
+        }
+        Some("info") => {
+            println!("fake-daemon");
+        }
+        Some("image") if args.get(1).map(String::as_str) == Some("inspect") => {
+            if mode == "digest-unavailable" {
+                eprintln!("missing exact digest api_key=digest-secret");
+                process::exit(1);
+            }
+            if args.iter().any(|arg| arg == "--format") {
+                println!("fixture@sha256:{}", "a".repeat(64));
+            }
+        }
+        Some("pull") => {
+            if mode == "digest-unavailable" {
+                eprintln!("pull rejected api_key=pull-secret");
+                process::exit(1);
+            }
+        }
+        Some("exec") => {
+            if mode == "target-nonzero" {
+                eprintln!("\x1b[2J\rtarget failed api_key=target-secret");
+                process::exit(23);
+            }
+            println!("ok");
+        }
+        _ => {}
+    }
+}
+"#;
+
+    let bin_dir = root.join("fake-bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    let source = root.join("fake-docker.rs");
+    fs::write(&source, SOURCE).unwrap();
+    let binary = bin_dir.join(format!("docker{}", std::env::consts::EXE_SUFFIX));
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| OsString::from("rustc"));
+    let output = Command::new(rustc)
+        .arg("--edition=2021")
+        .arg(&source)
+        .arg("-C")
+        .arg("debuginfo=0")
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "failed to compile fake docker: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    bin_dir
+}
+
+fn path_with_fake_engine(bin_dir: &Path) -> OsString {
+    let mut entries = vec![bin_dir.to_path_buf()];
+    if let Some(current) = std::env::var_os("PATH") {
+        entries.extend(std::env::split_paths(&current));
+    }
+    std::env::join_paths(entries).unwrap()
+}
+
+fn replay_command(
+    evidence_root: &Path,
+    work_root: &Path,
+    fake_bin: &Path,
+    fake_log: &Path,
+    run_id: &str,
+    mode: &str,
+) -> Command {
+    let mut command = tomorrowci();
+    command
+        .arg("--evidence-root")
+        .arg(evidence_root)
+        .arg("--work-root")
+        .arg(work_root)
+        .args(["replay", run_id, "--scenario", "baseline"])
+        .env("PATH", path_with_fake_engine(fake_bin))
+        .env("TOMORROWCI_FAKE_DOCKER_LOG", fake_log)
+        .env("TOMORROWCI_FAKE_DOCKER_MODE", mode);
+    command
+}
+
 fn make_bundle(path: &Path) {
     let run_id = path
         .file_name()
@@ -25,6 +131,20 @@ fn make_bundle(path: &Path) {
 }
 
 fn make_reportable_bundle(path: &Path, run_id: &str) {
+    make_reportable_bundle_for_replay(
+        path,
+        run_id,
+        path.join("workspace"),
+        Some(format!("sha256:{}", "a".repeat(64))),
+    );
+}
+
+fn make_reportable_bundle_for_replay(
+    path: &Path,
+    run_id: &str,
+    workspace_copy: PathBuf,
+    image_digest: Option<String>,
+) {
     fs::create_dir_all(path.join("scenarios")).unwrap();
     let store = EvidenceStore {
         root: path.to_path_buf(),
@@ -44,7 +164,7 @@ fn make_reportable_bundle(path: &Path, run_id: &str) {
         commit_sha: Some("0123456789abcdef".into()),
         branch: Some("main".into()),
         is_remote: false,
-        workspace_copy: path.join("workspace"),
+        workspace_copy,
         captured_at,
     };
     let detection = ProjectDetection {
@@ -87,7 +207,7 @@ fn make_reportable_bundle(path: &Path, run_id: &str) {
     };
     let environment = EnvironmentSpec {
         image_ref: scenario.image_ref.clone(),
-        image_digest: Some(format!("sha256:{}", "a".repeat(64))),
+        image_digest,
         workdir: "/workspace".into(),
         user: None,
         env: Default::default(),
@@ -383,6 +503,156 @@ fn real_cli_sanitizes_hostile_errors_and_uses_non_green_unsupported_exit() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(stdout.contains("UNSUPPORTED"), "stdout={stdout:?}");
+}
+
+#[test]
+fn real_replay_cli_is_non_green_for_target_and_digest_failures_and_keeps_run_sealed() {
+    let temp = tempdir().unwrap();
+    let fake_bin = build_fake_docker(temp.path());
+    let digest = Some(format!("sha256:{}", "a".repeat(64)));
+
+    let target_evidence = temp.path().join("target-evidence");
+    let target_work = temp.path().join("target-work");
+    let target_run_id = "target-nonzero";
+    let target_workspace = target_work.join("workspaces").join(target_run_id);
+    fs::create_dir_all(&target_workspace).unwrap();
+    make_reportable_bundle_for_replay(
+        &target_evidence.join("runs").join(target_run_id),
+        target_run_id,
+        target_workspace,
+        digest.clone(),
+    );
+    let target_output = replay_command(
+        &target_evidence,
+        &target_work,
+        &fake_bin,
+        &temp.path().join("target-docker.log"),
+        target_run_id,
+        "target-nonzero",
+    )
+    .output()
+    .unwrap();
+    let target_stdout = String::from_utf8_lossy(&target_output.stdout);
+    let target_stderr = String::from_utf8_lossy(&target_output.stderr);
+    assert!(
+        !target_output.status.success(),
+        "target exit 23 must be non-green: stdout={target_stdout:?} stderr={target_stderr:?}"
+    );
+    assert!(!target_stdout.contains("target-secret"));
+    assert!(!target_stderr.contains("target-secret"));
+    assert!(!target_stdout.contains('\u{1b}'));
+    assert!(!target_stderr.contains('\u{1b}'));
+
+    let digest_evidence = temp.path().join("digest-evidence");
+    let digest_work = temp.path().join("digest-work");
+    let digest_run_id = "digest-unavailable";
+    let digest_workspace = digest_work.join("workspaces").join(digest_run_id);
+    fs::create_dir_all(&digest_workspace).unwrap();
+    make_reportable_bundle_for_replay(
+        &digest_evidence.join("runs").join(digest_run_id),
+        digest_run_id,
+        digest_workspace,
+        digest.clone(),
+    );
+    let digest_log = temp.path().join("digest-docker.log");
+    let digest_output = replay_command(
+        &digest_evidence,
+        &digest_work,
+        &fake_bin,
+        &digest_log,
+        digest_run_id,
+        "digest-unavailable",
+    )
+    .output()
+    .unwrap();
+    let digest_stdout = String::from_utf8_lossy(&digest_output.stdout);
+    let digest_stderr = String::from_utf8_lossy(&digest_output.stderr);
+    assert_eq!(
+        digest_output.status.code(),
+        Some(4),
+        "missing exact digest must be BLOCKED: stdout={digest_stdout:?} stderr={digest_stderr:?}"
+    );
+    assert!(!digest_stdout.contains("digest-secret"));
+    assert!(!digest_stderr.contains("digest-secret"));
+    assert!(!digest_stdout.contains("pull-secret"));
+    assert!(!digest_stderr.contains("pull-secret"));
+    let digest_invocations = fs::read_to_string(&digest_log).unwrap();
+    for invocation in digest_invocations
+        .lines()
+        .filter(|line| line.starts_with("image\tinspect\t") || line.starts_with("pull\t"))
+    {
+        assert!(
+            invocation.contains("@sha256:"),
+            "replay fell back to a mutable image tag: {invocation:?}"
+        );
+    }
+
+    let flow_evidence = temp.path().join("flow-evidence");
+    let flow_work = temp.path().join("flow-work");
+    let flow_run_id = "selector-flow";
+    let flow_workspace = flow_work.join("workspaces").join(flow_run_id);
+    fs::create_dir_all(&flow_workspace).unwrap();
+    make_reportable_bundle_for_replay(
+        &flow_evidence.join("runs").join(flow_run_id),
+        flow_run_id,
+        flow_workspace,
+        digest,
+    );
+
+    let mut before = tomorrowci();
+    assert_pass(
+        before
+            .arg("--evidence-root")
+            .arg(&flow_evidence)
+            .args(["verify", flow_run_id])
+            .output()
+            .unwrap(),
+    );
+
+    let first_replay = replay_command(
+        &flow_evidence,
+        &flow_work,
+        &fake_bin,
+        &temp.path().join("flow-docker.log"),
+        flow_run_id,
+        "success",
+    )
+    .output()
+    .unwrap();
+    assert_ne!(
+        first_replay.status.code(),
+        Some(4),
+        "equivalent first replay was blocked: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&first_replay.stdout),
+        String::from_utf8_lossy(&first_replay.stderr)
+    );
+
+    let second_replay = replay_command(
+        &flow_evidence,
+        &flow_work,
+        &fake_bin,
+        &temp.path().join("flow-docker.log"),
+        flow_run_id,
+        "success",
+    )
+    .output()
+    .unwrap();
+    assert!(
+        second_replay.status.success(),
+        "second equivalent replay must qualify: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&second_replay.stdout),
+        String::from_utf8_lossy(&second_replay.stderr)
+    );
+
+    let mut after = tomorrowci();
+    assert_pass(
+        after
+            .arg("--evidence-root")
+            .arg(&flow_evidence)
+            .args(["verify", flow_run_id])
+            .output()
+            .unwrap(),
+    );
 }
 
 #[test]

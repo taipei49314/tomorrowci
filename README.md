@@ -112,8 +112,11 @@ Honest limit: applies **current** published candidates to historical source tree
 ```
 
 Evidence is written to `.tomorrowci/runs/<run-id>/` (JSON, logs, checksums,
-HTML). New bundles use a v1 sealed, recursive SHA-256 inventory. `verify`
-accepts either an explicit absolute/`./relative` bundle path or a run ID under
+HTML). Current scans write v2 sealed, recursive SHA-256 inventories. The
+verifier continues to accept v1 bundles for their legacy integrity and typed-
+identity contract; historical unversioned checksum lists still fail closed as
+`UnsealedLegacy`. `verify` accepts either an explicit absolute/`./relative`
+bundle path or a run ID under
 `<evidence-root>/runs/`. A bare selector is always a run ID, so an untrusted
 directory in the current working directory cannot shadow it. A run ID must
 resolve to a `run` bundle, and an explicit path is accepted only when the
@@ -124,12 +127,22 @@ run/scenario cross-file identity checks verify. Verification failures exit `1`
 (CLI usage errors exit `2`).
 
 `verify` parses only the fixed inventory and typed evidence schemas; it never
-executes replay scripts, recorded commands, target code, or containers. Legacy
-unversioned checksum lists fail closed as `UnsealedLegacy`. A verification
-`PASS` proves byte integrity and internal identity consistency relative to that
-co-located inventory, not producer authenticity, claim correctness, or a
-successful replay. It does not yet prove the two successful replay attempts
-required to complete the Phase 1 acceptance criteria. See
+executes replay scripts, recorded commands, target code, or containers. For a
+v1 bundle, `PASS` proves byte integrity and internal identity consistency only.
+For v2, it additionally checks the source snapshot, strict exact-replay
+manifest, every preserved original attempt, nested replay-attempt bundles, and
+the run/scenario qualification records. An observed frontier is accepted only
+when the verifier recomputes receipt digests and confirms at least two
+consecutive scan-time digest-pinned replays are equivalent to the selected
+original attempt. Neither version authenticates the producer or independently
+proves that the recorded execution occurred.
+
+The public `replay` command rechecks the sealed source tree and executes in a
+fresh disposable workspace, but it does not append a receipt or modify the
+sealed run. v2 currently supports the implicit `/workspace` mount; explicit
+host mounts fail closed as `BLOCKED`, and general workdir/mount handling remains
+a sandbox boundary. These remaining items mean the v2 work does not by itself
+complete the Phase 1 acceptance criteria. See
 [Report format](docs/report-format.md) for the exact contract.
 
 Configured reports inside a sealed run are deterministically reconstructed
