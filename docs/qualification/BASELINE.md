@@ -4,6 +4,48 @@ Audit date: 2026-08-09 (Asia/Taipei)
 
 This is a point-in-time record of inspected source, public GitHub Actions evidence, local checks, and the existing release. It is not a claim that TomorrowCI is 100% complete, production-qualified, independently adopted, or ready for a new release.
 
+## Subsequent release-hardening qualification (2026-08-11)
+
+[PR #3](https://github.com/taipei49314/tomorrowci/pull/3) merged as exact
+default-branch commit
+[`945f45862489d8777b0abb6c78366f3bf21146ad`](https://github.com/taipei49314/tomorrowci/commit/945f45862489d8777b0abb6c78366f3bf21146ad).
+Its exact-SHA [default CI run `31463431860`](https://github.com/taipei49314/tomorrowci/actions/runs/31463431860)
+completed with all 14 required jobs successful:
+
+| Gate | Public job evidence |
+| --- | --- |
+| Rust, MSRV, dependency audit | [rust 93691381164](https://github.com/taipei49314/tomorrowci/actions/runs/31463431860/job/93691381164), [MSRV 93691381157](https://github.com/taipei49314/tomorrowci/actions/runs/31463431860/job/93691381157), [audit 93691381149](https://github.com/taipei49314/tomorrowci/actions/runs/31463431860/job/93691381149) |
+| Schema, evidence negatives, web | [schema 93691381132](https://github.com/taipei49314/tomorrowci/actions/runs/31463431860/job/93691381132), [evidence-negative 93691381193](https://github.com/taipei49314/tomorrowci/actions/runs/31463431860/job/93691381193), [web 93691381108](https://github.com/taipei49314/tomorrowci/actions/runs/31463431860/job/93691381108) |
+| Linux, Windows, macOS Intel CLI | [Ubuntu 93691381203](https://github.com/taipei49314/tomorrowci/actions/runs/31463431860/job/93691381203), [Windows 93691381196](https://github.com/taipei49314/tomorrowci/actions/runs/31463431860/job/93691381196), [macOS Intel 93691381220](https://github.com/taipei49314/tomorrowci/actions/runs/31463431860/job/93691381220), [Windows verifier 93691381163](https://github.com/taipei49314/tomorrowci/actions/runs/31463431860/job/93691381163) |
+| Docker, Podman, Action | [container 93691849361](https://github.com/taipei49314/tomorrowci/actions/runs/31463431860/job/93691849361), [live Podman 93691849342](https://github.com/taipei49314/tomorrowci/actions/runs/31463431860/job/93691849342), [dogfood 93691849341](https://github.com/taipei49314/tomorrowci/actions/runs/31463431860/job/93691849341), [consumer 93691849373](https://github.com/taipei49314/tomorrowci/actions/runs/31463431860/job/93691849373) |
+
+The two principal evidence artifacts were downloaded through the GitHub API and
+read back independently:
+
+- [`tomorrowci-ci-evidence` artifact 9090824623](https://github.com/taipei49314/tomorrowci/actions/runs/31463431860/artifacts/9090824623):
+  1,093,530-byte raw ZIP; SHA-256
+  `48ae2ac0523be682c9cccc12dc1d3aa0b5d720b510ef9b6befb0ca11122722ef`,
+  matching GitHub's server digest.
+- [`tomorrowci-live-podman-evidence` artifact 9090823667](https://github.com/taipei49314/tomorrowci/actions/runs/31463431860/artifacts/9090823667):
+  851,550-byte raw ZIP; SHA-256
+  `a9e349cd469e37eed5e1fbc93baeeabea7bf4636d793fbf020082ad66198141a`,
+  matching GitHub's server digest.
+
+Downloaded-byte verification passed for 13 sealed runs (seven Docker,
+including the patched run, plus six Podman) and 24 create-only public replay
+receipts. Ten deterministic receipt pairs recomputed as qualified; the two
+flaky pairs returned the required fail-closed nonqualification. Three detached
+offline backtest proofs and one `QUALIFIED` Patch proof also reverified. The
+Rust registry witness retained its inventoried `.cargo-checksum.json`, closing
+the hidden-file artifact boundary. The Podman artifact independently covered
+106 inventories and 2,296 references with no missing, unlisted, or mismatched
+files, and all 80 attempt records bound Podman 4.9.3 on Linux x86_64.
+
+This closes the listed exact-SHA technical, product, and default-CI gates with
+project-operated public evidence. It does **not** constitute a frozen release
+candidate, completed project-operated external-target run, genuinely
+independent adopter/auditor evidence, or authorization for a stable tag.
+
 ## Subsequent merged evidence-trust qualification (2026-08-11)
 
 The historical baseline below remains unchanged. Two later evidence-trust changes

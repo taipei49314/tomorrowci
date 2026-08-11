@@ -56,6 +56,56 @@
       "verify_executed": false,
       "verify_subcommand_present_at_baseline": false
     },
+    "release_hardening_default_ci": {
+      "status": "PASS",
+      "is_external_adoption_evidence": false,
+      "head_sha": "945f45862489d8777b0abb6c78366f3bf21146ad",
+      "run_id": 31463431860,
+      "run_url": "https://github.com/taipei49314/tomorrowci/actions/runs/31463431860",
+      "required_jobs_passed": 14,
+      "jobs": {
+        "rust": 93691381164,
+        "minimum_supported_rust": 93691381157,
+        "rust_audit": 93691381149,
+        "web": 93691381108,
+        "cli_ubuntu": 93691381203,
+        "cli_windows": 93691381196,
+        "cli_macos_intel": 93691381220,
+        "windows_verifier": 93691381163,
+        "evidence_negative": 93691381193,
+        "schema": 93691381132,
+        "container_integration": 93691849361,
+        "live_podman": 93691849342,
+        "action_dogfood": 93691849341,
+        "action_consumer": 93691849373
+      },
+      "artifacts": {
+        "docker": {
+          "id": 9090824623,
+          "name": "tomorrowci-ci-evidence",
+          "size_bytes": 1093530,
+          "sha256": "48ae2ac0523be682c9cccc12dc1d3aa0b5d720b510ef9b6befb0ca11122722ef",
+          "matches_github_digest": true
+        },
+        "podman": {
+          "id": 9090823667,
+          "name": "tomorrowci-live-podman-evidence",
+          "size_bytes": 851550,
+          "sha256": "a9e349cd469e37eed5e1fbc93baeeabea7bf4636d793fbf020082ad66198141a",
+          "matches_github_digest": true
+        }
+      },
+      "downloaded_readback": {
+        "verified_runs": 13,
+        "verified_public_replay_receipts": 24,
+        "qualified_replay_pairs": 10,
+        "flaky_fail_closed_pairs": 2,
+        "verified_backtest_proofs": 3,
+        "verified_patch_proofs": 1,
+        "rust_hidden_witness_preserved": true
+      },
+      "scope_note": "Exact-SHA project-operated technical and CI evidence; not a frozen candidate, project-operated external-target result, independent adoption result, or stable-release authorization."
+    },
     "fixture_runs": [
       {
         "fixture": "python-runtime-break",
@@ -340,88 +390,96 @@
       "phase": 1,
       "area": "evidence",
       "priority": "P0",
-      "status": "OPEN",
+      "status": "DONE",
       "blocks_release": true,
       "summary": "Add a safe first-class verify command and versioned required evidence inventory.",
       "baseline_evidence": "The baseline CLI has no verify subcommand; public run 31185394369 did not execute verify.",
-      "acceptance": "scan -> verify succeeds for valid bundles; verification parses fixed data only and never executes target-controlled bytes."
+      "acceptance": "scan -> verify succeeds for valid bundles; verification parses fixed data only and never executes target-controlled bytes.",
+      "closure_evidence": "Exact default SHA 945f45862489d8777b0abb6c78366f3bf21146ad: evidence-negative job 93691381193 passed and downloaded artifacts 9090824623/9090823667 reverified all 13 sealed runs without executing target bytes."
     },
     {
       "id": "QUAL-002",
       "phase": 1,
       "area": "evidence",
       "priority": "P0",
-      "status": "OPEN",
+      "status": "DONE",
       "blocks_release": true,
       "summary": "Finalize checksums after all writers and reject incomplete, extra, mutated, duplicate, or unsafe paths.",
       "baseline_evidence": "The downloaded CI artifact's listed files were internally consistent, but the baseline does not prove the required-inventory and late-writer boundary or the specified negative cases.",
-      "acceptance": "CLI negative tests reject mutation, deletion, unlisted required files, listed missing files, duplicate or illegal paths, symlink/reparse traversal, absolute paths, parent traversal, and identity mismatch."
+      "acceptance": "CLI negative tests reject mutation, deletion, unlisted required files, listed missing files, duplicate or illegal paths, symlink/reparse traversal, absolute paths, parent traversal, and identity mismatch.",
+      "closure_evidence": "Evidence-negative job 93691381193 passed on exact SHA 945f458; downloaded hidden-inclusive artifacts preserved required recursive inventories and reverified 13 runs, 24 receipts, 3 backtest proofs, and 1 Patch proof."
     },
     {
       "id": "QUAL-003",
       "phase": 1,
       "area": "replay",
       "priority": "P0",
-      "status": "OPEN",
+      "status": "DONE",
       "blocks_release": true,
       "summary": "Execute two manifest-bound replays and verify equivalence without rediscovery or replanning.",
       "baseline_evidence": "Run 31185394369 performed measure/scan only. Replay text in its output is a suggested command, not execution evidence.",
-      "acceptance": "scan -> verify -> replay x2 -> verify passes for Python, Node, and Rust fixtures, with immutable per-attempt evidence and non-equivalence failing closed."
+      "acceptance": "scan -> verify -> replay x2 -> verify passes for Python, Node, and Rust fixtures, with immutable per-attempt evidence and non-equivalence failing closed.",
+      "closure_evidence": "Container job 93691849361 and Podman job 93691849342 produced 24 create-only public receipts on exact SHA 945f458; downloaded pair recomputation qualified 10 deterministic pairs and rejected both flaky pairs fail-closed."
     },
     {
       "id": "QUAL-004",
       "phase": 1,
       "area": "identity",
       "priority": "P0",
-      "status": "OPEN",
+      "status": "DONE",
       "blocks_release": true,
       "summary": "Bind source, config, workspace, engine, image tag/digest, timestamps, reports, and replay attempts into the verified model.",
       "baseline_evidence": "Current fixture evidence is useful scan evidence but has not passed the new closed identity and replay contract.",
-      "acceptance": "Cross-mixed identities and fabricated timestamps are rejected; reports and SARIF derive from the verified model and escape target-controlled text."
+      "acceptance": "Cross-mixed identities and fabricated timestamps are rejected; reports and SARIF derive from the verified model and escape target-controlled text.",
+      "closure_evidence": "Rust job 93691381164 plus evidence-negative job 93691381193 passed the typed identity/report/redaction regressions; downloaded exact-SHA run, receipt, backtest, and Patch models reverified from fixed data."
     },
     {
       "id": "CI-001",
       "phase": 3,
       "area": "ci",
       "priority": "P0",
-      "status": "OPEN",
+      "status": "DONE",
       "blocks_release": true,
       "summary": "Make doctor fail closed while preserving an explicit expected no-engine classification.",
       "baseline_evidence": "The default CI doctor step uses a tolerated failure; locally doctor exited 4 and also misreported npm despite host npm 12.0.2.",
-      "acceptance": "CI distinguishes an expected no-engine outcome from a doctor defect without continue-on-error or an unconditional success override."
+      "acceptance": "CI distinguishes an expected no-engine outcome from a doctor defect without continue-on-error or an unconditional success override.",
+      "closure_evidence": "Exact-SHA CLI smoke and Action jobs in run 31463431860 enforce doctor exit 0/4 explicitly and completed without continue-on-error or an unconditional success override."
     },
     {
       "id": "CI-002",
       "phase": 3,
       "area": "ci",
       "priority": "P0",
-      "status": "OPEN",
+      "status": "DONE",
       "blocks_release": true,
       "summary": "Add required Linux, Windows, and macOS CLI/package smoke plus web tests/build to default CI.",
       "baseline_evidence": "Default run 31185394369 is Ubuntu-centered and has no web job; web checks passed only on the local Windows audit host.",
-      "acceptance": "All three OS jobs build and exercise the packaged CLI, and required web install/test/build gates run on the exact candidate SHA."
+      "acceptance": "All three OS jobs build and exercise the packaged CLI, and required web install/test/build gates run on the exact candidate SHA.",
+      "closure_evidence": "Run 31463431860 passed Ubuntu job 93691381203, Windows job 93691381196, macOS Intel job 93691381220, Windows verifier 93691381163, and web job 93691381108 on exact default SHA 945f458."
     },
     {
       "id": "CI-003",
       "phase": 3,
       "area": "podman",
       "priority": "P0",
-      "status": "OPEN",
+      "status": "DONE",
       "blocks_release": true,
       "summary": "Run the live fixture contract with Podman in required CI.",
       "baseline_evidence": "Podman is missing on the local host, and the inspected public container job used Docker 28.0.4 only.",
-      "acceptance": "A public exact-SHA Podman job runs the required fixture/verify/replay contract and uploads inspectable evidence."
+      "acceptance": "A public exact-SHA Podman job runs the required fixture/verify/replay contract and uploads inspectable evidence.",
+      "closure_evidence": "Public Podman job 93691849342 passed six fixtures, sealed-run verification, and public replay pairs on exact SHA 945f458; artifact 9090823667 raw digest a9e349cd469e37eed5e1fbc93baeeabea7bf4636d793fbf020082ad66198141a matched and all 106 inventories/2,296 references reverified."
     },
     {
       "id": "CI-004",
       "phase": 3,
       "area": "source_quality",
       "priority": "P1",
-      "status": "OPEN",
+      "status": "DONE",
       "blocks_release": true,
       "summary": "Add required dependency/security audit and substantive schema validation to default CI.",
       "baseline_evidence": "The inspected schema job checks only that the schema file exists; no dedicated dependency/security audit job was inspected.",
-      "acceptance": "Pinned audit tooling and schema validation run on the exact candidate SHA with a documented, fail-closed policy."
+      "acceptance": "Pinned audit tooling and schema validation run on the exact candidate SHA with a documented, fail-closed policy.",
+      "closure_evidence": "Pinned rust-audit job 93691381149 and substantive schema job 93691381132 both passed on exact default SHA 945f458; schema also enforces hidden-inclusive artifact uploads."
     },
     {
       "id": "LOCAL-001",
@@ -440,66 +498,72 @@
       "phase": 3,
       "area": "web_security",
       "priority": "P1",
-      "status": "OPEN",
+      "status": "DONE",
       "blocks_release": true,
       "summary": "Resolve or explicitly gate the five npm audit findings.",
       "baseline_evidence": "npm ci completed but reported 3 moderate, 1 high, and 1 critical vulnerability.",
-      "acceptance": "The release policy records and enforces an approved vulnerability result on the candidate lockfile."
+      "acceptance": "The release policy records and enforces an approved vulnerability result on the candidate lockfile.",
+      "closure_evidence": "Web job 93691381108 passed npm clean install, high-severity audit gate, lint, tests, and production build on exact default SHA 945f458."
     },
     {
       "id": "PRODUCT-001",
       "phase": 2,
       "area": "backtest",
       "priority": "P0",
-      "status": "OPEN",
+      "status": "DONE",
       "blocks_release": true,
       "summary": "Qualify historical backtest against pinned, content-addressed Python, npm, and Cargo registry snapshots.",
       "baseline_evidence": "No inspected baseline evidence proves historical registry/index reconstruction.",
-      "acceptance": "Pinned source plus pinned registry snapshot replays for all three ecosystems, and missing snapshots fail closed as INCONCLUSIVE or SCHEDULED_RISK."
+      "acceptance": "Pinned source plus pinned registry snapshot replays for all three ecosystems, and missing snapshots fail closed as INCONCLUSIVE or SCHEDULED_RISK.",
+      "closure_evidence": "Container job 93691849361 ran Python wheelhouse, npm offline-cache, and Cargo vendor snapshots; all three downloaded detached proofs in artifact 9090824623 reverified, including the hidden Cargo checksum witness."
     },
     {
       "id": "PRODUCT-002",
       "phase": 2,
       "area": "weather_map",
       "priority": "P1",
-      "status": "OPEN",
+      "status": "DONE",
       "blocks_release": true,
       "summary": "Implement and qualify an ecosystem weather map derived only from verified runs.",
       "baseline_evidence": "No inspected baseline evidence closes the north-star weather-map acceptance criteria.",
-      "acceptance": "JSON and human reports share one typed model and preserve denominator, selection policy, coverage, uncertainty, BLOCKED, and UNSUPPORTED outcomes."
+      "acceptance": "JSON and human reports share one typed model and preserve denominator, selection policy, coverage, uncertainty, BLOCKED, and UNSUPPORTED outcomes.",
+      "closure_evidence": "Rust job 93691381164 and cross-platform CLI smoke in run 31463431860 passed typed weather-map, denominator, mixed-window, unverified, and real-binary contracts on exact SHA 945f458."
     },
     {
       "id": "PRODUCT-003",
       "phase": 2,
       "area": "patch_lab",
       "priority": "P1",
-      "status": "OPEN",
+      "status": "DONE",
       "blocks_release": true,
       "summary": "Implement and qualify the isolated patch laboratory without rewriting original verdicts.",
       "baseline_evidence": "No inspected baseline evidence closes the north-star patch-lab acceptance criteria.",
-      "acceptance": "A patch runs in a new disposable sandbox and produces separately verifiable evidence linked to the immutable original run and diff."
+      "acceptance": "A patch runs in a new disposable sandbox and produces separately verifiable evidence linked to the immutable original run and diff.",
+      "closure_evidence": "Container job 93691849361 produced a QUALIFIED Patch proof on exact SHA 945f458; downloaded artifact 9090824623 reverified the proof, original/patched runs, exact diff witnesses, and repaired scenario."
     },
     {
       "id": "PRODUCT-004",
       "phase": 2,
       "area": "adapter_sdk",
       "priority": "P1",
-      "status": "OPEN",
+      "status": "DONE",
       "blocks_release": true,
       "summary": "Implement and qualify the versioned adapter SDK, conformance suite, and least-privilege plugin boundary.",
       "baseline_evidence": "No inspected baseline evidence closes the north-star adapter-SDK acceptance criteria.",
-      "acceptance": "Built-in adapters and a minimal external example pass version, capability, compatibility, and security rejection tests."
+      "acceptance": "Built-in adapters and a minimal external example pass version, capability, compatibility, and security rejection tests.",
+      "closure_evidence": "Rust job 93691381164 passed the versioned contract, built-in conformance, external-style adapter example, capability, and safety rejection suites on exact SHA 945f458."
     },
     {
       "id": "PRODUCT-005",
       "phase": 2,
       "area": "cli_and_remote_scan",
       "priority": "P0",
-      "status": "OPEN",
+      "status": "DONE",
       "blocks_release": true,
       "summary": "Qualify every documented CLI command and bounded remote GitHub scan path end to end.",
       "baseline_evidence": "The inspected public run exercises local fixtures and Action dogfood; it does not close all documented CLI commands or the bounded remote-clone security contract.",
-      "acceptance": "Executable acceptance covers documented commands, all three ecosystems, supported/unsupported classification, allowlisted HTTPS GitHub URLs, redirects, submodules/LFS/credential boundaries, resource limits, resolved origin, and exact cloned SHA."
+      "acceptance": "Executable acceptance covers documented commands, all three ecosystems, supported/unsupported classification, allowlisted HTTPS GitHub URLs, redirects, submodules/LFS/credential boundaries, resource limits, resolved origin, and exact cloned SHA.",
+      "closure_evidence": "Rust job 93691381164 and three-platform CLI smoke in run 31463431860 passed documented-surface contracts plus bounded remote parser, origin/SHA, credential, timeout, size, gitlink/LFS, link, and fail-closed negatives."
     },
     {
       "id": "RELEASE-001",
