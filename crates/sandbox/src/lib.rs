@@ -222,8 +222,8 @@ fn command_network_access(mode: NetworkMode, command: &CommandSpec) -> Result<bo
 /// Execute commands inside **one** isolated container session.
 ///
 /// Install/fetch state must persist across commands (pip install then pytest).
-/// Network policy: start execution with no attached network, connect only
-/// around an explicitly network-required Fetch command, verify every
+/// Network policy: execute every recorded command with no attached network
+/// unless it is an explicitly network-required Fetch command, verify every
 /// transition, and disconnect again before accepting its result.
 pub async fn execute_scenario(
     opts: &SandboxExecOptions,
@@ -314,7 +314,7 @@ pub async fn execute_scenario(
 
     // Override any image entrypoint so startup cannot execute unrecorded code.
     create_args.push("--entrypoint".into());
-    create_args.push("sleep".into());
+    create_args.push("/bin/sleep".into());
     create_args.push(opts.env.image_ref.clone());
     create_args.push("infinity".into());
 
@@ -327,18 +327,6 @@ pub async fn execute_scenario(
             "docker create failed: {}",
             String::from_utf8_lossy(&create.stderr)
         )));
-    }
-
-    // Attach a real named bridge while the container is stopped, then remove
-    // it before start. This leaves no execution-time network window and keeps
-    // the container eligible for later connect/disconnect on both Docker and
-    // Podman (Podman's `none` mode cannot be dynamically connected).
-    if let Err(error) = disconnect_container_network(engine, &name).await {
-        let _ = Command::new(&engine.path)
-            .args(["rm", "-f", &name])
-            .output()
-            .await;
-        return Err(error);
     }
 
     let start_out = Command::new(&engine.path)
@@ -354,6 +342,19 @@ pub async fn execute_scenario(
             "docker start failed: {}",
             String::from_utf8_lossy(&start_out.stderr)
         )));
+    }
+
+    // Start only the fixed image-provided `/bin/sleep`, then detach the named
+    // network before any recorded target command is executed. Podman 4.x does
+    // not persist a network disconnect made while a container is stopped;
+    // disconnecting the running inert container is portable across Docker and
+    // Podman while preserving the target-code isolation boundary.
+    if let Err(error) = disconnect_container_network(engine, &name).await {
+        let _ = Command::new(&engine.path)
+            .args(["rm", "-f", &name])
+            .output()
+            .await;
+        return Err(error);
     }
 
     let cleanup = |engine: EngineInfo, name: String| async move {
@@ -377,7 +378,7 @@ pub async fn execute_scenario(
     let wall = Duration::from_secs(opts.env.timeout_seconds.max(1));
 
     // An inspect failure is not evidence of isolation. Require the engine to
-    // corroborate the pre-start disconnect before any target command executes.
+    // corroborate the post-start disconnect before any target command executes.
     if let Err(error) = ensure_container_offline(engine, &name).await {
         cleanup(engine.clone(), name.clone()).await;
         return Err(error);
