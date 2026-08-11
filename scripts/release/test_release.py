@@ -1586,6 +1586,24 @@ class ReleaseHelpersTest(unittest.TestCase):
         self.assertIn("--max-filesize 1073741824", workflow)
         self.assertIn("--proto-redir '=https'", workflow)
 
+    def test_windows_release_builds_are_reproducible_and_fail_with_diagnostics(self) -> None:
+        repository = MODULE_PATH.parents[2]
+        release_workflow = (repository / ".github/workflows/release.yml").read_text(
+            encoding="utf-8"
+        )
+        ci_workflow = (repository / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8"
+        )
+        for workflow in (release_workflow, ci_workflow):
+            self.assertIn(
+                '$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = "-C link-arg=/Brepro"',
+                workflow,
+            )
+            self.assertIn("clean --target-dir $targetDir", workflow)
+            self.assertIn("the two clean Windows release builds differ", workflow)
+            self.assertIn("windows-reproducibility-diagnostics", workflow)
+            self.assertIn("include-hidden-files: true", workflow)
+
     def test_validate_run_binds_inputs_attempt_workflow_and_server_digest(self) -> None:
         run = {
             "id": 123,

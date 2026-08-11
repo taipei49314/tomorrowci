@@ -249,13 +249,38 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          cargo "+$env:RUST_TOOLCHAIN" build -p tomorrowci --release --locked --target $env:TARGET --target-dir target-first
-          cargo "+$env:RUST_TOOLCHAIN" build -p tomorrowci --release --locked --target $env:TARGET --target-dir target-second
-          $first = "target-first/$env:TARGET/release/$env:BINARY_NAME"
-          $second = "target-second/$env:TARGET/release/$env:BINARY_NAME"
+          # Rust already supplies /PDBALTPATH:%_PDB%; /Brepro makes link.exe's
+          # PE and debug-directory timestamps deterministic across clean rebuilds.
+          $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = "-C link-arg=/Brepro"
+          $targetDir = "target-windows-repro"
+          $diagnostics = "windows-repro-diagnostics"
+          New-Item -ItemType Directory -Path "$diagnostics/first","$diagnostics/second" -Force | Out-Null
+          $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS | Set-Content -LiteralPath "$diagnostics/link-flags.txt" -Encoding utf8
+          rustc "+$env:RUST_TOOLCHAIN" -vV | Set-Content -LiteralPath "$diagnostics/rustc-vv.txt" -Encoding utf8
+
+          cargo "+$env:RUST_TOOLCHAIN" clean --target-dir $targetDir
+          cargo "+$env:RUST_TOOLCHAIN" build -p tomorrowci --release --locked --target $env:TARGET --target-dir $targetDir
+          Copy-Item -LiteralPath "$targetDir/$env:TARGET/release/$env:BINARY_NAME" -Destination "$diagnostics/first/$env:BINARY_NAME"
+          if (Test-Path -LiteralPath "$targetDir/$env:TARGET/release/tomorrowci.pdb") {
+            Copy-Item -LiteralPath "$targetDir/$env:TARGET/release/tomorrowci.pdb" -Destination "$diagnostics/first/tomorrowci.pdb"
+          }
+
+          cargo "+$env:RUST_TOOLCHAIN" clean --target-dir $targetDir
+          cargo "+$env:RUST_TOOLCHAIN" build -p tomorrowci --release --locked --target $env:TARGET --target-dir $targetDir
+          Copy-Item -LiteralPath "$targetDir/$env:TARGET/release/$env:BINARY_NAME" -Destination "$diagnostics/second/$env:BINARY_NAME"
+          if (Test-Path -LiteralPath "$targetDir/$env:TARGET/release/tomorrowci.pdb") {
+            Copy-Item -LiteralPath "$targetDir/$env:TARGET/release/tomorrowci.pdb" -Destination "$diagnostics/second/tomorrowci.pdb"
+          }
+
+          $first = "$diagnostics/first/$env:BINARY_NAME"
+          $second = "$diagnostics/second/$env:BINARY_NAME"
           $firstHash = (Get-FileHash -LiteralPath $first -Algorithm SHA256).Hash
           $secondHash = (Get-FileHash -LiteralPath $second -Algorithm SHA256).Hash
-          if ($firstHash -ne $secondHash) { throw "the two clean release builds differ" }
+          Write-Host "first_sha256=$($firstHash.ToLowerInvariant())"
+          Write-Host "second_sha256=$($secondHash.ToLowerInvariant())"
+          if ($firstHash -ne $secondHash) {
+            throw "the two clean Windows release builds differ"
+          }
           if ((& $first --version) -ne "tomorrowci $env:RELEASE_VERSION") {
             throw "native --version smoke failed"
           }
@@ -287,6 +312,16 @@ jobs:
             --binary-name $env:BINARY_NAME `
             --destination smoke
           if ($LASTEXITCODE -ne 0) { throw "archive extraction validation failed" }
+
+      - name: Upload Windows reproducibility diagnostics
+        if: failure() && runner.os == 'Windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-reproducibility-diagnostics
+          path: windows-repro-diagnostics/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Smoke the packaged CLI and sealed evidence (Unix)
         if: runner.os != 'Windows'
