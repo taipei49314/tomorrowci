@@ -58,6 +58,10 @@ pub struct EngineInfo {
     pub version: String,
 }
 
+fn daemon_probe_args(_kind: EngineKind) -> &'static [&'static str] {
+    &["info"]
+}
+
 /// Detect available sandbox engine.
 pub fn detect_engine(preference: &str) -> Result<EngineInfo> {
     let order: Vec<EngineKind> = match preference {
@@ -95,9 +99,12 @@ pub fn detect_engine(preference: &str) -> Result<EngineInfo> {
                 })
                 .unwrap_or_else(|| "unknown".into());
 
-            // Probe daemon
+            // Probe daemon readiness with the cross-engine command itself.
+            // Docker's Go template exposes `.ID`, while current Podman does
+            // not, so a Docker-specific formatted probe incorrectly reports
+            // a healthy Podman service as unavailable.
             let probe = std::process::Command::new(&path)
-                .args(["info", "--format", "{{.ID}}"])
+                .args(daemon_probe_args(kind))
                 .output();
             match probe {
                 Ok(o) if o.status.success() => {
@@ -839,6 +846,12 @@ mod tests {
             pids_limit: 16,
             timeout_seconds: 10,
         }
+    }
+
+    #[test]
+    fn daemon_readiness_probe_is_portable_across_supported_engines() {
+        assert_eq!(daemon_probe_args(EngineKind::Docker), ["info"]);
+        assert_eq!(daemon_probe_args(EngineKind::Podman), ["info"]);
     }
 
     #[test]
