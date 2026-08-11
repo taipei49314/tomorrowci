@@ -1570,6 +1570,17 @@ class ReleaseHelpersTest(unittest.TestCase):
             2,
         )
 
+    def test_external_candidate_doctor_accepts_aligned_ok_output(self) -> None:
+        repository = MODULE_PATH.parents[2]
+        workflow = (repository / ".github/workflows/external-targets.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "grep -Eq '^sandbox[[:space:]]+\\[ok\\][[:space:]]+.+'",
+            workflow,
+        )
+        self.assertNotIn('$doctor_output" != *"sandbox [ok]"*', workflow)
+
     def test_release_workflow_revalidates_independent_receipts_with_candidate(self) -> None:
         repository = MODULE_PATH.parents[2]
         workflow = (repository / ".github/workflows/release.yml").read_text(

@@ -171,7 +171,11 @@ jobs:
             echo "candidate doctor is BLOCKED; project-operated evidence cannot pass" >&2
             exit 4
           fi
-          if [[ "$doctor_status" -ne 0 || "$doctor_output" != *"sandbox [ok]"* ]]; then
+          if [[ "$doctor_status" -ne 0 ]]; then
+            echo "candidate doctor returned unexpected exit $doctor_status" >&2
+            exit "$doctor_status"
+          fi
+          if ! grep -Eq '^sandbox[[:space:]]+\[ok\][[:space:]]+.+' <<< "$doctor_output"; then
             echo "candidate doctor did not confirm a working sandbox" >&2
             exit 1
           fi
