@@ -1602,6 +1602,7 @@ class ReleaseHelpersTest(unittest.TestCase):
             self.assertIn("clean --target-dir $targetDir", workflow)
             self.assertIn("the two clean Windows release builds differ", workflow)
             self.assertIn("windows-reproducibility-diagnostics", workflow)
+            self.assertIn("steps.windows_repro.outcome == 'failure'", workflow)
             self.assertIn("include-hidden-files: true", workflow)
 
     def test_validate_run_binds_inputs_attempt_workflow_and_server_digest(self) -> None:

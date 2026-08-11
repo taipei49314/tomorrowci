@@ -103,6 +103,7 @@ jobs:
         if: runner.os != 'Windows'
         run: cargo build -p tomorrowci --release --locked
       - name: build reproducible release CLI (Windows)
+        id: windows_repro
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -141,7 +142,7 @@ jobs:
             throw "the two clean Windows release builds differ"
           }
       - name: upload Windows reproducibility diagnostics
-        if: failure() && runner.os == 'Windows'
+        if: always() && runner.os == 'Windows' && steps.windows_repro.outcome == 'failure'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-reproducibility-diagnostics
