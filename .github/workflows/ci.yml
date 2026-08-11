@@ -217,6 +217,7 @@ jobs:
             .tomorrowci/live-backtest/evidence-*/runs/
             .tomorrowci/live-backtest/evidence-*/backtests/
             .tomorrowci/patches/
+          include-hidden-files: true
 
   live-podman:
     runs-on: ubuntu-24.04
@@ -281,6 +282,7 @@ jobs:
             .tomorrowci/podman/replay-receipts/
             .tomorrowci/podman-replay-logs/
             .tomorrowci/podman-measure/
+          include-hidden-files: true
 
   windows-verifier:
     runs-on: windows-2025
@@ -412,6 +414,26 @@ jobs:
               if "$" + "{{ inputs." in script:
                   raise SystemExit(
                       f"action step {step.get('name', '<unnamed>')} interpolates an input into shell"
+                  )
+
+          upload_steps = [("action/action.yml", step) for step in action["runs"]["steps"]]
+          for workflow_path in sorted(Path(".github/workflows").glob("*.yml")):
+              workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+              for job in workflow.get("jobs", {}).values():
+                  upload_steps.extend((str(workflow_path), step) for step in job.get("steps", []))
+          upload_steps = [
+              (path, step)
+              for path, step in upload_steps
+              if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+          ]
+          if not upload_steps:
+              raise SystemExit("no upload-artifact steps found")
+          for path, step in upload_steps:
+              include_hidden = step.get("with", {}).get("include-hidden-files")
+              if include_hidden not in (True, "true"):
+                  raise SystemExit(
+                      f"{path}: upload step {step.get('name', '<unnamed>')} must preserve "
+                      "hidden files for exact evidence/artifact readback"
                   )
 
           def validate(label, document):

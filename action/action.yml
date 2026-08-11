@@ -291,3 +291,4 @@ runs:
           ${{ inputs.evidence-root }}/runs/
           ${{ inputs.evidence-root }}/compare-*.json
           ${{ inputs.evidence-root }}/policy-*.json
+        include-hidden-files: true

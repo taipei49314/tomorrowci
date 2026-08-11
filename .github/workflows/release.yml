@@ -483,6 +483,7 @@ jobs:
         with:
           name: tomorrowci-release-replay-evidence
           path: release-replay-package
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
 
@@ -497,6 +498,7 @@ jobs:
         with:
           name: release-input-${{ matrix.target }}
           path: dist-first/tomorrowci-${{ needs.candidate-metadata.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_format }}
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
 
@@ -580,6 +582,7 @@ jobs:
         with:
           name: release-input-sbom
           path: dist/sbom.cdx.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
 
@@ -689,6 +692,7 @@ jobs:
         with:
           name: tomorrowci-release-candidate
           path: candidate/*
+          include-hidden-files: true
           if-no-files-found: error
           compression-level: 0
           retention-days: 90
@@ -1011,6 +1015,7 @@ jobs:
         with:
           name: tomorrowci-release-qualification
           path: qualification/*
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
 

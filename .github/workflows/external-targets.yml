@@ -459,6 +459,7 @@ jobs:
         with:
           name: ${{ steps.subject.outputs.artifact_name }}
           path: external-package
+          include-hidden-files: true
           if-no-files-found: error
           compression-level: 0
           retention-days: 90
@@ -563,6 +564,7 @@ jobs:
         with:
           name: tomorrowci-project-operated-result-${{ inputs.candidate_run_id }}-${{ matrix.ecosystem }}
           path: strict
+          include-hidden-files: true
           if-no-files-found: error
           compression-level: 0
           retention-days: 90
@@ -681,6 +683,7 @@ jobs:
         with:
           name: tomorrowci-project-operated-results-${{ inputs.candidate_run_id }}
           path: combined
+          include-hidden-files: true
           if-no-files-found: error
           compression-level: 0
           retention-days: 90
