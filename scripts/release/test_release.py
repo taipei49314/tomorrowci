@@ -1605,6 +1605,37 @@ class ReleaseHelpersTest(unittest.TestCase):
             self.assertIn("steps.windows_repro.outcome == 'failure'", workflow)
             self.assertIn("include-hidden-files: true", workflow)
 
+    def test_preregistered_external_config_digests_match_repository_bytes(self) -> None:
+        repository = MODULE_PATH.parents[2]
+        attributes = (repository / ".gitattributes").read_text(encoding="utf-8")
+        self.assertIn("docs/qualification/external/*.yml text eol=lf", attributes.splitlines())
+        index = json.loads(
+            (repository / "docs/qualification/EXTERNAL_EVIDENCE_INDEX.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        targets = index.get("project_operated_targets")
+        self.assertIsInstance(targets, list)
+        self.assertEqual(len(targets), 3)
+        seen: set[str] = set()
+        for target in targets:
+            self.assertIsInstance(target, dict)
+            ecosystem = target.get("ecosystem")
+            config_path = target.get("config_path")
+            expected = target.get("config_sha256")
+            self.assertIsInstance(ecosystem, str)
+            self.assertIsInstance(config_path, str)
+            self.assertIsInstance(expected, str)
+            self.assertNotIn(ecosystem, seen)
+            seen.add(ecosystem)
+
+            # Git stores these text fixtures with LF. Normalize only checkout
+            # CRLF so this contract test is identical on Windows and Linux.
+            contents = (repository / config_path).read_bytes().replace(b"\r\n", b"\n")
+            self.assertNotIn(b"\r", contents)
+            self.assertEqual(hashlib.sha256(contents).hexdigest(), expected, ecosystem)
+        self.assertEqual(seen, {"python", "node", "rust"})
+
     def test_validate_run_binds_inputs_attempt_workflow_and_server_digest(self) -> None:
         run = {
             "id": 123,
