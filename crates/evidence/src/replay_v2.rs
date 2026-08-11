@@ -2,11 +2,24 @@ use super::*;
 use chrono::{DateTime, Utc};
 use std::collections::{BTreeMap, BTreeSet};
 use tomorrowci_core::{
-    canonical_sha256, AttemptKindV2, AttemptOutcomeClassV2, ExactReplayManifestV2,
-    ExecutionAttemptResultV2, ExecutionAttemptV2, NormalizedFailureSignatureV2, ReplayCommandV2,
-    ReplayQualificationV2, RunId, SourceFileEntryV2, SourceIdentityKindV2,
-    SourceSnapshotManifestV2, REPLAY_SCHEMA_VERSION_V2,
+    attempt_equivalence, canonical_sha256, AttemptKindV2, AttemptMismatchV2, AttemptOutcomeClassV2,
+    ExactReplayManifestV2, ExecutionAttemptResultV2, ExecutionAttemptV2,
+    NormalizedFailureSignatureV2, PublicReplayReceiptV2, ReplayCommandV2, ReplayQualificationV2,
+    RunId, SourceFileEntryV2, SourceIdentityKindV2, SourceSnapshotManifestV2,
+    PUBLIC_REPLAY_RECEIPT_SCHEMA_VERSION, REPLAY_SCHEMA_VERSION_V2,
 };
+
+const PUBLIC_RECEIPT_FILE: &str = "public-replay-receipt.json";
+const ORIGIN_RUN_INVENTORY: &str = "origin/run.checksums.txt";
+const ORIGIN_SOURCE: &str = "origin/source-manifest.json";
+const ORIGIN_CONFIG: &str = "origin/config.normalized.json";
+const ORIGIN_SCENARIO_INVENTORY: &str = "origin/scenario.checksums.txt";
+const ORIGIN_SCENARIO: &str = "origin/scenario.json";
+const ORIGIN_ENVIRONMENT: &str = "origin/environment.json";
+const ORIGIN_COMMANDS: &str = "origin/commands.json";
+const ORIGIN_REPLAY_MANIFEST: &str = "origin/replay-manifest-v2.json";
+const ORIGIN_ATTEMPT_INVENTORY: &str = "origin/original-attempt.checksums.txt";
+const ORIGIN_ATTEMPT: &str = "origin/original-attempt.json";
 
 /// Runtime bytes paired with the strict, persisted attempt model.
 #[derive(Debug, Clone)]
@@ -242,6 +255,13 @@ fn write_static_replay_helpers(dir: &Path) -> Result<()> {
 
 fn write_attempt_bundle(dir: &Path, evidence: &AttemptEvidenceV2) -> Result<()> {
     ensure_directory(dir)?;
+    write_attempt_files(dir, evidence)?;
+    seal_bundle_version(dir, BundleKind::ReplayAttempt, INVENTORY_VERSION_V2)?;
+    Ok(())
+}
+
+fn write_attempt_files(dir: &Path, evidence: &AttemptEvidenceV2) -> Result<()> {
+    ensure_directory(dir)?;
     let stdout = cap_bytes(&redact_secrets(&evidence.stdout), 2 * 1024 * 1024);
     let stderr = cap_bytes(&redact_secrets(&evidence.stderr), 2 * 1024 * 1024);
     let stdout_digest = prefixed_sha256(stdout.as_bytes());
@@ -263,8 +283,673 @@ fn write_attempt_bundle(dir: &Path, evidence: &AttemptEvidenceV2) -> Result<()> 
     }
     persist_regular_file(&dir.join("stdout.log"), stdout.as_bytes())?;
     persist_regular_file(&dir.join("stderr.log"), stderr.as_bytes())?;
-    seal_bundle_version(dir, BundleKind::ReplayAttempt, INVENTORY_VERSION_V2)?;
     Ok(())
+}
+
+/// Verified origin generation needed to authorize one detached public replay.
+#[derive(Debug, Clone)]
+pub struct PublicReplayOriginV2 {
+    pub run: VerifiedBundle,
+    pub scenario: VerifiedBundle,
+    pub original_attempt: VerifiedBundle,
+    pub source: SourceSnapshotManifestV2,
+    pub config: Config,
+    pub scenario_record: Scenario,
+    pub environment: EnvironmentSpec,
+    pub commands: Vec<CommandSpec>,
+    pub manifest: ExactReplayManifestV2,
+    pub original: ExecutionAttemptV2,
+}
+
+/// Readback returned only after the detached receipt has sealed and verified.
+#[derive(Debug, Clone)]
+pub struct SealedPublicReplayReceiptV2 {
+    pub bundle: VerifiedBundle,
+    pub receipt: PublicReplayReceiptV2,
+}
+
+/// Recomputed result for exactly two detached public replay receipts.
+#[derive(Debug, Clone)]
+pub struct VerifiedPublicReplayPairV2 {
+    pub run_id: RunId,
+    pub scenario_id: tomorrowci_core::ScenarioId,
+    pub receipt_ids: Vec<String>,
+    pub receipt_inventory_sha256: Vec<String>,
+    pub original_attempt_sha256: String,
+    pub outcome_class: AttemptOutcomeClassV2,
+    pub target_exit_code: Option<i32>,
+}
+
+/// Persist one independently sealed v2 attempt bundle.
+///
+/// Patch Lab uses this for successful and unsuccessful exact replays without
+/// mutating the already sealed scenario/run bundles that supplied the replay
+/// manifest.
+pub fn write_independent_attempt_bundle_v2(
+    dir: &Path,
+    evidence: &AttemptEvidenceV2,
+    manifest: &ExactReplayManifestV2,
+) -> Result<VerifiedBundle> {
+    if dir.exists() {
+        return Err(EvidenceError::Other(format!(
+            "refusing to overwrite attempt bundle: {}",
+            dir.display()
+        )));
+    }
+    fs::create_dir_all(dir)?;
+    let redacted = redact_attempt(evidence, manifest)?;
+    write_attempt_bundle(dir, &redacted)?;
+    verify_bundle(dir)
+}
+
+/// Resolve the exact final original attempt and every sealed origin generation
+/// needed by a public replay receipt.
+pub fn load_public_replay_origin_v2(
+    run: &VerifiedBundle,
+    scenario_id: &str,
+) -> Result<PublicReplayOriginV2> {
+    validate_single_component(scenario_id, "scenario id")?;
+    if run.version != INVENTORY_VERSION_V2 || run.kind != BundleKind::Run {
+        return Err(EvidenceError::InvalidSemantics {
+            field: "public replay origin".into(),
+            detail: "public replay receipts require a verified v2 run".into(),
+        });
+    }
+
+    let run_id = run_id_from_verified_run(run)?;
+    let scenario_relative = format!("scenarios/{scenario_id}");
+    let scenario = verify_bundle_internal(
+        &run.root.join("scenarios").join(scenario_id),
+        Some(&run_id),
+        Some(scenario_id),
+    )?;
+    if scenario.version != INVENTORY_VERSION_V2 || scenario.kind != BundleKind::Scenario {
+        return Err(EvidenceError::InvalidSemantics {
+            field: format!("{scenario_relative}/checksums.txt"),
+            detail: "public replay requires a verified v2 scenario".into(),
+        });
+    }
+    ensure_inventory_generation_is_nested(
+        run,
+        &format!("{scenario_relative}/checksums.txt"),
+        &scenario,
+    )?;
+
+    let mut originals = Vec::new();
+    for entry in &scenario.inventory.entries {
+        let Some(directory) = entry.path.strip_suffix("/attempt.json") else {
+            continue;
+        };
+        if !directory.starts_with("attempts/attempt-") || directory.split('/').count() != 2 {
+            continue;
+        }
+        let attempt = verify_bundle_internal(
+            &scenario.root.join(directory),
+            Some(&run_id),
+            Some(scenario_id),
+        )?;
+        if attempt.version != INVENTORY_VERSION_V2 || attempt.kind != BundleKind::ReplayAttempt {
+            return Err(EvidenceError::InvalidSemantics {
+                field: format!("{scenario_relative}/{directory}/checksums.txt"),
+                detail: "original attempt is not a sealed v2 replay-attempt bundle".into(),
+            });
+        }
+        ensure_inventory_generation_is_nested(
+            &scenario,
+            &format!("{directory}/checksums.txt"),
+            &attempt,
+        )?;
+        let record: ExecutionAttemptV2 = attempt.read_json("attempt.json")?;
+        if record.kind != AttemptKindV2::Original {
+            return Err(EvidenceError::InvalidSemantics {
+                field: format!("{scenario_relative}/{directory}/attempt.json.kind"),
+                detail: "attempts/ may contain only original attempts".into(),
+            });
+        }
+        originals.push((record.ordinal, directory.to_string(), attempt, record));
+    }
+    originals.sort_by_key(|(ordinal, _, _, _)| *ordinal);
+    let (_, original_directory, original_attempt, original) = originals
+        .pop()
+        .ok_or_else(|| EvidenceError::Missing(format!("{scenario_relative}/attempts")))?;
+
+    let source: SourceSnapshotManifestV2 = run.read_json("source-manifest.json")?;
+    let config: Config = run.read_json("config.normalized.json")?;
+    let scenario_record: Scenario = scenario.read_json("scenario.json")?;
+    let environment: EnvironmentSpec = scenario.read_json("environment.json")?;
+    let commands: Vec<CommandSpec> = scenario.read_json("commands.json")?;
+    let manifest: ExactReplayManifestV2 = scenario.read_json("replay-manifest-v2.json")?;
+    let manifest_sha256 = canonical_sha256(&manifest).map_err(EvidenceError::Json)?;
+    ensure_identity(
+        "original attempt replay manifest",
+        &original.replay_manifest_sha256,
+        &manifest_sha256,
+    )?;
+
+    let original_attempt_path = format!("{scenario_relative}/{original_directory}");
+    ensure_identity(
+        "public replay source identity",
+        &manifest.source_manifest_sha256,
+        &canonical_sha256(&source).map_err(EvidenceError::Json)?,
+    )?;
+    ensure_identity(
+        "public replay config identity",
+        &manifest.config_sha256,
+        &canonical_sha256(&config).map_err(EvidenceError::Json)?,
+    )?;
+    ensure_identity(
+        "public replay original path ordinal",
+        &original_attempt_path,
+        &format!(
+            "{scenario_relative}/attempts/attempt-{:06}",
+            original.ordinal
+        ),
+    )?;
+
+    Ok(PublicReplayOriginV2 {
+        run: run.clone(),
+        scenario,
+        original_attempt,
+        source,
+        config,
+        scenario_record,
+        environment,
+        commands,
+        manifest,
+        original,
+    })
+}
+
+fn run_id_from_verified_run(run: &VerifiedBundle) -> Result<String> {
+    let manifest: RunManifest = run.read_json("run.json")?;
+    Ok(manifest.run_id.0)
+}
+
+fn ensure_inventory_generation_is_nested(
+    parent: &VerifiedBundle,
+    relative: &str,
+    child: &VerifiedBundle,
+) -> Result<()> {
+    let nested = parent.read_bytes(relative)?;
+    let canonical = child.inventory.to_canonical_string()?.into_bytes();
+    if nested != canonical {
+        return Err(EvidenceError::IdentityMismatch {
+            field: relative.into(),
+            detail: "nested inventory differs from the parent inventory generation".into(),
+        });
+    }
+    Ok(())
+}
+
+/// Persist one create-only public replay receipt outside the sealed run.
+pub fn write_public_replay_receipt_v2(
+    evidence_root: &Path,
+    origin: &PublicReplayOriginV2,
+    evidence: &AttemptEvidenceV2,
+    observed_engine: &tomorrowci_core::EngineIdentityV2,
+) -> Result<SealedPublicReplayReceiptV2> {
+    validate_single_component(&evidence.attempt.attempt_id, "public replay receipt id")?;
+    ensure_identity(
+        "public replay attempt run id",
+        &evidence.attempt.run_id.0,
+        &origin.manifest.run_id.0,
+    )?;
+    ensure_identity(
+        "public replay attempt scenario id",
+        &evidence.attempt.scenario_id.0,
+        &origin.manifest.scenario_id.0,
+    )?;
+    if evidence.attempt.kind != AttemptKindV2::Replay {
+        return Err(EvidenceError::InvalidSemantics {
+            field: "public replay attempt kind".into(),
+            detail: "detached public receipts require kind replay".into(),
+        });
+    }
+
+    ensure_directory(evidence_root)?;
+    let receipt_root = ensure_plain_child(evidence_root, "replay-receipts")?;
+    let run_root = ensure_plain_child(&receipt_root, &origin.manifest.run_id.0)?;
+    let scenario_root = ensure_plain_child(&run_root, &origin.manifest.scenario_id.0)?;
+    let receipt_dir = scenario_root.join(&evidence.attempt.attempt_id);
+    fs::create_dir(&receipt_dir).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            EvidenceError::Other(format!(
+                "refusing to overwrite public replay receipt: {}",
+                receipt_dir.display()
+            ))
+        } else {
+            EvidenceError::Io(error)
+        }
+    })?;
+    ensure_directory(&receipt_dir)?;
+    let origin_dir = receipt_dir.join("origin");
+    fs::create_dir(&origin_dir)?;
+    ensure_directory(&origin_dir)?;
+
+    let redacted = redact_attempt(evidence, &origin.manifest)?;
+    write_attempt_files(&receipt_dir, &redacted)?;
+
+    let run_inventory = origin.run.inventory.to_canonical_string()?;
+    let scenario_inventory = origin.scenario.inventory.to_canonical_string()?;
+    let original_inventory = origin.original_attempt.inventory.to_canonical_string()?;
+    persist_regular_file(
+        &receipt_dir.join(ORIGIN_RUN_INVENTORY),
+        run_inventory.as_bytes(),
+    )?;
+    persist_regular_file(
+        &receipt_dir.join(ORIGIN_SOURCE),
+        &origin.run.read_bytes("source-manifest.json")?,
+    )?;
+    persist_regular_file(
+        &receipt_dir.join(ORIGIN_CONFIG),
+        &origin.run.read_bytes("config.normalized.json")?,
+    )?;
+    persist_regular_file(
+        &receipt_dir.join(ORIGIN_SCENARIO_INVENTORY),
+        scenario_inventory.as_bytes(),
+    )?;
+    persist_regular_file(
+        &receipt_dir.join(ORIGIN_SCENARIO),
+        &origin.scenario.read_bytes("scenario.json")?,
+    )?;
+    persist_regular_file(
+        &receipt_dir.join(ORIGIN_ENVIRONMENT),
+        &origin.scenario.read_bytes("environment.json")?,
+    )?;
+    persist_regular_file(
+        &receipt_dir.join(ORIGIN_COMMANDS),
+        &origin.scenario.read_bytes("commands.json")?,
+    )?;
+    persist_regular_file(
+        &receipt_dir.join(ORIGIN_REPLAY_MANIFEST),
+        &origin.scenario.read_bytes("replay-manifest-v2.json")?,
+    )?;
+    persist_regular_file(
+        &receipt_dir.join(ORIGIN_ATTEMPT_INVENTORY),
+        original_inventory.as_bytes(),
+    )?;
+    persist_regular_file(
+        &receipt_dir.join(ORIGIN_ATTEMPT),
+        &origin.original_attempt.read_bytes("attempt.json")?,
+    )?;
+
+    let mut equivalence = attempt_equivalence(&origin.original, &redacted.attempt);
+    if *observed_engine != origin.manifest.engine {
+        equivalence.equivalent = false;
+        equivalence
+            .mismatches
+            .push(AttemptMismatchV2::EngineIdentity);
+    }
+    let receipt = PublicReplayReceiptV2 {
+        schema_version: PUBLIC_REPLAY_RECEIPT_SCHEMA_VERSION,
+        receipt_id: redacted.attempt.attempt_id.clone(),
+        created_at: redacted.attempt.finished_at,
+        run_id: redacted.attempt.run_id.clone(),
+        scenario_id: redacted.attempt.scenario_id.clone(),
+        original_run_inventory_sha256: origin.run.inventory_sha256()?,
+        original_scenario_inventory_sha256: origin.scenario.inventory_sha256()?,
+        original_attempt_inventory_sha256: origin.original_attempt.inventory_sha256()?,
+        original_attempt_path: format!(
+            "scenarios/{}/attempts/attempt-{:06}",
+            origin.original.scenario_id.0, origin.original.ordinal
+        ),
+        original_attempt_id: origin.original.attempt_id.clone(),
+        source_manifest_sha256: canonical_sha256(&origin.source).map_err(EvidenceError::Json)?,
+        config_sha256: canonical_sha256(&origin.config).map_err(EvidenceError::Json)?,
+        scenario_sha256: canonical_sha256(&origin.scenario_record).map_err(EvidenceError::Json)?,
+        replay_manifest_sha256: canonical_sha256(&origin.manifest).map_err(EvidenceError::Json)?,
+        original_attempt_sha256: canonical_sha256(&origin.original).map_err(EvidenceError::Json)?,
+        replay_attempt_sha256: canonical_sha256(&redacted.attempt).map_err(EvidenceError::Json)?,
+        expected_engine: origin.manifest.engine.clone(),
+        observed_engine: observed_engine.clone(),
+        image_digest: origin.manifest.image_digest.clone(),
+        original_result: origin.original.result.clone(),
+        replay_result: redacted.attempt.result.clone(),
+        equivalent_to_original: equivalence.equivalent,
+        mismatches: equivalence.mismatches,
+    };
+    write_json(&receipt_dir.join(PUBLIC_RECEIPT_FILE), &receipt)?;
+    seal_bundle_version(
+        &receipt_dir,
+        BundleKind::ReplayAttempt,
+        INVENTORY_VERSION_V2,
+    )?;
+    let bundle = verify_bundle(&receipt_dir)?;
+    let verified_receipt: PublicReplayReceiptV2 = bundle.read_json(PUBLIC_RECEIPT_FILE)?;
+    ensure_semantic_equality(
+        PUBLIC_RECEIPT_FILE,
+        &verified_receipt,
+        "receipt written by producer",
+        &receipt,
+    )?;
+    Ok(SealedPublicReplayReceiptV2 {
+        bundle,
+        receipt: verified_receipt,
+    })
+}
+
+fn ensure_plain_child(parent: &Path, name: &str) -> Result<PathBuf> {
+    validate_single_component(name, "receipt directory component")?;
+    ensure_directory(parent)?;
+    let child = parent.join(name);
+    match fs::create_dir(&child) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    ensure_directory(&child)?;
+    Ok(child)
+}
+
+/// Return the next monotonic public replay ordinal below one run/scenario.
+/// Existing entries must all be independently sealed receipts; an interrupted
+/// or attacker-preseeded directory therefore blocks rather than being skipped.
+pub fn next_public_replay_ordinal_v2(
+    evidence_root: &Path,
+    run_id: &str,
+    scenario_id: &str,
+) -> Result<u32> {
+    validate_single_component(run_id, "run id")?;
+    validate_single_component(scenario_id, "scenario id")?;
+    let root = evidence_root
+        .join("replay-receipts")
+        .join(run_id)
+        .join(scenario_id);
+    if !root.exists() {
+        return Ok(1);
+    }
+    ensure_directory(&root)?;
+    let mut ordinals = Vec::new();
+    for entry in fs::read_dir(&root)? {
+        let entry = entry?;
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() || is_reparse_point(&metadata) {
+            return Err(EvidenceError::NonRegularEntry(
+                entry.path().display().to_string(),
+            ));
+        }
+        let (bundle, receipt, attempt) = read_public_replay_receipt_v2(&entry.path())?;
+        ensure_identity("existing receipt run id", &receipt.run_id.0, run_id)?;
+        ensure_identity(
+            "existing receipt scenario id",
+            &receipt.scenario_id.0,
+            scenario_id,
+        )?;
+        drop(bundle);
+        ordinals.push(attempt.ordinal);
+    }
+    ordinals.sort_unstable();
+    let expected: Vec<u32> = (1..=ordinals.len() as u32).collect();
+    if ordinals != expected {
+        return Err(EvidenceError::InvalidSemantics {
+            field: root.display().to_string(),
+            detail: "existing public replay ordinals are not unique and consecutive from 1".into(),
+        });
+    }
+    u32::try_from(ordinals.len())
+        .ok()
+        .and_then(|value| value.checked_add(1))
+        .ok_or_else(|| EvidenceError::InvalidSemantics {
+            field: root.display().to_string(),
+            detail: "public replay ordinal overflowed".into(),
+        })
+}
+
+/// Verify and read one detached public replay receipt.
+pub fn read_public_replay_receipt_v2(
+    path: &Path,
+) -> Result<(VerifiedBundle, PublicReplayReceiptV2, ExecutionAttemptV2)> {
+    let bundle = verify_bundle(path)?;
+    if bundle.version != INVENTORY_VERSION_V2
+        || bundle.kind != BundleKind::ReplayAttempt
+        || !bundle.contains(PUBLIC_RECEIPT_FILE)
+    {
+        return Err(EvidenceError::InvalidSemantics {
+            field: path.display().to_string(),
+            detail: "expected a detached v2 public replay receipt".into(),
+        });
+    }
+    let receipt: PublicReplayReceiptV2 = bundle.read_json(PUBLIC_RECEIPT_FILE)?;
+    let attempt: ExecutionAttemptV2 = bundle.read_json("attempt.json")?;
+    Ok((bundle, receipt, attempt))
+}
+
+/// Verify exactly two distinct receipts and recompute their common-origin,
+/// equivalence, ordering, and timing gates.
+pub fn verify_public_replay_receipt_pair_v2(
+    original_run: &Path,
+    paths: &[PathBuf],
+) -> Result<VerifiedPublicReplayPairV2> {
+    if paths.len() != 2 {
+        return Err(EvidenceError::InvalidSemantics {
+            field: "public replay receipt pair".into(),
+            detail: format!(
+                "exactly two receipt paths are required, found {}",
+                paths.len()
+            ),
+        });
+    }
+    let first_path = fs::canonicalize(&paths[0])?;
+    let second_path = fs::canonicalize(&paths[1])?;
+    if first_path == second_path {
+        return Err(EvidenceError::DuplicateIdentity {
+            kind: "public replay receipt path".into(),
+            id: first_path.display().to_string(),
+        });
+    }
+    let first = read_public_replay_receipt_v2(&first_path)?;
+    let second = read_public_replay_receipt_v2(&second_path)?;
+    let mut pair = [first, second];
+    pair.sort_by_key(|(_, _, attempt)| attempt.ordinal);
+    let (first_bundle, first_receipt, first_attempt) = &pair[0];
+    let (second_bundle, second_receipt, second_attempt) = &pair[1];
+    if first_receipt.receipt_id == second_receipt.receipt_id
+        || first_attempt.attempt_id == second_attempt.attempt_id
+    {
+        return Err(EvidenceError::DuplicateIdentity {
+            kind: "public replay receipt".into(),
+            id: first_receipt.receipt_id.clone(),
+        });
+    }
+    let first_inventory_sha = first_bundle.inventory_sha256()?;
+    let second_inventory_sha = second_bundle.inventory_sha256()?;
+    if first_inventory_sha == second_inventory_sha {
+        return Err(EvidenceError::DuplicateIdentity {
+            kind: "public replay receipt inventory".into(),
+            id: first_inventory_sha,
+        });
+    }
+    if !public_receipts_share_origin(first_receipt, second_receipt) {
+        return Err(EvidenceError::IdentityMismatch {
+            field: "public replay receipt pair origin".into(),
+            detail: "receipts do not bind the same run generation and original attempt".into(),
+        });
+    }
+    let verified_run = verify_bundle(original_run)?;
+    if verified_run.version != INVENTORY_VERSION_V2 || verified_run.kind != BundleKind::Run {
+        return Err(EvidenceError::InvalidSemantics {
+            field: original_run.display().to_string(),
+            detail: "pair qualification requires the complete verified v2 origin run".into(),
+        });
+    }
+    let verified_origin =
+        load_public_replay_origin_v2(&verified_run, &first_receipt.scenario_id.0)?;
+    let verdicts: Vec<ScenarioVerdict> = verified_run.read_json("verdicts.json")?;
+    let verdict = verdicts
+        .iter()
+        .find(|verdict| verdict.scenario_id == first_receipt.scenario_id)
+        .ok_or_else(|| EvidenceError::Missing("public replay pair origin verdict".into()))?;
+    if !matches!(
+        verdict.verdict,
+        Verdict::BaselinePass
+            | Verdict::BaselineInvalid
+            | Verdict::FuturePass
+            | Verdict::FutureFail
+    ) {
+        return Err(EvidenceError::InvalidSemantics {
+            field: "public replay receipt pair origin verdict".into(),
+            detail: format!(
+                "{:?} cannot be promoted to an exact replay qualification",
+                verdict.verdict
+            ),
+        });
+    }
+    for receipt in [first_receipt, second_receipt] {
+        ensure_receipt_matches_verified_origin(receipt, &verified_origin)?;
+    }
+    for (receipt, attempt) in [
+        (first_receipt, first_attempt),
+        (second_receipt, second_attempt),
+    ] {
+        if !receipt.equivalent_to_original
+            || !receipt.mismatches.is_empty()
+            || receipt.observed_engine != receipt.expected_engine
+            || receipt.receipt_id == receipt.original_attempt_id
+            || attempt.kind != AttemptKindV2::Replay
+        {
+            return Err(EvidenceError::InvalidSemantics {
+                field: format!("public replay receipt {}", receipt.receipt_id),
+                detail: "receipt is not an exact equivalent replay of its sealed original".into(),
+            });
+        }
+    }
+    if second_attempt.ordinal != first_attempt.ordinal.saturating_add(1)
+        || second_attempt.started_at < first_attempt.finished_at
+    {
+        return Err(EvidenceError::InvalidSemantics {
+            field: "public replay receipt pair order".into(),
+            detail: "receipt ordinals must be consecutive and executions must not overlap".into(),
+        });
+    }
+    Ok(VerifiedPublicReplayPairV2 {
+        run_id: first_receipt.run_id.clone(),
+        scenario_id: first_receipt.scenario_id.clone(),
+        receipt_ids: vec![
+            first_receipt.receipt_id.clone(),
+            second_receipt.receipt_id.clone(),
+        ],
+        receipt_inventory_sha256: vec![first_inventory_sha, second_inventory_sha],
+        original_attempt_sha256: first_receipt.original_attempt_sha256.clone(),
+        outcome_class: first_attempt.result.outcome_class,
+        target_exit_code: first_attempt.result.exit_code,
+    })
+}
+
+fn ensure_receipt_matches_verified_origin(
+    receipt: &PublicReplayReceiptV2,
+    origin: &PublicReplayOriginV2,
+) -> Result<()> {
+    let expected_original_path = format!(
+        "scenarios/{}/attempts/attempt-{:06}",
+        origin.original.scenario_id.0, origin.original.ordinal
+    );
+    let checks = [
+        (
+            "original_run_inventory_sha256",
+            receipt.original_run_inventory_sha256.clone(),
+            origin.run.inventory_sha256()?,
+        ),
+        (
+            "original_scenario_inventory_sha256",
+            receipt.original_scenario_inventory_sha256.clone(),
+            origin.scenario.inventory_sha256()?,
+        ),
+        (
+            "original_attempt_inventory_sha256",
+            receipt.original_attempt_inventory_sha256.clone(),
+            origin.original_attempt.inventory_sha256()?,
+        ),
+        (
+            "original_attempt_path",
+            receipt.original_attempt_path.clone(),
+            expected_original_path,
+        ),
+        (
+            "original_attempt_id",
+            receipt.original_attempt_id.clone(),
+            origin.original.attempt_id.clone(),
+        ),
+        (
+            "source_manifest_sha256",
+            receipt.source_manifest_sha256.clone(),
+            canonical_sha256(&origin.source).map_err(EvidenceError::Json)?,
+        ),
+        (
+            "config_sha256",
+            receipt.config_sha256.clone(),
+            canonical_sha256(&origin.config).map_err(EvidenceError::Json)?,
+        ),
+        (
+            "scenario_sha256",
+            receipt.scenario_sha256.clone(),
+            canonical_sha256(&origin.scenario_record).map_err(EvidenceError::Json)?,
+        ),
+        (
+            "replay_manifest_sha256",
+            receipt.replay_manifest_sha256.clone(),
+            canonical_sha256(&origin.manifest).map_err(EvidenceError::Json)?,
+        ),
+        (
+            "original_attempt_sha256",
+            receipt.original_attempt_sha256.clone(),
+            canonical_sha256(&origin.original).map_err(EvidenceError::Json)?,
+        ),
+        (
+            "image_digest",
+            receipt.image_digest.clone(),
+            origin.manifest.image_digest.clone(),
+        ),
+    ];
+    for (field, actual, expected) in checks {
+        ensure_identity(
+            &format!("public receipt trusted origin {field}"),
+            &actual,
+            &expected,
+        )?;
+    }
+    ensure_identity(
+        "public receipt trusted origin run id",
+        &receipt.run_id.0,
+        &origin.manifest.run_id.0,
+    )?;
+    ensure_identity(
+        "public receipt trusted origin scenario id",
+        &receipt.scenario_id.0,
+        &origin.manifest.scenario_id.0,
+    )?;
+    ensure_semantic_equality(
+        "public receipt trusted origin expected engine",
+        &receipt.expected_engine,
+        "verified origin manifest engine",
+        &origin.manifest.engine,
+    )?;
+    ensure_semantic_equality(
+        "public receipt trusted origin result",
+        &receipt.original_result,
+        "verified origin original result",
+        &origin.original.result,
+    )
+}
+
+fn public_receipts_share_origin(
+    left: &PublicReplayReceiptV2,
+    right: &PublicReplayReceiptV2,
+) -> bool {
+    left.run_id == right.run_id
+        && left.scenario_id == right.scenario_id
+        && left.original_run_inventory_sha256 == right.original_run_inventory_sha256
+        && left.original_scenario_inventory_sha256 == right.original_scenario_inventory_sha256
+        && left.original_attempt_inventory_sha256 == right.original_attempt_inventory_sha256
+        && left.original_attempt_path == right.original_attempt_path
+        && left.original_attempt_id == right.original_attempt_id
+        && left.source_manifest_sha256 == right.source_manifest_sha256
+        && left.config_sha256 == right.config_sha256
+        && left.scenario_sha256 == right.scenario_sha256
+        && left.replay_manifest_sha256 == right.replay_manifest_sha256
+        && left.original_attempt_sha256 == right.original_attempt_sha256
+        && left.expected_engine == right.expected_engine
+        && left.image_digest == right.image_digest
+        && left.original_result == right.original_result
 }
 
 fn redact_attempt(
@@ -513,7 +1198,489 @@ pub(super) fn verify_attempt_v2_semantics(
         attempt.result.stderr_sha256.as_deref(),
         Some(&prefixed_sha256(&stderr)),
     )?;
+    let has_receipt = inventory_has(inventory, PUBLIC_RECEIPT_FILE);
+    let has_origin = inventory
+        .entries
+        .iter()
+        .any(|entry| entry.path.starts_with("origin/"));
+    match (has_receipt, has_origin) {
+        (true, true) => verify_public_replay_receipt_semantics(dir, inventory, &attempt),
+        (false, false) => Ok(()),
+        _ => Err(EvidenceError::InvalidSemantics {
+            field: "public replay receipt layout".into(),
+            detail: "receipt metadata and its detached origin records must appear together".into(),
+        }),
+    }
+}
+
+fn verify_public_replay_receipt_semantics(
+    dir: &Path,
+    inventory: &BundleInventory,
+    attempt: &ExecutionAttemptV2,
+) -> Result<()> {
+    let mut allowed: BTreeSet<&str> = [
+        "attempt.json",
+        "commands.json",
+        "environment.json",
+        "result.json",
+        "stderr.log",
+        "stdout.log",
+        "failure-signature.json",
+        PUBLIC_RECEIPT_FILE,
+        ORIGIN_RUN_INVENTORY,
+        ORIGIN_SOURCE,
+        ORIGIN_CONFIG,
+        ORIGIN_SCENARIO_INVENTORY,
+        ORIGIN_SCENARIO,
+        ORIGIN_ENVIRONMENT,
+        ORIGIN_COMMANDS,
+        ORIGIN_REPLAY_MANIFEST,
+        ORIGIN_ATTEMPT_INVENTORY,
+        ORIGIN_ATTEMPT,
+    ]
+    .into_iter()
+    .collect();
+    if attempt.failure_signature.is_none() {
+        allowed.remove("failure-signature.json");
+    }
+    for entry in &inventory.entries {
+        if !allowed.contains(entry.path.as_str()) {
+            return Err(EvidenceError::Unlisted(format!(
+                "unexpected public replay receipt path {}",
+                entry.path
+            )));
+        }
+    }
+    for required in [
+        PUBLIC_RECEIPT_FILE,
+        ORIGIN_RUN_INVENTORY,
+        ORIGIN_SOURCE,
+        ORIGIN_CONFIG,
+        ORIGIN_SCENARIO_INVENTORY,
+        ORIGIN_SCENARIO,
+        ORIGIN_ENVIRONMENT,
+        ORIGIN_COMMANDS,
+        ORIGIN_REPLAY_MANIFEST,
+        ORIGIN_ATTEMPT_INVENTORY,
+        ORIGIN_ATTEMPT,
+    ] {
+        if !inventory_has(inventory, required) {
+            return Err(EvidenceError::Missing(required.into()));
+        }
+    }
+
+    let receipt: PublicReplayReceiptV2 = read_typed_json(dir, inventory, PUBLIC_RECEIPT_FILE)?;
+    if receipt.schema_version != PUBLIC_REPLAY_RECEIPT_SCHEMA_VERSION {
+        return Err(EvidenceError::InvalidSemantics {
+            field: format!("{PUBLIC_RECEIPT_FILE}.schema_version"),
+            detail: format!(
+                "expected {PUBLIC_REPLAY_RECEIPT_SCHEMA_VERSION}, found {}",
+                receipt.schema_version
+            ),
+        });
+    }
+    ensure_identity(
+        &format!("{PUBLIC_RECEIPT_FILE}.receipt_id"),
+        &receipt.receipt_id,
+        &attempt.attempt_id,
+    )?;
+    ensure_identity(
+        &format!("{PUBLIC_RECEIPT_FILE}.run_id"),
+        &receipt.run_id.0,
+        &attempt.run_id.0,
+    )?;
+    ensure_identity(
+        &format!("{PUBLIC_RECEIPT_FILE}.scenario_id"),
+        &receipt.scenario_id.0,
+        &attempt.scenario_id.0,
+    )?;
+    if receipt.created_at != attempt.finished_at || attempt.kind != AttemptKindV2::Replay {
+        return Err(EvidenceError::InvalidSemantics {
+            field: PUBLIC_RECEIPT_FILE.into(),
+            detail: "receipt timestamp or replay kind differs from attempt.json".into(),
+        });
+    }
+
+    let run_inventory_bytes = read_inventory_bytes(dir, inventory, ORIGIN_RUN_INVENTORY)?;
+    let scenario_inventory_bytes = read_inventory_bytes(dir, inventory, ORIGIN_SCENARIO_INVENTORY)?;
+    let attempt_inventory_bytes = read_inventory_bytes(dir, inventory, ORIGIN_ATTEMPT_INVENTORY)?;
+    let run_inventory = parse_embedded_inventory(&run_inventory_bytes, BundleKind::Run)?;
+    let scenario_inventory =
+        parse_embedded_inventory(&scenario_inventory_bytes, BundleKind::Scenario)?;
+    let original_inventory =
+        parse_embedded_inventory(&attempt_inventory_bytes, BundleKind::ReplayAttempt)?;
+    ensure_identity(
+        &format!("{PUBLIC_RECEIPT_FILE}.original_run_inventory_sha256"),
+        &receipt.original_run_inventory_sha256,
+        &sha256_hex(&run_inventory_bytes),
+    )?;
+    ensure_identity(
+        &format!("{PUBLIC_RECEIPT_FILE}.original_scenario_inventory_sha256"),
+        &receipt.original_scenario_inventory_sha256,
+        &sha256_hex(&scenario_inventory_bytes),
+    )?;
+    ensure_identity(
+        &format!("{PUBLIC_RECEIPT_FILE}.original_attempt_inventory_sha256"),
+        &receipt.original_attempt_inventory_sha256,
+        &sha256_hex(&attempt_inventory_bytes),
+    )?;
+
+    let source_bytes = read_inventory_bytes(dir, inventory, ORIGIN_SOURCE)?;
+    let config_bytes = read_inventory_bytes(dir, inventory, ORIGIN_CONFIG)?;
+    let scenario_bytes = read_inventory_bytes(dir, inventory, ORIGIN_SCENARIO)?;
+    let environment_bytes = read_inventory_bytes(dir, inventory, ORIGIN_ENVIRONMENT)?;
+    let commands_bytes = read_inventory_bytes(dir, inventory, ORIGIN_COMMANDS)?;
+    let manifest_bytes = read_inventory_bytes(dir, inventory, ORIGIN_REPLAY_MANIFEST)?;
+    let original_bytes = read_inventory_bytes(dir, inventory, ORIGIN_ATTEMPT)?;
+    let scenario_prefix = format!("scenarios/{}", receipt.scenario_id.0);
+    bind_embedded_bytes(&run_inventory, "source-manifest.json", &source_bytes)?;
+    bind_embedded_bytes(&run_inventory, "config.normalized.json", &config_bytes)?;
+    bind_embedded_bytes(
+        &run_inventory,
+        &format!("{scenario_prefix}/checksums.txt"),
+        &scenario_inventory_bytes,
+    )?;
+    for (name, bytes) in [
+        ("scenario.json", scenario_bytes.as_slice()),
+        ("environment.json", environment_bytes.as_slice()),
+        ("commands.json", commands_bytes.as_slice()),
+        ("replay-manifest-v2.json", manifest_bytes.as_slice()),
+    ] {
+        bind_embedded_bytes(&scenario_inventory, name, bytes)?;
+        bind_embedded_bytes(&run_inventory, &format!("{scenario_prefix}/{name}"), bytes)?;
+    }
+
+    validate_inventory_path(&receipt.original_attempt_path)?;
+    let original_relative = receipt
+        .original_attempt_path
+        .strip_prefix(&format!("{scenario_prefix}/"))
+        .ok_or_else(|| EvidenceError::IdentityMismatch {
+            field: format!("{PUBLIC_RECEIPT_FILE}.original_attempt_path"),
+            detail: "path is not below the bound scenario".into(),
+        })?;
+    bind_embedded_bytes(
+        &scenario_inventory,
+        &format!("{original_relative}/checksums.txt"),
+        &attempt_inventory_bytes,
+    )?;
+    bind_embedded_bytes(
+        &run_inventory,
+        &format!("{}/checksums.txt", receipt.original_attempt_path),
+        &attempt_inventory_bytes,
+    )?;
+    bind_embedded_bytes(
+        &scenario_inventory,
+        &format!("{original_relative}/attempt.json"),
+        &original_bytes,
+    )?;
+    bind_embedded_bytes(
+        &run_inventory,
+        &format!("{}/attempt.json", receipt.original_attempt_path),
+        &original_bytes,
+    )?;
+    bind_embedded_bytes(&original_inventory, "attempt.json", &original_bytes)?;
+
+    let source: SourceSnapshotManifestV2 = parse_embedded_json(ORIGIN_SOURCE, &source_bytes)?;
+    let config: Config = parse_embedded_json(ORIGIN_CONFIG, &config_bytes)?;
+    let scenario: Scenario = parse_embedded_json(ORIGIN_SCENARIO, &scenario_bytes)?;
+    let environment: EnvironmentSpec = parse_embedded_json(ORIGIN_ENVIRONMENT, &environment_bytes)?;
+    let commands: Vec<CommandSpec> = parse_embedded_json(ORIGIN_COMMANDS, &commands_bytes)?;
+    let manifest: ExactReplayManifestV2 =
+        parse_embedded_json(ORIGIN_REPLAY_MANIFEST, &manifest_bytes)?;
+    let original: ExecutionAttemptV2 = parse_embedded_json(ORIGIN_ATTEMPT, &original_bytes)?;
+    validate_detached_source_manifest(&source)?;
+    config
+        .validate()
+        .map_err(|error| EvidenceError::InvalidSemantics {
+            field: ORIGIN_CONFIG.into(),
+            detail: error.to_string(),
+        })?;
+    validate_exact_manifest(&manifest, &scenario, &environment, &commands)?;
+    validate_attempt_v2(
+        &original,
+        Some(&receipt.run_id.0),
+        Some(&receipt.scenario_id.0),
+    )?;
+    validate_attempt_outcome(&original)?;
+    if original.kind != AttemptKindV2::Original {
+        return Err(EvidenceError::InvalidSemantics {
+            field: ORIGIN_ATTEMPT.into(),
+            detail: "bound origin attempt is not original".into(),
+        });
+    }
+    ensure_identity(
+        &format!("{ORIGIN_SOURCE}.run_id"),
+        &source.run_id.0,
+        &receipt.run_id.0,
+    )?;
+    ensure_identity(
+        &format!("{ORIGIN_SCENARIO}.id"),
+        &scenario.id.0,
+        &receipt.scenario_id.0,
+    )?;
+    ensure_attempt_matches_manifest(&original, &manifest, "origin original attempt")?;
+    ensure_attempt_matches_manifest(attempt, &manifest, "public replay attempt")?;
+    ensure_identity(
+        &format!("{PUBLIC_RECEIPT_FILE}.original_attempt_id"),
+        &receipt.original_attempt_id,
+        &original.attempt_id,
+    )?;
+    if receipt.receipt_id == receipt.original_attempt_id {
+        return Err(EvidenceError::DuplicateIdentity {
+            kind: "original/public replay attempt".into(),
+            id: receipt.receipt_id.clone(),
+        });
+    }
+    ensure_selected_final_original(&scenario_inventory, original_relative, original.ordinal)?;
+
+    let source_sha = canonical_sha256(&source).map_err(EvidenceError::Json)?;
+    let config_sha = canonical_sha256(&config).map_err(EvidenceError::Json)?;
+    let scenario_sha = canonical_sha256(&scenario).map_err(EvidenceError::Json)?;
+    let manifest_sha = canonical_sha256(&manifest).map_err(EvidenceError::Json)?;
+    let original_sha = canonical_sha256(&original).map_err(EvidenceError::Json)?;
+    let replay_sha = canonical_sha256(attempt).map_err(EvidenceError::Json)?;
+    for (field, actual, expected) in [
+        (
+            "source_manifest_sha256",
+            receipt.source_manifest_sha256.as_str(),
+            source_sha.as_str(),
+        ),
+        (
+            "config_sha256",
+            receipt.config_sha256.as_str(),
+            config_sha.as_str(),
+        ),
+        (
+            "scenario_sha256",
+            receipt.scenario_sha256.as_str(),
+            scenario_sha.as_str(),
+        ),
+        (
+            "replay_manifest_sha256",
+            receipt.replay_manifest_sha256.as_str(),
+            manifest_sha.as_str(),
+        ),
+        (
+            "original_attempt_sha256",
+            receipt.original_attempt_sha256.as_str(),
+            original_sha.as_str(),
+        ),
+        (
+            "replay_attempt_sha256",
+            receipt.replay_attempt_sha256.as_str(),
+            replay_sha.as_str(),
+        ),
+    ] {
+        ensure_identity(&format!("{PUBLIC_RECEIPT_FILE}.{field}"), actual, expected)?;
+    }
+    ensure_identity(
+        &format!("{PUBLIC_RECEIPT_FILE}.source_manifest_sha256"),
+        &receipt.source_manifest_sha256,
+        &manifest.source_manifest_sha256,
+    )?;
+    ensure_identity(
+        &format!("{PUBLIC_RECEIPT_FILE}.config_sha256"),
+        &receipt.config_sha256,
+        &manifest.config_sha256,
+    )?;
+    ensure_identity(
+        &format!("{PUBLIC_RECEIPT_FILE}.scenario_sha256"),
+        &receipt.scenario_sha256,
+        &manifest.scenario_sha256,
+    )?;
+    ensure_semantic_equality(
+        &format!("{PUBLIC_RECEIPT_FILE}.expected_engine"),
+        &receipt.expected_engine,
+        "origin replay manifest engine",
+        &manifest.engine,
+    )?;
+    validate_engine(&receipt.observed_engine)?;
+    ensure_identity(
+        &format!("{PUBLIC_RECEIPT_FILE}.image_digest"),
+        &receipt.image_digest,
+        &manifest.image_digest,
+    )?;
+    ensure_semantic_equality(
+        &format!("{PUBLIC_RECEIPT_FILE}.original_result"),
+        &receipt.original_result,
+        "origin original result",
+        &original.result,
+    )?;
+    ensure_semantic_equality(
+        &format!("{PUBLIC_RECEIPT_FILE}.replay_result"),
+        &receipt.replay_result,
+        "public replay result",
+        &attempt.result,
+    )?;
+
+    let mut calculated = attempt_equivalence(&original, attempt);
+    if receipt.observed_engine != manifest.engine {
+        calculated.equivalent = false;
+        calculated
+            .mismatches
+            .push(AttemptMismatchV2::EngineIdentity);
+        if attempt.result.outcome_class != AttemptOutcomeClassV2::Blocked {
+            return Err(EvidenceError::InvalidSemantics {
+                field: format!("{PUBLIC_RECEIPT_FILE}.observed_engine"),
+                detail: "an engine identity mismatch must fail closed as BLOCKED".into(),
+            });
+        }
+    }
+    if receipt.equivalent_to_original != calculated.equivalent
+        || receipt.mismatches != calculated.mismatches
+    {
+        return Err(EvidenceError::IdentityMismatch {
+            field: PUBLIC_RECEIPT_FILE.into(),
+            detail: "recorded equivalence differs from recomputed origin/result equivalence".into(),
+        });
+    }
     Ok(())
+}
+
+fn parse_embedded_inventory(bytes: &[u8], kind: BundleKind) -> Result<BundleInventory> {
+    let text = std::str::from_utf8(bytes).map_err(|_| EvidenceError::MalformedInventory {
+        line: 0,
+        reason: "embedded inventory is not UTF-8".into(),
+    })?;
+    let inventory = BundleInventory::parse(text)?;
+    if inventory.version != INVENTORY_VERSION_V2 || inventory.kind != kind {
+        return Err(EvidenceError::IdentityMismatch {
+            field: "embedded inventory header".into(),
+            detail: format!(
+                "expected v2 {kind:?}, found v{} {:?}",
+                inventory.version, inventory.kind
+            ),
+        });
+    }
+    if inventory.to_canonical_string()?.as_bytes() != bytes {
+        return Err(EvidenceError::MalformedInventory {
+            line: 0,
+            reason: "embedded inventory is not canonical".into(),
+        });
+    }
+    Ok(inventory)
+}
+
+fn parse_embedded_json<T: DeserializeOwned>(path: &str, bytes: &[u8]) -> Result<T> {
+    if bytes.len() > MAX_TYPED_JSON_BYTES {
+        return Err(EvidenceError::InvalidSemantics {
+            field: path.into(),
+            detail: "embedded JSON exceeds the typed read limit".into(),
+        });
+    }
+    serde_json::from_slice(bytes).map_err(|source| EvidenceError::InvalidJson {
+        path: path.into(),
+        source,
+    })
+}
+
+fn bind_embedded_bytes(inventory: &BundleInventory, path: &str, bytes: &[u8]) -> Result<()> {
+    let entry = inventory
+        .entries
+        .iter()
+        .find(|entry| entry.path == path)
+        .ok_or_else(|| EvidenceError::Missing(format!("embedded inventory path {path}")))?;
+    ensure_identity(path, &sha256_hex(bytes), &entry.sha256)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn ensure_attempt_matches_manifest(
+    attempt: &ExecutionAttemptV2,
+    manifest: &ExactReplayManifestV2,
+    field: &str,
+) -> Result<()> {
+    let manifest_sha = canonical_sha256(manifest).map_err(EvidenceError::Json)?;
+    if attempt.run_id != manifest.run_id
+        || attempt.scenario_id != manifest.scenario_id
+        || attempt.scenario_kind != manifest.scenario_kind
+        || attempt.source_manifest_sha256 != manifest.source_manifest_sha256
+        || attempt.config_sha256 != manifest.config_sha256
+        || attempt.replay_manifest_sha256 != manifest_sha
+        || attempt.image_ref != manifest.image_ref
+        || attempt.image_digest != manifest.image_digest
+        || attempt.commands != manifest.commands
+        || attempt.environment != manifest.environment
+        || attempt.engine != manifest.engine
+    {
+        return Err(EvidenceError::IdentityMismatch {
+            field: field.into(),
+            detail: "attempt identity differs from the bound exact replay manifest".into(),
+        });
+    }
+    Ok(())
+}
+
+fn ensure_selected_final_original(
+    inventory: &BundleInventory,
+    selected: &str,
+    ordinal: u32,
+) -> Result<()> {
+    let mut ordinals = Vec::new();
+    for entry in &inventory.entries {
+        let Some(path) = entry.path.strip_suffix("/attempt.json") else {
+            continue;
+        };
+        let Some(name) = path.strip_prefix("attempts/attempt-") else {
+            continue;
+        };
+        if name.contains('/') || name.len() != 6 || !name.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(EvidenceError::InvalidSemantics {
+                field: "embedded scenario original attempt paths".into(),
+                detail: format!("non-canonical original attempt path {path}"),
+            });
+        }
+        ordinals.push(
+            name.parse::<u32>()
+                .map_err(|_| EvidenceError::InvalidSemantics {
+                    field: "embedded scenario original attempt paths".into(),
+                    detail: "attempt ordinal is invalid".into(),
+                })?,
+        );
+    }
+    ordinals.sort_unstable();
+    let expected: Vec<u32> = (1..=ordinals.len() as u32).collect();
+    if ordinals != expected || ordinals.last().copied() != Some(ordinal) {
+        return Err(EvidenceError::InvalidSemantics {
+            field: "embedded scenario original attempts".into(),
+            detail: "selected original is not the final member of a consecutive original set"
+                .into(),
+        });
+    }
+    ensure_identity(
+        "selected original attempt path",
+        selected,
+        &format!("attempts/attempt-{ordinal:06}"),
+    )
+}
+
+fn validate_detached_source_manifest(source: &SourceSnapshotManifestV2) -> Result<()> {
+    if !source.identity_is_coherent() {
+        return Err(EvidenceError::InvalidSemantics {
+            field: ORIGIN_SOURCE.into(),
+            detail: "source identity kind, commit, dirty flag, or schema is incoherent".into(),
+        });
+    }
+    let mut prior: Option<&str> = None;
+    let mut portable = BTreeSet::new();
+    for file in &source.files {
+        validate_inventory_path(&file.path)?;
+        validate_digest("origin source file digest", &file.sha256)?;
+        if prior.is_some_and(|previous| previous >= file.path.as_str())
+            || !portable.insert(file.path.to_lowercase())
+        {
+            return Err(EvidenceError::DuplicatePath(file.path.clone()));
+        }
+        prior = Some(&file.path);
+    }
+    ensure_identity(
+        "origin source tree digest",
+        &source.tree_sha256,
+        &canonical_sha256(&source.files).map_err(EvidenceError::Json)?,
+    )
 }
 
 pub(super) fn verify_scenario_v2_semantics(

@@ -15,6 +15,7 @@ dist/
 release-dry-run/
 *.zip
 sbom.json
+*.cdx.json
 *.exe
 Cargo.lock.bak
 apps/web/tsconfig.tsbuildinfo

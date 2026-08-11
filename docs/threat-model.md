@@ -64,18 +64,21 @@ residual provenance risk.
 | No privileged containers | Never pass `--privileged`. |
 | No docker.sock mount | Explicitly reject paths containing `docker.sock`. |
 | Env isolation | Do not forward host env; forbid secret-like keys. |
-| Disposable workspace | Copy/worktree; skip following symlinks on copy. |
+| Disposable workspace | Copy into a fresh plain directory; reject symlink, junction/reparse, and non-regular source entries instead of silently omitting them. |
+| Isolated Git source identity | Local `rev-parse`, index-mode inspection, and `status`, plus remote post-clone provenance checks, run with bounded output/time, replacement refs disabled, ambient system/global/config-injection and credential variables removed, and command-scope fsmonitor/hooks disabled. Local executable clean/process filters are rejected before `status`; a non-Unix host rejects tracked `100755` entries instead of claiming an exact `GitCommit` whose logical executable mode it cannot preserve. |
 | Resource limits | Memory, CPU, PID, and wall-clock limits. |
-| Network split | Fetch may use network; tests use `network=none`. |
+| Engine-corroborated network split | Before target commands start, the engine must confirm that the running container has no attached network. Network is attached only around a recorded Fetch command whose `network_required` flag, adapter `EnvironmentSpec`, and configured upper bound all permit it. Every Docker/Podman connect, disconnect, and inspect must succeed and corroborate the exact state or execution is `BLOCKED`; `network_used` is set only for a command actually executed after a verified connection. |
 | Log redaction and caps | Redact API-key patterns and cap stdout/stderr before writing scenario evidence. |
 | HTML escaping | Escape untrusted strings in generated reports. |
 | Versioned exact-set inventory | [`BundleInventory::parse` and `verify_bundle`](../crates/evidence/src/lib.rs) require an exact supported v1/v2 header and canonical, sorted SHA-256 records using LF only and a mandatory final LF; missing, extra, duplicate, malformed, and digest-mismatched files fail closed. Historical unversioned checksum lists return `UnsealedLegacy`. |
-| Required layout and expected kind | Run and scenario kinds require their version-specific security-relevant core files; v2 also defines a `replay-attempt` kind. Evidence-store consumers require a `run` inventory instead of accepting a self-declared `generic` bundle. |
+| Required layout and expected kind | Run and scenario kinds require their version-specific security-relevant core files; v2 also defines a `replay-attempt` kind for nested attempts and detached public receipts. Receipt metadata and its fixed `origin/` records must appear together, with no unrecognized receipt paths. Evidence-store consumers require a `run` inventory instead of accepting a self-declared `generic` bundle. |
 | Typed identity consistency | Run/config/repository/frontier/plan/verdict links and scenario/result/replay/image/command/resource identities are parsed from fixed schemas and checked across files. v2 also binds the exact source, configuration, scenario, image digest, environment, commands, engine, attempts, and qualifications. Dangling, duplicate, or mixed identities fail closed. |
-| Path confinement | [`validate_inventory_path`](../crates/evidence/src/lib.rs) rejects absolute and drive/alternate-stream paths, backslashes, NUL, leading/trailing whitespace, empty, `.` or `..` components, trailing component dots/spaces, case-insensitive DOS device stems (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, including extensions), and portable case-fold collisions. Run and scenario IDs are one component. |
+| Path confinement | [`validate_inventory_path`](../crates/evidence/src/lib.rs) rejects absolute and drive/alternate-stream paths, backslashes, NUL, leading/trailing whitespace, empty, `.` or `..` components, trailing component dots/spaces, case-insensitive DOS device stems (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM1`-`COM9`, `LPT1`-`LPT9`, and the legacy superscript-digit variants, including extensions), and portable case-fold collisions. Run and scenario IDs are one component. |
 | Symlink and special-file rejection | Root, traversal, inventory, hashing, and verified-read checks use link-aware metadata. Any symlink, Windows reparse point, or non-regular entry observed at those checkpoints is rejected. |
 | Verify before consume | [`open_verified_store`](../crates/runner/src/lib.rs) gates `show`, `explain`, `policy`, `compare`, and `replay`; [`report`](../apps/cli/src/main.rs) also verifies before loading evidence. |
-| Source-bound exact replay | v2 hashes the captured source file set and tree, retains every original attempt, and executes qualifying scan-time replays in fresh disposable workspaces against the recorded digest-pinned image. The verifier recomputes receipt digests and equivalence; an observed frontier requires at least two distinct consecutive equivalent replay receipts. |
+| Source-bound exact replay | v2 hashes the captured source file set and tree, retains every original attempt, and executes qualifying scan-time replays in fresh disposable workspaces against the recorded digest-pinned image. A post-download `--workspace` is normalized with the scan-time copy boundary into a child of a securely created system-temporary root, never a sibling in the source parent, must exactly match the sealed source identity, and is never executed directly. The verifier recomputes receipt digests and equivalence; an observed frontier requires at least two distinct consecutive equivalent replay receipts. |
+| Detached public replay receipt | Every public replay accepted from a verified v2 origin writes a create-only sealed bundle below `replay-receipts/<run>/<scenario>/<receipt-id>/`, outside the immutable run. It binds the original run/scenario/attempt inventories, source, config, scenario, exact manifest, commands, environment, expected and observed engine, image digest, and both outcomes. Target failure and blocked attempts are sealed before their non-green exit. |
+| Full-origin pair gate | Standalone receipt verification proves only the detached bundle's internal consistency. Public qualification requires exactly two distinct consecutive receipts, verifies the complete original run, byte-matches its inventory generation and typed origin to both receipts, and recomputes both equivalence decisions. Workflow summaries and recorded exit-code files are not the qualification authority. |
 | Mount fail-closed boundary | The primary project copy is the implicit `/workspace` mount. Explicit host mounts are rejected as `BLOCKED` until their semantics can be reproduced safely; generalized workdir/mount handling is not claimed. |
 | Generation-bound reads | A `VerifiedBundle` retains the inventory it verified. Consumer reads locate entries in that retained inventory and re-hash bytes against the retained digest, so they cannot silently adopt a later independently sealed generation. |
 | Deterministic sealed reports | Enabled HTML, JSON, and SARIF files are rebuilt from the verified evidence model and compared byte for byte. HTML/SARIF embed the sealed `tool_version`; incompatible future renderer changes require a compatibility implementation or a new format/version boundary. |
@@ -95,33 +98,48 @@ residual provenance risk.
   internally consistent; it does not prove the producer actually performed the
   work or provide an independent trust root.
 - Public post-seal `replay` executes from verified evidence in a fresh workspace
-  but does not append a receipt or mutate the sealed run. That execution cannot
-  later be cited from the bundle as an additional qualified attempt.
+  and writes an independent sealed receipt without mutating the sealed run. A
+  standalone receipt can be internally consistent even if an attacker invented
+  the embedded `kind=run` inventory; it is not proof of original-run validity,
+  publisher identity, or provenance. Qualification therefore requires the
+  complete original run and the two-receipt pair gate. v2 accepts a different
+  canonical checkout only when the entire normalized source snapshot matches;
+  v1 remains bound to its producer-recorded path.
 - Explicit host mounts currently fail closed as `BLOCKED`; only the implicit
   `/workspace` project mount is supported, and generalized sandbox workdir/mount
   reproduction remains future work.
 - Filesystem checks are fail-closed for changes, links, and reparse points they
   observe, but do not create an atomic filesystem snapshot or prove resistance
-  to every malicious concurrent pathname swap between syscalls. Avoid
-  concurrent writers and retain immutable copies for qualification evidence.
+  to every malicious concurrent pathname swap between syscalls, including a
+  same-user swap of a local/remote source path during provenance inspection and
+  capture. Avoid concurrent writers and retain immutable copies for
+  qualification evidence.
 - Container breakout vulnerabilities in the engine/kernel remain in the TCB.
 - Base images or registries may be malicious or compromised.
-- `fetch-only` still allows network during dependency installation.
+- `fetch-only` still allows network during an explicitly network-required
+  dependency Fetch command. `sandbox.network` is a non-expanding upper bound:
+  it can tighten an adapter's policy to `none`, but cannot grant access that
+  the adapter and command did not record.
+- Network attachment names and inspect representations differ across engine
+  versions. TomorrowCI implements the supported Docker/Podman transitions and
+  fails closed when an engine cannot corroborate them; this design statement
+  is not a substitute for a public Podman qualification run.
 - A non-root container user and read-only root filesystem are not always
   possible while package managers install dependencies.
-- v0.1 relies on engine-default seccomp/AppArmor plus
+- v0.2 relies on engine-default seccomp/AppArmor plus
   `no-new-privileges`; it does not install a custom profile.
 
 ## Phase 1 claim boundary
 
 v1 remains the legacy integrity and typed-identity foundation. v2 adds the
-source manifest, strict replay identity, all original attempts, and two-or-more
-scan-time exact replay receipts with verifier-recomputed qualification. This is
-still not a claim that Phase 1 is complete: post-seal replay receipts, generalized
+source manifest, strict replay identity, all original attempts, scan-time exact
+replay receipts, and create-only post-seal public replay receipts with a
+full-origin two-receipt verifier. Local implementation and tests do not by
+themselves establish public-CI or independent-adoption evidence. Generalized
 workdir/mount execution, independent adoption/audit evidence, and other open
 qualification gates remain outside the implemented proof.
 
-## Out of scope (v0.1)
+## Out of scope (v0.2)
 
 - Multi-tenant SaaS isolation
 - Formal verification of the planner

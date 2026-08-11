@@ -1,0 +1,14 @@
+diff --git a/tests/test_collections.py b/tests/test_collections.py
+--- a/tests/test_collections.py
++++ b/tests/test_collections.py
+@@ -10,3 +9,0 @@ On Python >= 3.10, importing MutableMapping from collections raises ImportError
+-import sys
+-
+-
+@@ -14,2 +11,2 @@ def test_mutable_mapping_from_collections():
+-    # Intentionally use the removed import path.
+-    from collections import MutableMapping  # noqa: F401
++    # Use the supported import path on both the baseline and future runtimes.
++    from collections.abc import MutableMapping
+@@ -18 +15,0 @@ def test_mutable_mapping_from_collections():
+-    assert sys.version_info < (3, 10), "should only pass on Python < 3.10"

@@ -4,6 +4,7 @@
 
 use std::path::Path;
 use tomorrowci_adapters::{AdapterError, DetectionResult, EcosystemAdapter, Result};
+use tomorrowci_core::backtest::{snapshot_container_payload, workspace_registry_snapshot};
 use tomorrowci_core::signature::normalize_failure;
 use tomorrowci_core::{
     Baseline, Candidate, CommandPhase, CommandSpec, Config, DependencyMode, Ecosystem,
@@ -172,8 +173,8 @@ impl EcosystemAdapter for NodeAdapter {
         Ok(out)
     }
 
-    fn materialize(&self, scenario: &Scenario, _workspace: &Path) -> Result<EnvironmentSpec> {
-        Ok(EnvironmentSpec {
+    fn materialize(&self, scenario: &Scenario, workspace: &Path) -> Result<EnvironmentSpec> {
+        let mut environment = EnvironmentSpec {
             image_ref: if scenario.image_ref.is_empty() {
                 format!("node:{}-bookworm", scenario.runtime_version)
             } else {
@@ -190,7 +191,21 @@ impl EcosystemAdapter for NodeAdapter {
             cpus: 2.0,
             pids_limit: 512,
             timeout_seconds: 900,
-        })
+        };
+        if workspace_registry_snapshot(workspace, Ecosystem::Node)
+            .map_err(|error| AdapterError::Materialize(error.to_string()))?
+            .is_some()
+        {
+            environment.network_mode = NetworkMode::None;
+            environment
+                .env
+                .insert("npm_config_offline".into(), "true".into());
+            environment.env.insert(
+                "npm_config_cache".into(),
+                snapshot_container_payload().into(),
+            );
+        }
+        Ok(environment)
     }
 
     fn commands(&self, scenario: &Scenario, config: &Config) -> Result<Vec<CommandSpec>> {
@@ -293,6 +308,36 @@ impl EcosystemAdapter for NodeAdapter {
         Ok(cmds)
     }
 
+    fn commands_in_workspace(
+        &self,
+        scenario: &Scenario,
+        config: &Config,
+        workspace: &Path,
+    ) -> Result<Vec<CommandSpec>> {
+        let Some(_snapshot) = workspace_registry_snapshot(workspace, Ecosystem::Node)
+            .map_err(|error| AdapterError::Materialize(error.to_string()))?
+        else {
+            return self.commands(scenario, config);
+        };
+        let payload = snapshot_container_payload();
+        let mut commands = self.commands(scenario, config)?;
+        for command in &mut commands {
+            if command.phase == CommandPhase::Fetch {
+                command.args.push("--offline".into());
+                command.args.push("--cache".into());
+                command.args.push(payload.into());
+                command.network_required = false;
+                command
+                    .env
+                    .insert("npm_config_offline".into(), "true".into());
+                command
+                    .env
+                    .insert("npm_config_cache".into(), payload.into());
+            }
+        }
+        Ok(commands)
+    }
+
     fn normalize_failure(&self, result: &RawExecutionResult) -> FailureSignature {
         normalize_failure(result, EvidenceGrade::Observed)
     }
@@ -341,5 +386,66 @@ mod tests {
         .unwrap();
         let a = NodeAdapter::new();
         assert!(a.detect(d.path()).unwrap().detection.supported);
+    }
+
+    #[test]
+    fn verified_npm_cache_commands_are_offline_and_container_relative() {
+        let workspace = tempdir().unwrap();
+        stage_snapshot_fixture(workspace.path(), "node");
+        fs::write(workspace.path().join("package.json"), r#"{"name":"x"}"#).unwrap();
+        fs::write(
+            workspace.path().join("package-lock.json"),
+            r#"{"name":"x","lockfileVersion":3,"packages":{}}"#,
+        )
+        .unwrap();
+        let adapter = NodeAdapter::new();
+        let baseline = adapter
+            .baseline(workspace.path(), &Config::default())
+            .unwrap();
+        let scenario = baseline_scenario(&baseline);
+        let environment = adapter.materialize(&scenario, workspace.path()).unwrap();
+        assert_eq!(environment.network_mode, NetworkMode::None);
+        let commands = adapter
+            .commands_in_workspace(&scenario, &Config::default(), workspace.path())
+            .unwrap();
+        fake_offline_executor(&commands, workspace.path());
+        assert!(commands
+            .iter()
+            .any(|command| command.args.iter().any(|argument| argument == "--offline")));
+    }
+
+    fn stage_snapshot_fixture(workspace: &Path, ecosystem: &str) {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/backtest-snapshots")
+            .join(ecosystem)
+            .join("2026-01-15");
+        let destination = workspace.join(tomorrowci_core::backtest::WORKSPACE_SNAPSHOT_DIR);
+        copy_fixture_tree(&source, &destination);
+    }
+
+    fn copy_fixture_tree(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).unwrap();
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let target = destination.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_fixture_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    fn fake_offline_executor(commands: &[CommandSpec], host_workspace: &Path) {
+        for command in commands {
+            assert!(!command.network_required);
+            assert_eq!(command.workdir, "/workspace");
+            for value in command.args.iter().chain(command.env.values()) {
+                assert!(!value.contains(host_workspace.to_string_lossy().as_ref()));
+                if value.contains("registry-snapshot") {
+                    assert!(value.starts_with("/workspace/"));
+                }
+            }
+        }
     }
 }

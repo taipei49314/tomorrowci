@@ -1,0 +1,9 @@
+[package]
+name = "tomorrowci-snapshot-dep"
+version = "1.0.0"
+edition = "2021"
+description = "Deterministic TomorrowCI offline snapshot fixture"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"

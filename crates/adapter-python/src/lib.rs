@@ -10,6 +10,7 @@
 
 use std::path::Path;
 use tomorrowci_adapters::{AdapterError, DetectionResult, EcosystemAdapter, Result};
+use tomorrowci_core::backtest::{snapshot_container_payload, workspace_registry_snapshot};
 use tomorrowci_core::signature::normalize_failure;
 use tomorrowci_core::{
     Baseline, Candidate, CommandPhase, CommandSpec, Config, DependencyMode, Ecosystem,
@@ -266,13 +267,13 @@ impl EcosystemAdapter for PythonAdapter {
         Ok(out)
     }
 
-    fn materialize(&self, scenario: &Scenario, _workspace: &Path) -> Result<EnvironmentSpec> {
+    fn materialize(&self, scenario: &Scenario, workspace: &Path) -> Result<EnvironmentSpec> {
         let image = if scenario.image_ref.is_empty() {
             format!("python:{}-bookworm", scenario.runtime_version)
         } else {
             scenario.image_ref.clone()
         };
-        Ok(EnvironmentSpec {
+        let mut environment = EnvironmentSpec {
             image_ref: image,
             image_digest: None,
             workdir: "/workspace".into(),
@@ -285,7 +286,18 @@ impl EcosystemAdapter for PythonAdapter {
             cpus: 2.0,
             pids_limit: 512,
             timeout_seconds: 900,
-        })
+        };
+        if workspace_registry_snapshot(workspace, Ecosystem::Python)
+            .map_err(|error| AdapterError::Materialize(error.to_string()))?
+            .is_some()
+        {
+            environment.network_mode = NetworkMode::None;
+            environment.env.insert("PIP_NO_INDEX".into(), "1".into());
+            environment
+                .env
+                .insert("PIP_FIND_LINKS".into(), snapshot_container_payload().into());
+        }
+        Ok(environment)
     }
 
     fn commands(&self, scenario: &Scenario, config: &Config) -> Result<Vec<CommandSpec>> {
@@ -376,6 +388,96 @@ impl EcosystemAdapter for PythonAdapter {
         Ok(cmds)
     }
 
+    fn commands_in_workspace(
+        &self,
+        scenario: &Scenario,
+        config: &Config,
+        workspace: &Path,
+    ) -> Result<Vec<CommandSpec>> {
+        let snapshot = workspace_registry_snapshot(workspace, Ecosystem::Python)
+            .map_err(|error| AdapterError::Materialize(error.to_string()))?;
+        let dependency_source = if workspace.join("requirements.txt").is_file() {
+            Some(("-r", "requirements.txt"))
+        } else if workspace.join("requirements-dev.txt").is_file() {
+            Some(("-r", "requirements-dev.txt"))
+        } else if workspace.join("pyproject.toml").is_file() {
+            Some(("", "."))
+        } else {
+            None
+        }
+        .ok_or_else(|| {
+            AdapterError::Materialize(
+                "supported Python workspace has no installable pip manifest".into(),
+            )
+        })?;
+
+        let mut commands = self.commands(scenario, config)?;
+        for command in &mut commands {
+            if command.phase != CommandPhase::Fetch
+                || command.program != "python"
+                || !command
+                    .args
+                    .iter()
+                    .any(|argument| argument == "requirements.txt")
+            {
+                continue;
+            }
+            let requirements = command
+                .args
+                .iter()
+                .position(|argument| argument == "requirements.txt")
+                .ok_or_else(|| {
+                    AdapterError::Materialize("requirements argument vanished".into())
+                })?;
+            command.args[requirements] = dependency_source.1.into();
+            if dependency_source.0.is_empty()
+                && requirements > 0
+                && command.args[requirements - 1] == "-r"
+            {
+                command.args.remove(requirements - 1);
+            }
+        }
+
+        // A requirements-backed locked baseline must be defined by those
+        // source-bound bytes. Fetching the latest pip/pytest first would make
+        // the supposedly locked environment depend on mutable index state.
+        // Pyproject-only workspaces retain the compatibility bootstrap because
+        // there is no requirements lock for the adapter to consume.
+        if scenario.dependency_mode == DependencyMode::Locked && !dependency_source.0.is_empty() {
+            commands.retain(|command| {
+                !(command.phase == CommandPhase::Fetch
+                    && command.args.iter().any(|argument| argument == "--upgrade")
+                    && command.args.iter().any(|argument| argument == "pip")
+                    && command.args.iter().any(|argument| argument == "pytest"))
+            });
+        }
+
+        if snapshot.is_none() {
+            return Ok(commands);
+        }
+        let payload = snapshot_container_payload();
+        // A historical wheelhouse must not bootstrap today's pip/pytest. The
+        // project requirements (or its explicit test command) define those
+        // tools; silently adding them would change the historical dependency
+        // set and make an empty-cache acceptance impossible.
+        commands.retain(|command| {
+            !(command.phase == CommandPhase::Fetch
+                && command.args.iter().any(|argument| argument == "--upgrade")
+                && command.args.iter().any(|argument| argument == "pytest"))
+        });
+        for command in &mut commands {
+            if command.phase == CommandPhase::Fetch {
+                command.args.push("--no-index".into());
+                command.args.push("--find-links".into());
+                command.args.push(payload.into());
+                command.network_required = false;
+                command.env.insert("PIP_NO_INDEX".into(), "1".into());
+                command.env.insert("PIP_FIND_LINKS".into(), payload.into());
+            }
+        }
+        Ok(commands)
+    }
+
     fn normalize_failure(&self, result: &RawExecutionResult) -> FailureSignature {
         normalize_failure(result, EvidenceGrade::Observed)
     }
@@ -457,5 +559,127 @@ mod tests {
             .iter()
             .any(|x| x.runtime_version.as_deref() == Some("3.9")
                 && x.axis == EnvironmentAxis::Runtime));
+    }
+
+    #[test]
+    fn verified_wheelhouse_commands_are_offline_and_container_relative() {
+        let workspace = tempdir().unwrap();
+        stage_snapshot_fixture(workspace.path(), "python");
+        fs::write(workspace.path().join("requirements.txt"), "").unwrap();
+        let adapter = PythonAdapter::new();
+        let baseline = adapter
+            .baseline(workspace.path(), &Config::default())
+            .unwrap();
+        let scenario = baseline_scenario(&baseline);
+        let environment = adapter.materialize(&scenario, workspace.path()).unwrap();
+        assert_eq!(environment.network_mode, NetworkMode::None);
+        let commands = adapter
+            .commands_in_workspace(&scenario, &Config::default(), workspace.path())
+            .unwrap();
+        fake_offline_executor(&commands, workspace.path());
+        assert!(commands
+            .iter()
+            .any(|command| command.args.iter().any(|argument| argument == "--no-index")));
+    }
+
+    #[test]
+    fn requirements_backed_locked_commands_do_not_bootstrap_mutable_tools() {
+        let workspace = tempdir().unwrap();
+        fs::write(workspace.path().join("requirements.txt"), "pytest==8.3.4\n").unwrap();
+        let adapter = PythonAdapter::new();
+        let baseline = adapter
+            .baseline(workspace.path(), &Config::default())
+            .unwrap();
+        let commands = adapter
+            .commands_in_workspace(
+                &baseline_scenario(&baseline),
+                &Config::default(),
+                workspace.path(),
+            )
+            .unwrap();
+        assert!(commands.iter().any(|command| {
+            command
+                .args
+                .windows(2)
+                .any(|args| args[0] == "-r" && args[1] == "requirements.txt")
+        }));
+        assert!(!commands.iter().any(|command| {
+            command.args.iter().any(|argument| argument == "--upgrade")
+                && command.args.iter().any(|argument| argument == "pip")
+                && command.args.iter().any(|argument| argument == "pytest")
+        }));
+    }
+
+    #[test]
+    fn pyproject_only_workspace_installs_the_project_instead_of_a_missing_requirements_file() {
+        let workspace = tempdir().unwrap();
+        fs::write(
+            workspace.path().join("pyproject.toml"),
+            "[project]\nname = \"example\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        let adapter = PythonAdapter::new();
+        let baseline = adapter
+            .baseline(workspace.path(), &Config::default())
+            .unwrap();
+        let commands = adapter
+            .commands_in_workspace(
+                &baseline_scenario(&baseline),
+                &Config::default(),
+                workspace.path(),
+            )
+            .unwrap();
+        let install = commands
+            .iter()
+            .find(|command| {
+                command.phase == CommandPhase::Fetch
+                    && command.args.iter().any(|argument| argument == ".")
+            })
+            .expect("project install command");
+        assert!(!install.args.iter().any(|argument| argument == "-r"));
+        assert!(!install
+            .args
+            .iter()
+            .any(|argument| argument == "requirements.txt"));
+        assert!(commands.iter().any(|command| {
+            command.args.iter().any(|argument| argument == "--upgrade")
+                && command.args.iter().any(|argument| argument == "pip")
+                && command.args.iter().any(|argument| argument == "pytest")
+        }));
+    }
+
+    fn stage_snapshot_fixture(workspace: &Path, ecosystem: &str) {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/backtest-snapshots")
+            .join(ecosystem)
+            .join("2026-01-15");
+        let destination = workspace.join(tomorrowci_core::backtest::WORKSPACE_SNAPSHOT_DIR);
+        copy_fixture_tree(&source, &destination);
+    }
+
+    fn copy_fixture_tree(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).unwrap();
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let target = destination.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_fixture_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    fn fake_offline_executor(commands: &[CommandSpec], host_workspace: &Path) {
+        for command in commands {
+            assert!(!command.network_required);
+            assert_eq!(command.workdir, "/workspace");
+            for value in command.args.iter().chain(command.env.values()) {
+                assert!(!value.contains(host_workspace.to_string_lossy().as_ref()));
+                if value.contains("registry-snapshot") {
+                    assert!(value.starts_with("/workspace/"));
+                }
+            }
+        }
     }
 }

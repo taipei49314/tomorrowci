@@ -29,9 +29,13 @@ inputs:
     required: false
     default: "true"
   advisory:
-    description: If true, scan failures do not fail the step (evidence still uploaded)
+    description: If true, expected non-green research outcomes do not fail the step; internal errors always fail
     required: false
     default: "true"
+  artifact-name:
+    description: Unique evidence artifact name for this job
+    required: false
+    default: "tomorrowci-evidence"
 outputs:
   head-run-dir:
     description: Path to evidence runs directory
@@ -40,117 +44,249 @@ runs:
   using: composite
   steps:
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned; toolchain action commit
+      with:
+        toolchain: 1.97.1
 
     - name: Build TomorrowCI
       shell: bash
-      run: cargo build -p tomorrowci --release
+      run: >-
+        cargo build
+        --manifest-path "$GITHUB_ACTION_PATH/../Cargo.toml"
+        -p tomorrowci
+        --release
+        --locked
 
     - name: Doctor
       shell: bash
-      run: ./target/release/tomorrowci doctor || true
+      run: |
+        TOOL="$GITHUB_ACTION_PATH/../target/release/tomorrowci"
+        set +e
+        "$TOOL" doctor
+        code=$?
+        set -e
+        if [ "$code" -ne 0 ] && [ "$code" -ne 4 ]; then
+          echo "tomorrowci doctor failed with unexpected exit code $code" >&2
+          exit "$code"
+        fi
+        echo "tomorrowci doctor exit=$code (0 = ready, 4 = blocked environment)" >> "$GITHUB_STEP_SUMMARY"
 
     - name: Scan head
       id: scan_head
       shell: bash
+      env:
+        TC_ADVISORY: ${{ inputs.advisory }}
+        TC_CONFIG: ${{ inputs.config }}
+        TC_EVIDENCE_ROOT: ${{ inputs.evidence-root }}
+        TC_TARGET: ${{ inputs.target }}
       run: |
+        set -euo pipefail
+        TOOL="$GITHUB_ACTION_PATH/../target/release/tomorrowci"
+        before=$(mktemp)
+        snapshot_runs() {
+          if [ -d "$TC_EVIDENCE_ROOT/runs" ]; then
+            for directory in "$TC_EVIDENCE_ROOT"/runs/*; do
+              [ -d "$directory" ] && basename "$directory"
+            done | LC_ALL=C sort
+          fi
+        }
+        snapshot_runs > "$before"
         set +e
         EXTRA=()
-        if [ -n "${{ inputs.config }}" ]; then EXTRA+=(--config "${{ inputs.config }}"); fi
-        ./target/release/tomorrowci scan "${{ inputs.target }}" --evidence-root "${{ inputs.evidence-root }}" "${EXTRA[@]}"
+        if [ -n "$TC_CONFIG" ]; then EXTRA+=(--config "$TC_CONFIG"); fi
+        "$TOOL" scan "$TC_TARGET" --evidence-root "$TC_EVIDENCE_ROOT" "${EXTRA[@]}"
         code=$?
+        set -e
         echo "scan_exit=$code" >> "$GITHUB_OUTPUT"
-        HEAD_RUN=$(ls -1t "${{ inputs.evidence-root }}/runs" 2>/dev/null | head -1 || true)
+        new_runs=$(comm -13 "$before" <(snapshot_runs))
+        rm -f -- "$before"
+        new_run_count=$(printf '%s\n' "$new_runs" | sed '/^$/d' | wc -l | tr -d ' ')
+        if [ "$new_run_count" -ne 1 ]; then
+          echo "tomorrowci scan must produce exactly one new run bundle; found $new_run_count" >&2
+          exit 1
+        fi
+        HEAD_RUN=$new_runs
         echo "head_run=$HEAD_RUN" >> "$GITHUB_OUTPUT"
         {
           echo "## TomorrowCI (head)"
-          echo "Target: \`${{ inputs.target }}\`"
           echo "Scan exit: $code"
           echo "Head run: \`$HEAD_RUN\`"
           echo "BLOCKED/INCONCLUSIVE are never treated as PASS."
         } >> "$GITHUB_STEP_SUMMARY"
-        if [ "${{ inputs.advisory }}" = "true" ]; then exit 0; fi
+        case "$code" in
+          0|2|3|4) ;;
+          *) echo "tomorrowci scan failed with unexpected exit code $code" >&2; exit "$code" ;;
+        esac
+        if [ -z "$HEAD_RUN" ]; then
+          echo "tomorrowci scan did not produce a run bundle" >&2
+          exit 1
+        fi
+        "$TOOL" verify "$HEAD_RUN" --evidence-root "$TC_EVIDENCE_ROOT"
+        if [ "$TC_ADVISORY" = "true" ]; then exit 0; fi
         exit "$code"
 
     - name: Scan base ref (optional)
       id: scan_base
       if: ${{ inputs.base-ref != '' }}
       shell: bash
+      env:
+        TC_BASE_REF: ${{ inputs.base-ref }}
+        TC_CONFIG: ${{ inputs.config }}
+        TC_EVIDENCE_ROOT: ${{ inputs.evidence-root }}
+        TC_HEAD_RUN: ${{ steps.scan_head.outputs.head_run }}
+        TC_TARGET: ${{ inputs.target }}
       run: |
-        set +e
-        BASE_REF="${{ inputs.base-ref }}"
-        WORK="${{ inputs.evidence-root }}/work/base-checkout"
-        rm -rf "$WORK"
-        git worktree add --detach "$WORK" "$BASE_REF" || git clone --depth 1 . "$WORK"
-        EXTRA=()
-        if [ -n "${{ inputs.config }}" ] && [ -f "${{ inputs.config }}" ]; then
-          EXTRA+=(--config "${{ inputs.config }}")
+        set -euo pipefail
+        TOOL="$GITHUB_ACTION_PATH/../target/release/tomorrowci"
+        temp_root=${RUNNER_TEMP:-${TMPDIR:-/tmp}}
+        WORK_PARENT=$(mktemp -d "$temp_root/tomorrowci-base.XXXXXX")
+        WORK="$WORK_PARENT/checkout"
+        cleanup_worktree() {
+          git worktree remove --force "$WORK" >/dev/null 2>&1 || true
+        }
+        trap cleanup_worktree EXIT
+        if ! git worktree add --detach "$WORK" "$TC_BASE_REF"; then
+          if ! git clone --no-local --no-hardlinks . "$WORK"; then
+            echo "could not create isolated base checkout" >&2
+            exit 1
+          fi
+          if ! git -C "$WORK" checkout --detach "$TC_BASE_REF"; then
+            echo "could not resolve requested base ref" >&2
+            exit 1
+          fi
         fi
-        ./target/release/tomorrowci scan "$WORK" --evidence-root "${{ inputs.evidence-root }}" "${EXTRA[@]}"
+        WORK_CANON=$(realpath -e -- "$WORK")
+        if ! BASE_TARGET=$(realpath -e -- "$WORK/$TC_TARGET"); then
+          echo "base target does not exist at the requested ref" >&2
+          exit 1
+        fi
+        case "$BASE_TARGET" in
+          "$WORK_CANON"|"$WORK_CANON"/*) ;;
+          *) echo "base target escapes the isolated checkout" >&2; exit 1 ;;
+        esac
+        EXTRA=()
+        if [ -n "$TC_CONFIG" ]; then
+          if ! BASE_CONFIG=$(realpath -e -- "$WORK/$TC_CONFIG"); then
+            echo "base config does not exist inside the isolated checkout" >&2
+            exit 1
+          fi
+          case "$BASE_CONFIG" in
+            "$WORK_CANON"/*) ;;
+            *) echo "base config escapes the isolated checkout" >&2; exit 1 ;;
+          esac
+          EXTRA+=(--config "$BASE_CONFIG")
+        fi
+        before=$(mktemp)
+        snapshot_runs() {
+          if [ -d "$TC_EVIDENCE_ROOT/runs" ]; then
+            for directory in "$TC_EVIDENCE_ROOT"/runs/*; do
+              [ -d "$directory" ] && basename "$directory"
+            done | LC_ALL=C sort
+          fi
+        }
+        snapshot_runs > "$before"
+        set +e
+        "$TOOL" scan "$BASE_TARGET" --evidence-root "$TC_EVIDENCE_ROOT" "${EXTRA[@]}"
         code=$?
-        BASE_RUN=$(ls -1t "${{ inputs.evidence-root }}/runs" 2>/dev/null | head -1 || true)
-        # Prefer the run that is not head_run if both exist
-        HEAD_RUN="${{ steps.scan_head.outputs.head_run }}"
-        for d in $(ls -1t "${{ inputs.evidence-root }}/runs" 2>/dev/null); do
-          if [ "$d" != "$HEAD_RUN" ]; then BASE_RUN="$d"; break; fi
-        done
+        set -e
+        new_runs=$(comm -13 "$before" <(snapshot_runs))
+        rm -f -- "$before"
+        new_run_count=$(printf '%s\n' "$new_runs" | sed '/^$/d' | wc -l | tr -d ' ')
+        if [ "$new_run_count" -ne 1 ]; then
+          echo "tomorrowci base scan must produce exactly one new run bundle; found $new_run_count" >&2
+          exit 1
+        fi
+        BASE_RUN=$new_runs
         echo "base_run=$BASE_RUN" >> "$GITHUB_OUTPUT"
         {
-          echo "## TomorrowCI (base \`$BASE_REF\`)"
+          echo "## TomorrowCI (base)"
           echo "Base run: \`$BASE_RUN\` (scan exit $code)"
         } >> "$GITHUB_STEP_SUMMARY"
+        case "$code" in
+          0|2|3|4) ;;
+          *) echo "tomorrowci base scan failed with unexpected exit code $code" >&2; exit "$code" ;;
+        esac
+        if [ -z "$BASE_RUN" ]; then
+          echo "tomorrowci base scan did not produce a run bundle" >&2
+          exit 1
+        fi
+        "$TOOL" verify "$BASE_RUN" --evidence-root "$TC_EVIDENCE_ROOT"
         exit 0
 
     - name: Compare horizons
       if: ${{ inputs.base-ref != '' && steps.scan_base.outputs.base_run != '' && steps.scan_head.outputs.head_run != '' }}
       shell: bash
+      env:
+        TC_BASE_RUN: ${{ steps.scan_base.outputs.base_run }}
+        TC_EVIDENCE_ROOT: ${{ inputs.evidence-root }}
+        TC_FAIL_ON_REGRESSION: ${{ inputs.fail-on-regression }}
+        TC_HEAD_RUN: ${{ steps.scan_head.outputs.head_run }}
       run: |
-        set +e
-        BASE="${{ steps.scan_base.outputs.base_run }}"
-        HEAD="${{ steps.scan_head.outputs.head_run }}"
+        set -euo pipefail
+        TOOL="$GITHUB_ACTION_PATH/../target/release/tomorrowci"
+        BASE=$TC_BASE_RUN
+        HEAD=$TC_HEAD_RUN
         FAIL_FLAG=()
-        if [ "${{ inputs.fail-on-regression }}" = "true" ]; then
+        if [ "$TC_FAIL_ON_REGRESSION" = "true" ]; then
           FAIL_FLAG+=(--fail-on-regression)
         fi
-        ./target/release/tomorrowci compare "$BASE" "$HEAD" --evidence-root "${{ inputs.evidence-root }}" "${FAIL_FLAG[@]}"
+        set +e
+        "$TOOL" compare "$BASE" "$HEAD" --evidence-root "$TC_EVIDENCE_ROOT" "${FAIL_FLAG[@]}"
         code=$?
+        set -e
         {
           echo "## Horizon compare"
           echo "base=\`$BASE\` head=\`$HEAD\` exit=$code"
-          if [ -f "${{ inputs.evidence-root }}/compare-${BASE}-${HEAD}.json" ]; then
+          if [ -f "$TC_EVIDENCE_ROOT/compare-${BASE}-${HEAD}.json" ]; then
             echo '```json'
-            cat "${{ inputs.evidence-root }}/compare-${BASE}-${HEAD}.json"
+            cat "$TC_EVIDENCE_ROOT/compare-${BASE}-${HEAD}.json"
             echo '```'
           fi
         } >> "$GITHUB_STEP_SUMMARY"
-        if [ "${{ inputs.fail-on-regression }}" = "true" ] && [ "$code" -eq 5 ]; then
+        if [ "$TC_FAIL_ON_REGRESSION" = "true" ] && [ "$code" -eq 5 ]; then
           exit 5
+        fi
+        if [ "$code" -ne 0 ] && [ "$code" -ne 5 ]; then
+          echo "tomorrowci compare failed with unexpected exit code $code" >&2
+          exit "$code"
         fi
         exit 0
 
     - name: Policy gate
       if: ${{ inputs.run-policy == 'true' && steps.scan_head.outputs.head_run != '' }}
       shell: bash
+      env:
+        TC_ADVISORY: ${{ inputs.advisory }}
+        TC_BASE_RUN: ${{ steps.scan_base.outputs.base_run }}
+        TC_EVIDENCE_ROOT: ${{ inputs.evidence-root }}
+        TC_HEAD_RUN: ${{ steps.scan_head.outputs.head_run }}
       run: |
-        set +e
-        HEAD="${{ steps.scan_head.outputs.head_run }}"
-        BASE="${{ steps.scan_base.outputs.base_run }}"
+        set -euo pipefail
+        TOOL="$GITHUB_ACTION_PATH/../target/release/tomorrowci"
+        HEAD=$TC_HEAD_RUN
+        BASE=$TC_BASE_RUN
         EXTRA=()
         if [ -n "$BASE" ]; then EXTRA+=(--base "$BASE"); fi
-        ./target/release/tomorrowci policy "$HEAD" --evidence-root "${{ inputs.evidence-root }}" "${EXTRA[@]}"
+        set +e
+        "$TOOL" policy "$HEAD" --evidence-root "$TC_EVIDENCE_ROOT" "${EXTRA[@]}"
         code=$?
+        set -e
         {
           echo "## Policy"
           echo "exit=$code (6 = policy FAIL)"
         } >> "$GITHUB_STEP_SUMMARY"
-        if [ "${{ inputs.advisory }}" = "true" ]; then exit 0; fi
+        if [ "$code" -ne 0 ] && [ "$code" -ne 6 ]; then
+          echo "tomorrowci policy failed with unexpected exit code $code" >&2
+          exit "$code"
+        fi
+        if [ "$TC_ADVISORY" = "true" ]; then exit 0; fi
         exit "$code"
 
     - name: Upload evidence
       if: always()
-      uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        name: tomorrowci-evidence
+        name: ${{ inputs.artifact-name }}
         path: |
           ${{ inputs.evidence-root }}/runs/
           ${{ inputs.evidence-root }}/compare-*.json

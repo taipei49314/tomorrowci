@@ -3,6 +3,7 @@
 //! HTML embeds real run data (never mocked). XSS-safe via HTML escaping.
 
 pub mod backtest_html;
+pub mod weather;
 
 use serde::Serialize;
 use std::fs::{self, OpenOptions};
@@ -15,6 +16,9 @@ use tomorrowci_core::{
 };
 
 pub use backtest_html::write_backtest_html;
+pub use weather::{
+    render_weather_human, render_weather_json, write_weather_human, write_weather_json,
+};
 
 #[derive(Debug, Error)]
 pub enum ReportError {
@@ -431,7 +435,7 @@ mod tests {
         let data = ReportData {
             run: RunManifest {
                 run_id: RunId("test".into()),
-                tool_version: "0.1.0".into(),
+                tool_version: env!("CARGO_PKG_VERSION").into(),
                 started_at: Utc::now(),
                 finished_at: None,
                 repository: RepositorySnapshot {

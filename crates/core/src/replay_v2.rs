@@ -12,6 +12,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 pub const REPLAY_SCHEMA_VERSION_V2: u32 = 2;
+/// Schema for a detached receipt emitted by the public `replay` command.
+pub const PUBLIC_REPLAY_RECEIPT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -224,9 +226,10 @@ impl ExecutionAttemptV2 {
         self.schema_version == REPLAY_SCHEMA_VERSION_V2
             && self.engine.schema_version == REPLAY_SCHEMA_VERSION_V2
             && self.result.schema_version == REPLAY_SCHEMA_VERSION_V2
-            && self.failure_signature.as_ref().map_or(true, |signature| {
-                signature.schema_version == REPLAY_SCHEMA_VERSION_V2
-            })
+            && self
+                .failure_signature
+                .as_ref()
+                .is_none_or(|signature| signature.schema_version == REPLAY_SCHEMA_VERSION_V2)
             && self
                 .commands
                 .iter()
@@ -254,9 +257,45 @@ pub enum AttemptMismatchV2 {
     ImageDigest,
     Commands,
     Environment,
+    EngineIdentity,
     ConfigIdentity,
     SourceIdentity,
     ReplayIdentity,
+}
+
+/// Immutable, detached binding between one public replay execution and the
+/// sealed run generation that authorized it.
+///
+/// The receipt bundle embeds the referenced inventory generations and the
+/// minimal typed origin records.  A verifier therefore recomputes these fields
+/// from sealed bytes instead of trusting CLI output or a workflow exit code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicReplayReceiptV2 {
+    pub schema_version: u32,
+    pub receipt_id: String,
+    pub created_at: DateTime<Utc>,
+    pub run_id: RunId,
+    pub scenario_id: ScenarioId,
+    pub original_run_inventory_sha256: String,
+    pub original_scenario_inventory_sha256: String,
+    pub original_attempt_inventory_sha256: String,
+    /// Run-relative directory of the selected final original attempt.
+    pub original_attempt_path: String,
+    pub original_attempt_id: String,
+    pub source_manifest_sha256: String,
+    pub config_sha256: String,
+    pub scenario_sha256: String,
+    pub replay_manifest_sha256: String,
+    pub original_attempt_sha256: String,
+    pub replay_attempt_sha256: String,
+    pub expected_engine: EngineIdentityV2,
+    pub observed_engine: EngineIdentityV2,
+    pub image_digest: String,
+    pub original_result: ExecutionAttemptResultV2,
+    pub replay_result: ExecutionAttemptResultV2,
+    pub equivalent_to_original: bool,
+    pub mismatches: Vec<AttemptMismatchV2>,
 }
 
 /// Non-persisted calculation result used to build qualification records.

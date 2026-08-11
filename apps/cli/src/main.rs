@@ -1,6 +1,7 @@
 //! TomorrowCI CLI — Continuous Integration Against the Future.
 
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::Deserialize;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
@@ -9,13 +10,20 @@ use tomorrowci_core::backtest::BacktestRequest;
 use tomorrowci_core::policy::PolicyConfig;
 use tomorrowci_core::redaction::{redact_secrets, sanitize_terminal};
 use tomorrowci_core::Config;
-use tomorrowci_evidence::{verify_bundle, BundleKind, EvidenceStore};
+use tomorrowci_core::{
+    WeatherCohortIdentity, WeatherSelectionPolicy, WeatherTimeWindow, WEATHER_MAP_SCHEMA_VERSION,
+};
+use tomorrowci_evidence::{
+    aggregate_verified_weather_map, verify_bundle, verify_patch_proof_bundle,
+    verify_public_replay_receipt_pair_v2, BundleKind, EvidenceStore, VerifiedWeatherRun,
+};
 use tomorrowci_measure::{
     default_catalog, run_benches, run_fixture_suite, ClaimStatus, SuiteOptions,
 };
 use tomorrowci_runner::{
     backtest_repo, compare_runs, doctor, explain_run, format_compare, format_policy_report,
-    policy_check_run, replay, scan, show_run, ScanRequest, TOOL_VERSION,
+    patch_lab, policy_check_run, replay, scan, show_run, verify_backtest_proof_bundle,
+    PatchLabRequest, ScanRequest, TOOL_VERSION,
 };
 
 #[derive(Parser, Debug)]
@@ -61,6 +69,18 @@ enum Commands {
         run_id: String,
         #[arg(long)]
         scenario: String,
+        /// Canonical source checkout/copy matching the sealed v2 source snapshot
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Recompute qualification for exactly two detached public replay receipts
+    ReplayQualify {
+        /// Complete sealed v2 run that the receipts claim as their origin
+        #[arg(long)]
+        original_run: PathBuf,
+        /// Exactly two distinct public replay receipt directories
+        #[arg(required = true, num_args = 2)]
+        receipts: Vec<PathBuf>,
     },
     /// Explain the evidence-backed minimal failure frontier
     Explain { run_id: String },
@@ -108,7 +128,7 @@ enum Commands {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Historical commit sampling backtest (M2 skeleton — honest limitations)
+    /// Historical source plus content-addressed offline registry-snapshot backtest
     Backtest {
         /// Local git repository path
         target: String,
@@ -124,9 +144,63 @@ enum Commands {
         /// Max scenarios per commit scan
         #[arg(long, default_value_t = 8)]
         max_scenarios: usize,
+        /// Snapshot registry root: <ecosystem>/<YYYY-MM-DD>/snapshot-manifest.json
+        #[arg(long)]
+        snapshot_registry: Option<PathBuf>,
+        /// Maximum recursively inventoried payload files per snapshot
+        #[arg(long, default_value_t = tomorrowci_core::backtest::DEFAULT_MAX_SNAPSHOT_FILES)]
+        max_snapshot_files: usize,
+        /// Maximum total snapshot payload bytes
+        #[arg(long, default_value_t = tomorrowci_core::backtest::DEFAULT_MAX_SNAPSHOT_BYTES)]
+        max_snapshot_bytes: u64,
         /// Write report JSON here
         #[arg(long, default_value = ".tomorrowci/backtest-report.json")]
         out: PathBuf,
+    },
+    /// Verify a downloaded detached historical-backtest proof without execution
+    BacktestVerify {
+        /// Sealed backtest proof directory containing backtest-proof.json
+        proof: PathBuf,
+    },
+    /// Aggregate a descriptive ecosystem weather map from verified v2 runs
+    Weather {
+        /// Strict JSON manifest declaring the cohort, denominator, and run selectors
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long, value_enum, default_value = "human")]
+        format: WeatherFormat,
+        /// Output path (defaults below the evidence root)
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Test a strict text patch on a disposable copy and verify its sealed proof
+    Patch {
+        #[command(subcommand)]
+        cmd: PatchCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum PatchCmd {
+    /// Apply to a disposable copy, scan baseline/futures, replay, and seal proof
+    Propose {
+        /// Original sealed v2 run id below the evidence root
+        run_id: String,
+        /// Exact source workspace matching the run's source manifest
+        #[arg(long)]
+        source: PathBuf,
+        /// Strict UTF-8 unified diff (binary/mode/rename/symlink patches rejected)
+        #[arg(long)]
+        patch: PathBuf,
+    },
+    /// Recompute every PatchProof link without executing target code
+    Verify {
+        #[arg(long)]
+        proof: PathBuf,
+        #[arg(long)]
+        original_run: PathBuf,
+        #[arg(long)]
+        patched_run: PathBuf,
     },
 }
 
@@ -137,6 +211,9 @@ enum MeasureCmd {
         /// Only these fixture ids (comma-separated)
         #[arg(long)]
         only: Option<String>,
+        /// Container engine to use for every fixture scan
+        #[arg(long, value_enum, default_value = "auto")]
+        engine: MeasureEngine,
         /// Output directory for measure report JSON
         #[arg(long, default_value = ".tomorrowci/measure")]
         out: PathBuf,
@@ -152,7 +229,27 @@ enum MeasureCmd {
         out: PathBuf,
         #[arg(long)]
         only: Option<String>,
+        /// Container engine to use for every fixture scan
+        #[arg(long, value_enum, default_value = "auto")]
+        engine: MeasureEngine,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum MeasureEngine {
+    Auto,
+    Docker,
+    Podman,
+}
+
+impl MeasureEngine {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Docker => "docker",
+            Self::Podman => "podman",
+        }
+    }
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -160,6 +257,30 @@ enum ReportFormat {
     Html,
     Json,
     Sarif,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+enum WeatherFormat {
+    Human,
+    Json,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WeatherCliManifest {
+    schema_version: u32,
+    selection_policy: WeatherSelectionPolicy,
+    time_window: WeatherTimeWindow,
+    runs: Vec<WeatherRunSelector>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WeatherRunSelector {
+    selection_unit_id: String,
+    run: String,
+    selection_policy_id: String,
+    time_window: WeatherTimeWindow,
 }
 
 static OUTPUT_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -175,6 +296,11 @@ async fn main() {
 
 fn error_exit_code(error: &anyhow::Error) -> i32 {
     if error
+        .chain()
+        .any(|cause| cause.to_string().trim_start().starts_with("REPLAY_FAILED:"))
+    {
+        3
+    } else if error
         .chain()
         .any(|cause| cause.to_string().trim_start().starts_with("BLOCKED:"))
     {
@@ -227,24 +353,64 @@ async fn run() -> anyhow::Result<()> {
             } else {
                 EvidenceStore::open(&evidence_root, &run)?.verify()?
             };
-            if verified.kind != BundleKind::Run {
-                anyhow::bail!(
-                    "verify requires a run bundle, found {}",
+            match verified.kind {
+                BundleKind::Run => println!(
+                    "PASS version={} kind={} file_count={} root={}",
+                    verified.version,
+                    bundle_kind_label(verified.kind),
+                    verified.file_count,
+                    serde_json::to_string(&verified.root.to_string_lossy())?
+                ),
+                BundleKind::ReplayAttempt if verified.contains("public-replay-receipt.json") => {
+                    let receipt: tomorrowci_core::PublicReplayReceiptV2 =
+                        verified.read_json("public-replay-receipt.json")?;
+                    println!(
+                        "PASS_INTERNAL version={} kind={} file_count={} receipt_id={} inventory_sha256=sha256:{} root={} original_run_validity=not_established",
+                        verified.version,
+                        bundle_kind_label(verified.kind),
+                        verified.file_count,
+                        receipt.receipt_id,
+                        verified.inventory_sha256()?,
+                        serde_json::to_string(&verified.root.to_string_lossy())?
+                    );
+                }
+                _ => anyhow::bail!(
+                    "verify requires a run or detached public replay receipt, found {}",
                     bundle_kind_label(verified.kind)
-                );
+                ),
             }
-            println!(
-                "PASS version={} kind={} file_count={} root={}",
-                verified.version,
-                bundle_kind_label(verified.kind),
-                verified.file_count,
-                serde_json::to_string(&verified.root.to_string_lossy())?
-            );
         }
-        Commands::Replay { run_id, scenario } => {
-            let trusted_workspace = work_root.join("workspaces").join(&run_id);
-            let msg = replay(&evidence_root, &run_id, &scenario, Some(&trusted_workspace)).await?;
+        Commands::Replay {
+            run_id,
+            scenario,
+            workspace,
+        } => {
+            let selected_workspace =
+                workspace.unwrap_or_else(|| work_root.join("workspaces").join(&run_id));
+            let msg = replay(
+                &evidence_root,
+                &run_id,
+                &scenario,
+                Some(&selected_workspace),
+            )
+            .await?;
             println!("{msg}");
+        }
+        Commands::ReplayQualify {
+            original_run,
+            receipts,
+        } => {
+            let qualified = verify_public_replay_receipt_pair_v2(&original_run, &receipts)?;
+            println!(
+                "PASS kind=replay-pair receipt_count=2 run_id={} scenario_id={} original_attempt_sha256={} outcome={:?} target_exit={:?} receipt_ids={} receipt_inventory_sha256={}",
+                qualified.run_id,
+                qualified.scenario_id,
+                qualified.original_attempt_sha256,
+                qualified.outcome_class,
+                qualified.target_exit_code,
+                serde_json::to_string(&qualified.receipt_ids)?,
+                serde_json::to_string(&qualified.receipt_inventory_sha256)?,
+            );
         }
         Commands::Explain { run_id } => {
             print!("{}", explain_run(&evidence_root, &run_id)?);
@@ -344,9 +510,12 @@ async fn run() -> anyhow::Result<()> {
                 std::fs::create_dir_all(parent)?;
             }
             atomic_write_output(&output, GITHUB_ACTION_WORKFLOW.as_bytes())?;
-            println!("Wrote safe GitHub Actions workflow to {}", output.display());
             println!(
-                "Default permissions: contents: read only. No secrets forwarded to untrusted code."
+                "Wrote repository-local GitHub Actions workflow to {}",
+                output.display()
+            );
+            println!(
+                "Boundary: uses ./action from this checkout; do not copy it to a repository without that source. Default permissions: contents: read only."
             );
         }
         Commands::Policy {
@@ -396,6 +565,9 @@ async fn run() -> anyhow::Result<()> {
             until,
             max_commits,
             max_scenarios,
+            snapshot_registry,
+            max_snapshot_files,
+            max_snapshot_bytes,
             out,
         } => {
             let at = chrono::NaiveDate::parse_from_str(&at, "%Y-%m-%d")
@@ -409,6 +581,9 @@ async fn run() -> anyhow::Result<()> {
                     until,
                     max_commits,
                     max_scenarios_per_point: max_scenarios,
+                    snapshot_registry,
+                    max_snapshot_files,
+                    max_snapshot_bytes,
                 },
                 evidence_root,
                 work_root,
@@ -436,10 +611,117 @@ async fn run() -> anyhow::Result<()> {
                 );
             }
             println!("Wrote {}", out.display());
+            if !report.is_green() {
+                std::process::exit(7);
+            }
         }
+        Commands::BacktestVerify { proof } => {
+            let verified = verify_backtest_proof_bundle(&proof)?;
+            println!(
+                "PASS schema_version={} run_id={} proof_sha256={} inventory_sha256={} proof={}",
+                verified.proof.schema_version,
+                verified.proof.run_id,
+                verified.reference.proof_sha256,
+                verified.reference.sealed_inventory_sha256,
+                serde_json::to_string(&verified.reference.directory.to_string_lossy())?,
+            );
+        }
+        Commands::Weather {
+            manifest,
+            format,
+            output,
+        } => {
+            let manifest = load_weather_manifest(&manifest)?;
+            let (map, run_roots) = build_weather_map(&evidence_root, manifest)?;
+            let destination = output.unwrap_or_else(|| {
+                evidence_root.join(match format {
+                    WeatherFormat::Human => "weather-map.txt",
+                    WeatherFormat::Json => "weather-map.json",
+                })
+            });
+            for root in &run_roots {
+                if path_would_be_within(&destination, root)? {
+                    anyhow::bail!(
+                        "weather output must be outside sealed run bundle {}",
+                        root.display()
+                    );
+                }
+            }
+            if let Some(parent) = destination.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            for root in &run_roots {
+                if path_would_be_within(&destination, root)? {
+                    anyhow::bail!(
+                        "weather output resolved inside sealed run bundle {}",
+                        root.display()
+                    );
+                }
+            }
+            match format {
+                WeatherFormat::Human => tomorrowci_report::write_weather_human(&destination, &map)?,
+                WeatherFormat::Json => tomorrowci_report::write_weather_json(&destination, &map)?,
+            }
+            println!(
+                "Wrote {} (denominator={} verified={} blocked={} unsupported={} unobserved={})",
+                destination.display(),
+                map.denominator,
+                map.coverage.verified_units,
+                map.outcomes.blocked,
+                map.outcomes.unsupported,
+                map.outcomes.unobserved
+            );
+        }
+        Commands::Patch { cmd } => match cmd {
+            PatchCmd::Propose {
+                run_id,
+                source,
+                patch,
+            } => {
+                let original_run_dir = EvidenceStore::open(&evidence_root, &run_id)?.root;
+                let outcome = patch_lab(PatchLabRequest {
+                    original_run_dir,
+                    original_workspace: source,
+                    patch_file: patch,
+                    output_root: evidence_root,
+                    work_root,
+                })
+                .await?;
+                println!(
+                    "Patch Lab {:?}: {}\nproof={}\npatched_run={}\nproof_sha256={}\ninventory_sha256={}",
+                    outcome.disposition,
+                    sanitize_terminal(&redact_secrets(&outcome.disposition_reason)),
+                    serde_json::to_string(&outcome.proof_dir.to_string_lossy())?,
+                    outcome.patched_run_id,
+                    outcome.proof_sha256,
+                    outcome.proof_inventory_sha256,
+                );
+                if !outcome.is_green() {
+                    std::process::exit(8);
+                }
+            }
+            PatchCmd::Verify {
+                proof,
+                original_run,
+                patched_run,
+            } => {
+                let verified = verify_patch_proof_bundle(&proof, &original_run, &patched_run)?;
+                println!(
+                    "PASS disposition={:?} proof_sha256={} inventory_sha256={} proof={}",
+                    verified.proof.disposition,
+                    verified.proof_sha256,
+                    verified.sealed_inventory_sha256,
+                    serde_json::to_string(&proof.to_string_lossy())?,
+                );
+                if !verified.proof.disposition.is_green() {
+                    std::process::exit(8);
+                }
+            }
+        },
         Commands::Measure { cmd } => match cmd {
-            MeasureCmd::Suite { only, out } => {
-                let report = run_measure_suite(&evidence_root, &work_root, only, &out).await?;
+            MeasureCmd::Suite { only, engine, out } => {
+                let report =
+                    run_measure_suite(&evidence_root, &work_root, only, engine, &out).await?;
                 print!("{}", report.ledger.render_table());
                 println!(
                     "\ntrustworthy(no FAIL)={} engine={} report={}",
@@ -466,7 +748,7 @@ async fn run() -> anyhow::Result<()> {
                     std::process::exit(1);
                 }
             }
-            MeasureCmd::All { out, only } => {
+            MeasureCmd::All { out, only, engine } => {
                 let root = std::env::current_dir()?;
                 std::fs::create_dir_all(&out)?;
                 let benches = run_benches(&root);
@@ -477,7 +759,8 @@ async fn run() -> anyhow::Result<()> {
                 println!("=== Benches ===");
                 print!("{}", benches.ledger.render_table());
                 println!("\n=== Fixture suite ===");
-                let suite = run_measure_suite(&evidence_root, &work_root, only, &out).await?;
+                let suite =
+                    run_measure_suite(&evidence_root, &work_root, only, engine, &out).await?;
                 print!("{}", suite.ledger.render_table());
                 // Combined ledger
                 let mut combined = benches.ledger;
@@ -494,6 +777,7 @@ async fn run() -> anyhow::Result<()> {
                     "tool_version": TOOL_VERSION,
                     "trustworthy": combined.all_trustworthy() && suite.engine_available,
                     "counts": combined.counts(),
+                    "engine_requested": suite.engine_requested,
                     "engine_available": suite.engine_available,
                     "bench_report": out.join("bench-report.json"),
                     "suite_report": out.join("suite-report.json"),
@@ -516,6 +800,71 @@ async fn run() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+const MAX_WEATHER_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
+
+fn load_weather_manifest(path: &std::path::Path) -> anyhow::Result<WeatherCliManifest> {
+    let metadata = std::fs::metadata(path)?;
+    if !metadata.is_file() {
+        anyhow::bail!("weather manifest is not a regular file: {}", path.display());
+    }
+    if metadata.len() > MAX_WEATHER_MANIFEST_BYTES {
+        anyhow::bail!(
+            "weather manifest exceeds {} bytes: {}",
+            MAX_WEATHER_MANIFEST_BYTES,
+            path.display()
+        );
+    }
+    let bytes = std::fs::read(path)?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+fn build_weather_map(
+    evidence_root: &std::path::Path,
+    manifest: WeatherCliManifest,
+) -> anyhow::Result<(tomorrowci_core::WeatherMap, Vec<PathBuf>)> {
+    if manifest.schema_version != WEATHER_MAP_SCHEMA_VERSION {
+        anyhow::bail!(
+            "unsupported weather manifest schema version {}",
+            manifest.schema_version
+        );
+    }
+    let mut runs = Vec::with_capacity(manifest.runs.len());
+    let mut roots = Vec::with_capacity(manifest.runs.len());
+    for selector in manifest.runs {
+        let candidate = PathBuf::from(&selector.run);
+        let verified = if is_explicit_bundle_path(&selector.run, &candidate) {
+            verify_bundle(&candidate)?
+        } else {
+            EvidenceStore::open(evidence_root, &selector.run)?.verify()?
+        };
+        if verified.kind != BundleKind::Run {
+            anyhow::bail!(
+                "weather requires a run bundle, found {} for {}",
+                bundle_kind_label(verified.kind),
+                selector.run
+            );
+        }
+
+        roots.push(verified.root.clone());
+        runs.push(VerifiedWeatherRun::new(
+            selector.selection_unit_id,
+            WeatherCohortIdentity {
+                selection_policy_id: selector.selection_policy_id,
+                time_window: selector.time_window,
+            },
+            verified,
+        ));
+    }
+
+    let map = aggregate_verified_weather_map(
+        manifest.schema_version,
+        manifest.selection_policy,
+        manifest.time_window,
+        runs,
+    )?;
+    Ok((map, roots))
 }
 
 fn atomic_write_output(path: &std::path::Path, contents: &[u8]) -> anyhow::Result<()> {
@@ -596,6 +945,7 @@ async fn run_measure_suite(
     evidence_root: &std::path::Path,
     work_root: &std::path::Path,
     only: Option<String>,
+    engine: MeasureEngine,
     out: &std::path::Path,
 ) -> anyhow::Result<tomorrowci_measure::MeasureReport> {
     let root = std::env::current_dir()?;
@@ -609,6 +959,7 @@ async fn run_measure_suite(
         repo_root: root,
         evidence_root: evidence_root.to_path_buf(),
         work_root: work_root.to_path_buf(),
+        engine: engine.as_str().to_owned(),
         only,
         catalog: default_catalog(),
     })
@@ -625,8 +976,8 @@ async fn run_measure_suite(
     // Human markdown
     let mut md = String::from("# TomorrowCI measure suite\n\n");
     md.push_str(&format!(
-        "- engine: {} ({})\n- trustworthy: {}\n\n",
-        report.engine_available, report.engine_detail, report.trustworthy
+        "- requested engine: {}\n- engine: {} ({})\n- trustworthy: {}\n\n",
+        report.engine_requested, report.engine_available, report.engine_detail, report.trustworthy
     ));
     md.push_str("| Claim | Status | ms | Detail |\n|---|---|---:|---|\n");
     for c in &report.ledger.claims {
@@ -706,6 +1057,9 @@ fn path_would_be_within(path: &std::path::Path, root: &std::path::Path) -> anyho
 
 const GITHUB_ACTION_WORKFLOW: &str = r###"# Generated by `tomorrowci init-action`
 # Pins third-party actions by commit SHA. Default permissions: read-only.
+# Repository-local boundary: `uses: ./action` is valid only when this checkout
+# contains TomorrowCI's action/action.yml. Do not copy this workflow alone into
+# an unrelated target repository; use a separately pinned external checkout.
 name: TomorrowCI
 
 on:
@@ -719,8 +1073,8 @@ permissions:
 jobs:
   tomorrowci:
     runs-on: ubuntu-latest
-    # Advisory by default; set fail-on-regression: true to gate on horizon moves.
-    continue-on-error: true
+    # Advisory behavior is explicit in the composite input below. Internal
+    # errors still fail this job; the job does not suppress failures.
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -786,6 +1140,10 @@ mod tests {
     #[test]
     fn blocked_errors_use_the_non_green_blocked_exit() {
         assert_eq!(error_exit_code(&anyhow::anyhow!("BLOCKED: no engine")), 4);
+        assert_eq!(
+            error_exit_code(&anyhow::anyhow!("REPLAY_FAILED: target exit 23")),
+            3
+        );
         assert_eq!(error_exit_code(&anyhow::anyhow!("invalid evidence")), 1);
     }
 
@@ -801,5 +1159,142 @@ mod tests {
 
         assert_eq!(std::fs::read(&sealed).unwrap(), b"sealed");
         assert_eq!(std::fs::read(&output).unwrap(), b"derived");
+    }
+
+    #[test]
+    fn measure_engine_override_accepts_only_supported_engines() {
+        let cli =
+            Cli::try_parse_from(["tomorrowci", "measure", "suite", "--engine", "podman"]).unwrap();
+        match cli.command {
+            Commands::Measure {
+                cmd:
+                    MeasureCmd::Suite {
+                        engine: MeasureEngine::Podman,
+                        ..
+                    },
+            } => {}
+            command => panic!("unexpected command: {command:?}"),
+        }
+
+        assert!(
+            Cli::try_parse_from(["tomorrowci", "measure", "all", "--engine", "containerd",])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn backtest_preserves_legacy_args_and_parses_snapshot_caps() {
+        let legacy = Cli::try_parse_from([
+            "tomorrowci",
+            "backtest",
+            ".",
+            "--at",
+            "2026-01-15",
+            "--until",
+            "2026-01-15",
+        ])
+        .unwrap();
+        match legacy.command {
+            Commands::Backtest {
+                snapshot_registry: None,
+                max_snapshot_files,
+                max_snapshot_bytes,
+                ..
+            } => {
+                assert_eq!(
+                    max_snapshot_files,
+                    tomorrowci_core::backtest::DEFAULT_MAX_SNAPSHOT_FILES
+                );
+                assert_eq!(
+                    max_snapshot_bytes,
+                    tomorrowci_core::backtest::DEFAULT_MAX_SNAPSHOT_BYTES
+                );
+            }
+            command => panic!("unexpected command: {command:?}"),
+        }
+
+        let with_snapshot = Cli::try_parse_from([
+            "tomorrowci",
+            "backtest",
+            ".",
+            "--at",
+            "2026-01-15",
+            "--until",
+            "2026-01-15",
+            "--snapshot-registry",
+            "fixtures/backtest-snapshots",
+            "--max-snapshot-files",
+            "4",
+            "--max-snapshot-bytes",
+            "4096",
+        ])
+        .unwrap();
+        match with_snapshot.command {
+            Commands::Backtest {
+                snapshot_registry: Some(path),
+                max_snapshot_files: 4,
+                max_snapshot_bytes: 4096,
+                ..
+            } => assert_eq!(path, PathBuf::from("fixtures/backtest-snapshots")),
+            command => panic!("unexpected command: {command:?}"),
+        }
+    }
+
+    #[test]
+    fn patch_lab_cli_requires_explicit_source_patch_and_verifier_inputs() {
+        let propose = Cli::try_parse_from([
+            "tomorrowci",
+            "patch",
+            "propose",
+            "0123456789ab",
+            "--source",
+            "./source",
+            "--patch",
+            "./fix.patch",
+        ])
+        .unwrap();
+        match propose.command {
+            Commands::Patch {
+                cmd:
+                    PatchCmd::Propose {
+                        run_id,
+                        source,
+                        patch,
+                    },
+            } => {
+                assert_eq!(run_id, "0123456789ab");
+                assert_eq!(source, PathBuf::from("./source"));
+                assert_eq!(patch, PathBuf::from("./fix.patch"));
+            }
+            command => panic!("unexpected command: {command:?}"),
+        }
+
+        let verify = Cli::try_parse_from([
+            "tomorrowci",
+            "patch",
+            "verify",
+            "--proof",
+            "proof",
+            "--original-run",
+            "original",
+            "--patched-run",
+            "patched",
+        ])
+        .unwrap();
+        assert!(matches!(
+            verify.command,
+            Commands::Patch {
+                cmd: PatchCmd::Verify { .. }
+            }
+        ));
+        assert!(Cli::try_parse_from([
+            "tomorrowci",
+            "patch",
+            "propose",
+            "0123456789ab",
+            "--patch",
+            "fix.patch"
+        ])
+        .is_err());
     }
 }
