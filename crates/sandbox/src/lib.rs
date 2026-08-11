@@ -524,6 +524,12 @@ async fn inspect_container_networks(engine: &EngineInfo, name: &str) -> Result<B
 fn parse_container_networks(bytes: &[u8]) -> Result<BTreeSet<String>> {
     let value: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|_| SandboxError::Blocked("container network status was not valid JSON".into()))?;
+    // Podman 4.9 renders `.NetworkSettings.Networks` as JSON `null` after the
+    // last network is detached. Docker and newer Podman render `{}`. Both are
+    // engine attestations that no named network remains attached.
+    if value.is_null() {
+        return Ok(BTreeSet::new());
+    }
     let networks = value.as_object().ok_or_else(|| {
         SandboxError::Blocked("container network status was not a JSON object".into())
     })?;
@@ -887,11 +893,13 @@ mod tests {
         assert!(!networks_are_offline(&none));
         let detached = parse_container_networks(br#"{}"#).unwrap();
         assert!(networks_are_offline(&detached));
+        let podman_detached = parse_container_networks(b"null").unwrap();
+        assert!(networks_are_offline(&podman_detached));
         let bridge = parse_container_networks(br#"{"bridge":{}}"#).unwrap();
         assert!(!networks_are_offline(&bridge));
 
         assert!(parse_container_networks(b"not-json").is_err());
-        assert!(parse_container_networks(b"null").is_err());
+        assert!(parse_container_networks(b"[]").is_err());
         assert!(parse_container_networks(br#"{"":{}}"#).is_err());
     }
 
