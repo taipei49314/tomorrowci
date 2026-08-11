@@ -1,5 +1,9 @@
 //! Evidence bundle writer and replay manifest consumer.
 
+mod replay_v2;
+
+pub use replay_v2::{capture_source_snapshot_v2, AttemptEvidenceV2};
+
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -70,10 +74,13 @@ pub type Result<T> = std::result::Result<T, EvidenceError>;
 pub const INVENTORY_FILE_NAME: &str = "checksums.txt";
 /// Current on-disk evidence inventory schema version.
 pub const INVENTORY_VERSION: u32 = 1;
+/// Evidence inventory version that carries exact source and replay proof.
+pub const INVENTORY_VERSION_V2: u32 = 2;
 
 const INVENTORY_HEADER_PREFIX: &str = "# tomorrowci-evidence-checksums-v";
 const INVENTORY_HEADER_V1_PREFIX: &str = "# tomorrowci-evidence-checksums-v1 kind=";
-const INVENTORY_HEADER_V1_SUFFIX: &str = " algorithm=sha256 scope=recursive sealed=true";
+const INVENTORY_HEADER_V2_PREFIX: &str = "# tomorrowci-evidence-checksums-v2 kind=";
+const INVENTORY_HEADER_SUFFIX: &str = " algorithm=sha256 scope=recursive sealed=true";
 const MAX_INVENTORY_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_BUNDLE_FILES: usize = 10_000;
 const MAX_BUNDLE_DEPTH: usize = 64;
@@ -92,6 +99,8 @@ pub enum BundleKind {
     Scenario,
     /// A generic bundle with no TomorrowCI-specific required filenames.
     Generic,
+    /// One exact scan or replay execution attempt.
+    ReplayAttempt,
 }
 
 impl BundleKind {
@@ -100,6 +109,7 @@ impl BundleKind {
             Self::Run => "run",
             Self::Scenario => "scenario",
             Self::Generic => "generic",
+            Self::ReplayAttempt => "replay-attempt",
         }
     }
 
@@ -108,24 +118,25 @@ impl BundleKind {
             "run" => Some(Self::Run),
             "scenario" => Some(Self::Scenario),
             "generic" => Some(Self::Generic),
+            "replay-attempt" => Some(Self::ReplayAttempt),
             _ => None,
         }
     }
 
-    fn required_paths(self) -> &'static [&'static str] {
-        match self {
+    fn required_paths(self, version: u32) -> Result<&'static [&'static str]> {
+        match (version, self) {
             // repository.json binds source and workspace identity; run.json binds the
             // run, tool, engine, and frontier identities. Reports and scenarios are
             // configuration/status dependent and remain exact-inventory protected
             // whenever present.
-            Self::Run => &[
+            (INVENTORY_VERSION, Self::Run) => Ok(&[
                 "config.normalized.json",
                 "frontier.json",
                 "repository.json",
                 "run.json",
                 "verdicts.json",
-            ],
-            Self::Scenario => &[
+            ]),
+            (INVENTORY_VERSION, Self::Scenario) => Ok(&[
                 "commands.json",
                 "environment.json",
                 "replay-manifest.json",
@@ -135,8 +146,46 @@ impl BundleKind {
                 "scenario.json",
                 "stderr.log",
                 "stdout.log",
-            ],
-            Self::Generic => &[],
+            ]),
+            (INVENTORY_VERSION, Self::Generic) => Ok(&[]),
+            (INVENTORY_VERSION, Self::ReplayAttempt) => {
+                Err(EvidenceError::UnsupportedInventoryVersion(
+                    "replay-attempt requires inventory v2".into(),
+                ))
+            }
+            (INVENTORY_VERSION_V2, Self::Run) => Ok(&[
+                "config.normalized.json",
+                "frontier.json",
+                "replay-qualifications.json",
+                "repository.json",
+                "run.json",
+                "source-manifest.json",
+                "verdicts.json",
+            ]),
+            (INVENTORY_VERSION_V2, Self::Scenario) => Ok(&[
+                "commands.json",
+                "environment.json",
+                "replay-manifest.json",
+                "replay-manifest-v2.json",
+                "replay.ps1",
+                "replay.sh",
+                "result.json",
+                "scenario.json",
+                "stderr.log",
+                "stdout.log",
+            ]),
+            (INVENTORY_VERSION_V2, Self::ReplayAttempt) => Ok(&[
+                "attempt.json",
+                "commands.json",
+                "environment.json",
+                "result.json",
+                "stderr.log",
+                "stdout.log",
+            ]),
+            (INVENTORY_VERSION_V2, Self::Generic) => Ok(&[]),
+            (other, _) => Err(EvidenceError::UnsupportedInventoryVersion(
+                other.to_string(),
+            )),
         }
     }
 }
@@ -452,7 +501,12 @@ impl EvidenceStore {
 
     pub fn finalize_checksums(&self) -> Result<()> {
         self.ensure_unsealed()?;
-        write_checksums(&self.root, BundleKind::Run)?;
+        let version = if self.root.join("source-manifest.json").exists() {
+            INVENTORY_VERSION_V2
+        } else {
+            INVENTORY_VERSION
+        };
+        seal_bundle_version(&self.root, BundleKind::Run, version)?;
         Ok(())
     }
 
@@ -820,27 +874,42 @@ impl BundleInventory {
                 line: 1,
                 reason: "missing version header".into(),
             })?;
-        let kind = if let Some(value) = header
-            .strip_prefix(INVENTORY_HEADER_V1_PREFIX)
-            .and_then(|value| value.strip_suffix(INVENTORY_HEADER_V1_SUFFIX))
-        {
-            BundleKind::parse(value).ok_or_else(|| EvidenceError::MalformedInventory {
-                line: 1,
-                reason: format!("unknown bundle kind {value:?}"),
-            })?
-        } else if header.starts_with(INVENTORY_HEADER_PREFIX) {
-            if header.starts_with(INVENTORY_HEADER_V1_PREFIX) {
-                return Err(EvidenceError::MalformedInventory {
+        let (version, kind) = [
+            (INVENTORY_VERSION, INVENTORY_HEADER_V1_PREFIX),
+            (INVENTORY_VERSION_V2, INVENTORY_HEADER_V2_PREFIX),
+        ]
+        .into_iter()
+        .find_map(|(version, prefix)| {
+            header
+                .strip_prefix(prefix)
+                .and_then(|value| value.strip_suffix(INVENTORY_HEADER_SUFFIX))
+                .map(|value| (version, value))
+        })
+        .map(|(version, value)| {
+            BundleKind::parse(value)
+                .map(|kind| (version, kind))
+                .ok_or_else(|| EvidenceError::MalformedInventory {
                     line: 1,
-                    reason: "invalid v1 header".into(),
-                });
+                    reason: format!("unknown bundle kind {value:?}"),
+                })
+        })
+        .transpose()?
+        .ok_or_else(|| {
+            if header.starts_with(INVENTORY_HEADER_PREFIX) {
+                if header.starts_with(INVENTORY_HEADER_V1_PREFIX)
+                    || header.starts_with(INVENTORY_HEADER_V2_PREFIX)
+                {
+                    EvidenceError::MalformedInventory {
+                        line: 1,
+                        reason: "invalid versioned inventory header".into(),
+                    }
+                } else {
+                    EvidenceError::UnsupportedInventoryVersion(header.to_string())
+                }
+            } else {
+                EvidenceError::UnsealedLegacy(header.to_string())
             }
-            return Err(EvidenceError::UnsupportedInventoryVersion(
-                header.to_string(),
-            ));
-        } else {
-            return Err(EvidenceError::UnsealedLegacy(header.to_string()));
-        };
+        })?;
 
         let mut entries = Vec::new();
         let mut paths = BTreeSet::new();
@@ -902,7 +971,7 @@ impl BundleInventory {
         }
 
         let inventory = Self {
-            version: INVENTORY_VERSION,
+            version,
             kind,
             entries,
         };
@@ -913,7 +982,7 @@ impl BundleInventory {
     /// Render a deterministic inventory. This validates caller-constructed
     /// values before producing bytes suitable for sealing.
     pub fn to_canonical_string(&self) -> Result<String> {
-        if self.version != INVENTORY_VERSION {
+        if !matches!(self.version, INVENTORY_VERSION | INVENTORY_VERSION_V2) {
             return Err(EvidenceError::UnsupportedInventoryVersion(
                 self.version.to_string(),
             ));
@@ -929,8 +998,17 @@ impl BundleInventory {
 
         let mut seen = BTreeSet::new();
         let mut portable_seen = BTreeSet::new();
+        let prefix = match canonical.version {
+            INVENTORY_VERSION => INVENTORY_HEADER_V1_PREFIX,
+            INVENTORY_VERSION_V2 => INVENTORY_HEADER_V2_PREFIX,
+            other => {
+                return Err(EvidenceError::UnsupportedInventoryVersion(
+                    other.to_string(),
+                ))
+            }
+        };
         let mut output = format!(
-            "{INVENTORY_HEADER_V1_PREFIX}{}{INVENTORY_HEADER_V1_SUFFIX}\n",
+            "{prefix}{}{INVENTORY_HEADER_SUFFIX}\n",
             canonical.kind.as_str()
         );
         for entry in canonical.entries {
@@ -970,7 +1048,7 @@ impl BundleInventory {
             .iter()
             .map(|entry| entry.path.as_str())
             .collect();
-        for required in self.kind.required_paths() {
+        for required in self.kind.required_paths(self.version)? {
             if !paths.contains(required) {
                 return Err(EvidenceError::Missing(format!(
                     "required {kind} evidence file is not inventoried: {required}",
@@ -985,6 +1063,16 @@ impl BundleInventory {
 /// Recursively hash every regular file and seal the directory with a v1
 /// inventory. The inventory file itself is excluded from its own digest set.
 pub fn seal_bundle(dir: &Path, kind: BundleKind) -> Result<BundleInventory> {
+    seal_bundle_version(dir, kind, INVENTORY_VERSION)
+}
+
+/// Seal a bundle using the exact requested supported inventory version.
+pub fn seal_bundle_version(dir: &Path, kind: BundleKind, version: u32) -> Result<BundleInventory> {
+    if !matches!(version, INVENTORY_VERSION | INVENTORY_VERSION_V2) {
+        return Err(EvidenceError::UnsupportedInventoryVersion(
+            version.to_string(),
+        ));
+    }
     let files = collect_regular_files(dir)?;
     let mut entries = Vec::with_capacity(files.len());
     for (relative, path) in files {
@@ -995,7 +1083,7 @@ pub fn seal_bundle(dir: &Path, kind: BundleKind) -> Result<BundleInventory> {
     }
     entries.sort_by(|left, right| left.path.cmp(&right.path));
     let inventory = BundleInventory {
-        version: INVENTORY_VERSION,
+        version,
         kind,
         entries,
     };
@@ -1144,10 +1232,31 @@ fn verify_bundle_semantics(
 ) -> Result<()> {
     match inventory.kind {
         BundleKind::Generic => Ok(()),
-        BundleKind::Run => verify_run_semantics(dir, inventory, expected_run_id),
-        BundleKind::Scenario => {
-            verify_scenario_semantics(dir, inventory, expected_run_id, expected_scenario_id)
+        BundleKind::Run => {
+            verify_run_semantics(dir, inventory, expected_run_id)?;
+            if inventory.version == INVENTORY_VERSION_V2 {
+                replay_v2::verify_run_v2_semantics(dir, inventory, expected_run_id)?;
+            }
+            Ok(())
         }
+        BundleKind::Scenario => {
+            verify_scenario_semantics(dir, inventory, expected_run_id, expected_scenario_id)?;
+            if inventory.version == INVENTORY_VERSION_V2 {
+                replay_v2::verify_scenario_v2_semantics(
+                    dir,
+                    inventory,
+                    expected_run_id,
+                    expected_scenario_id,
+                )?;
+            }
+            Ok(())
+        }
+        BundleKind::ReplayAttempt => replay_v2::verify_attempt_v2_semantics(
+            dir,
+            inventory,
+            expected_run_id,
+            expected_scenario_id,
+        ),
     }
 }
 
@@ -2887,7 +2996,7 @@ mod tests {
 
     fn inventory_text(kind: BundleKind, records: &[(&str, &str)]) -> String {
         let mut text = format!(
-            "{INVENTORY_HEADER_V1_PREFIX}{}{INVENTORY_HEADER_V1_SUFFIX}\n",
+            "{INVENTORY_HEADER_V1_PREFIX}{}{INVENTORY_HEADER_SUFFIX}\n",
             kind.as_str()
         );
         for (digest, path) in records {
@@ -3891,13 +4000,13 @@ mod tests {
                 )],
             ),
             format!(
-                "{INVENTORY_HEADER_V1_PREFIX}generic{INVENTORY_HEADER_V1_SUFFIX}\n{ZERO_DIGEST} file.json\n"
+                "{INVENTORY_HEADER_V1_PREFIX}generic{INVENTORY_HEADER_SUFFIX}\n{ZERO_DIGEST} file.json\n"
             ),
             format!(
-                "{INVENTORY_HEADER_V1_PREFIX}generic{INVENTORY_HEADER_V1_SUFFIX}\n\n"
+                "{INVENTORY_HEADER_V1_PREFIX}generic{INVENTORY_HEADER_SUFFIX}\n\n"
             ),
             format!(
-                "{INVENTORY_HEADER_V1_PREFIX}generic{INVENTORY_HEADER_V1_SUFFIX}\n{ZERO_DIGEST}  file.json"
+                "{INVENTORY_HEADER_V1_PREFIX}generic{INVENTORY_HEADER_SUFFIX}\n{ZERO_DIGEST}  file.json"
             ),
         ];
         for text in malformed {
@@ -3908,8 +4017,13 @@ mod tests {
         }
 
         let version_two = "# tomorrowci-evidence-checksums-v2 kind=generic algorithm=sha256 scope=recursive sealed=true\n";
+        assert_eq!(
+            BundleInventory::parse(version_two).unwrap().version,
+            INVENTORY_VERSION_V2
+        );
+        let version_three = "# tomorrowci-evidence-checksums-v3 kind=generic algorithm=sha256 scope=recursive sealed=true\n";
         assert!(matches!(
-            BundleInventory::parse(version_two),
+            BundleInventory::parse(version_three),
             Err(EvidenceError::UnsupportedInventoryVersion(_))
         ));
     }
