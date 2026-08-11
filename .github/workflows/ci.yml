@@ -100,7 +100,56 @@ jobs:
         with:
           toolchain: 1.97.1
       - name: build release CLI
+        if: runner.os != 'Windows'
         run: cargo build -p tomorrowci --release --locked
+      - name: build reproducible release CLI (Windows)
+        id: windows_repro
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # link.exe otherwise records wall-clock-derived PE/debug timestamps.
+          # Rust already supplies /PDBALTPATH:%_PDB%; /Brepro makes the
+          # remaining linker output deterministic across clean rebuilds.
+          $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = "-C link-arg=/Brepro"
+          $targetDir = "target"
+          $diagnostics = "windows-repro-diagnostics"
+          New-Item -ItemType Directory -Path "$diagnostics/first","$diagnostics/second" -Force | Out-Null
+          $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS | Set-Content -LiteralPath "$diagnostics/link-flags.txt" -Encoding utf8
+          rustc -vV | Set-Content -LiteralPath "$diagnostics/rustc-vv.txt" -Encoding utf8
+
+          cargo clean --target-dir $targetDir
+          cargo build -p tomorrowci --release --locked --target-dir $targetDir
+          Copy-Item -LiteralPath "$targetDir/release/tomorrowci.exe" -Destination "$diagnostics/first/tomorrowci.exe"
+          if (Test-Path -LiteralPath "$targetDir/release/tomorrowci.pdb") {
+            Copy-Item -LiteralPath "$targetDir/release/tomorrowci.pdb" -Destination "$diagnostics/first/tomorrowci.pdb"
+          }
+
+          cargo clean --target-dir $targetDir
+          cargo build -p tomorrowci --release --locked --target-dir $targetDir
+          Copy-Item -LiteralPath "$targetDir/release/tomorrowci.exe" -Destination "$diagnostics/second/tomorrowci.exe"
+          if (Test-Path -LiteralPath "$targetDir/release/tomorrowci.pdb") {
+            Copy-Item -LiteralPath "$targetDir/release/tomorrowci.pdb" -Destination "$diagnostics/second/tomorrowci.pdb"
+          }
+
+          $first = "$diagnostics/first/tomorrowci.exe"
+          $second = "$diagnostics/second/tomorrowci.exe"
+          $firstHash = (Get-FileHash -LiteralPath $first -Algorithm SHA256).Hash
+          $secondHash = (Get-FileHash -LiteralPath $second -Algorithm SHA256).Hash
+          Write-Host "first_sha256=$($firstHash.ToLowerInvariant())"
+          Write-Host "second_sha256=$($secondHash.ToLowerInvariant())"
+          if ($firstHash -ne $secondHash) {
+            throw "the two clean Windows release builds differ"
+          }
+      - name: upload Windows reproducibility diagnostics
+        if: always() && runner.os == 'Windows' && steps.windows_repro.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-reproducibility-diagnostics
+          path: windows-repro-diagnostics/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
       - name: execute built binary and print version
         shell: bash
         run: |
