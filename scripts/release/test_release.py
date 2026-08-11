@@ -1570,6 +1570,17 @@ class ReleaseHelpersTest(unittest.TestCase):
             2,
         )
 
+    def test_external_candidate_doctor_accepts_aligned_ok_output(self) -> None:
+        repository = MODULE_PATH.parents[2]
+        workflow = (repository / ".github/workflows/external-targets.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "grep -Eq '^sandbox[[:space:]]+\\[ok\\][[:space:]]+.+'",
+            workflow,
+        )
+        self.assertNotIn('$doctor_output" != *"sandbox [ok]"*', workflow)
+
     def test_release_workflow_revalidates_independent_receipts_with_candidate(self) -> None:
         repository = MODULE_PATH.parents[2]
         workflow = (repository / ".github/workflows/release.yml").read_text(
@@ -1614,6 +1625,9 @@ class ReleaseHelpersTest(unittest.TestCase):
                 encoding="utf-8"
             )
         )
+        protocol = (
+            repository / "docs/qualification/EXTERNAL_PROTOCOL.md"
+        ).read_text(encoding="utf-8")
         targets = index.get("project_operated_targets")
         self.assertIsInstance(targets, list)
         self.assertEqual(len(targets), 3)
@@ -1634,6 +1648,7 @@ class ReleaseHelpersTest(unittest.TestCase):
             contents = (repository / config_path).read_bytes().replace(b"\r\n", b"\n")
             self.assertNotIn(b"\r", contents)
             self.assertEqual(hashlib.sha256(contents).hexdigest(), expected, ecosystem)
+            self.assertEqual(protocol.count(f"`{expected}`"), 1, ecosystem)
         self.assertEqual(seen, {"python", "node", "rust"})
 
     def test_validate_run_binds_inputs_attempt_workflow_and_server_digest(self) -> None:

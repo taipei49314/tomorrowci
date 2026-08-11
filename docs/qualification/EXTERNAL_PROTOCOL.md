@@ -30,7 +30,7 @@ the release candidate inventory:
 | Target | Config | SHA-256 |
 |---|---|---|
 | Python | [`external/python-jmespath.yml`](external/python-jmespath.yml) | `f73c70ac4ae589c60f9766abd36dd9834d3580b3617947a45be5f8686b84388a` |
-| Node.js | [`external/node-commander.yml`](external/node-commander.yml) | `c442071240fb5bbba10155b5bb91ebe31018e9a82a7a79095d8b2b70ea2d7a23` |
+| Node.js | [`external/node-commander.yml`](external/node-commander.yml) | `0836670fcae0067e47468fafeaf5fbb6f69ba768257ab33e0b98664779715783` |
 | Rust | [`external/rust-fd.yml`](external/rust-fd.yml) | `61f07ae034d526e9b2430b7c9a7592aa83df1c0d3ad9991bca78d89475f36ffc` |
 
 The immutable commits, owners, visibility, commit trees, and file modes were
