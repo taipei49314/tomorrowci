@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "candidate_version": "0.2.0",
+  "candidate_source_sha": null,
+  "candidate_manifest_sha256": null,
+  "status": "BLOCKED_EXTERNAL",
+  "qualification_requirements": {
+    "project_operated_public_targets_required": 3,
+    "ecosystems": [
+      "python",
+      "node",
+      "rust"
+    ],
+    "independent_results_required": 1,
+    "required_flow": "scan -> verify -> replay",
+    "required_identity": [
+      "candidate source SHA",
+      "candidate artifact digest",
+      "target repository and commit",
+      "engine and image digests",
+      "evidence bundle digest",
+      "auditor or adopter identity"
+    ]
+  },
+  "project_operated_targets": [
+    {
+      "ecosystem": "python",
+      "repository": "https://github.com/jmespath/jmespath.py",
+      "source_sha": "2812594e69d43098ef60f81f4efc404c071b0418",
+      "config_path": "docs/qualification/external/python-jmespath.yml",
+      "config_sha256": "f73c70ac4ae589c60f9766abd36dd9834d3580b3617947a45be5f8686b84388a",
+      "status": "NOT_RUN",
+      "workflow_url": null,
+      "evidence_sha256": null
+    },
+    {
+      "ecosystem": "node",
+      "repository": "https://github.com/tj/commander.js",
+      "source_sha": "ba6d13ddb4243e5913367734f8c159089ffe7834",
+      "config_path": "docs/qualification/external/node-commander.yml",
+      "config_sha256": "c442071240fb5bbba10155b5bb91ebe31018e9a82a7a79095d8b2b70ea2d7a23",
+      "status": "NOT_RUN",
+      "workflow_url": null,
+      "evidence_sha256": null
+    },
+    {
+      "ecosystem": "rust",
+      "repository": "https://github.com/sharkdp/fd",
+      "source_sha": "d38148f0aabdd073b4080cde770f679f3197b920",
+      "config_path": "docs/qualification/external/rust-fd.yml",
+      "config_sha256": "61f07ae034d526e9b2430b7c9a7592aa83df1c0d3ad9991bca78d89475f36ffc",
+      "status": "NOT_RUN",
+      "workflow_url": null,
+      "evidence_sha256": null
+    }
+  ],
+  "independent_results": [],
+  "blocking_reason": "No genuinely independent downstream maintainer or auditor has published a result bound to the final exact candidate. Project-owned CI and agents cannot satisfy this trust root."
+}

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "sha256:930fb628298812dbd9582bd0a2e23be455bd818b973e6d90f51a7c320b9a3547",
+  "ecosystem": "python",
+  "effective_at": "2026-01-15T12:00:00Z",
+  "captured_at": "2026-01-15T13:00:00Z",
+  "source": {
+    "url": "https://pypi.org/simple/",
+    "immutable_revision": "sha256:b7e45c83746b0512f625afdce91da3e64bbe5616545571eb7ee512c08dcb458d"
+  },
+  "resolver_mode": "python_wheelhouse",
+  "files": [
+    {
+      "path": "tomorrowci_snapshot_dep-1.0.0-py3-none-any.whl",
+      "sha256": "24149c8f3ce11e7f018e0ad1411f4328b3ea3e4c78a15a254eec24dd429300a1",
+      "size": 1151
+    }
+  ]
+}

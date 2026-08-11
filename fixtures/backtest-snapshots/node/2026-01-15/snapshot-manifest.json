@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "sha256:9269244f33561fb92d6335f2cd0789b76e0867589d1bd3f700a728dacc7c8366",
+  "ecosystem": "node",
+  "effective_at": "2026-01-15T12:00:00Z",
+  "captured_at": "2026-01-15T13:00:00Z",
+  "source": {
+    "url": "https://registry.npmjs.org/",
+    "immutable_revision": "sha256:29b9a593cf28967e8f5339a5e94c8293e6b93f13a4a07dcf14f513a03ed85da2"
+  },
+  "resolver_mode": "npm_offline_cache",
+  "files": [
+    {
+      "path": "tomorrowci-snapshot-dep-1.0.0.tgz",
+      "sha256": "c7ee80dd18c90b4867a3f1f3971c85fd9bb8a5c481b61fc690c1b5f3fe2cf1b5",
+      "size": 245
+    }
+  ]
+}

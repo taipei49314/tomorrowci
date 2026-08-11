@@ -42,6 +42,27 @@
     replays/attempt-000001/          # scan-time exact replay attempts, when run
       ...                            # same replay-attempt layout
     checksums.txt                   # v2 sealed inventory for this scenario
+
+.tomorrowci/replay-receipts/<run-id>/<scenario-id>/<receipt-id>/
+  attempt.json
+  environment.json
+  commands.json
+  result.json
+  failure-signature.json           # only when a signature exists
+  stdout.log
+  stderr.log
+  public-replay-receipt.json
+  origin/run.checksums.txt
+  origin/source-manifest.json
+  origin/config.normalized.json
+  origin/scenario.checksums.txt
+  origin/scenario.json
+  origin/environment.json
+  origin/commands.json
+  origin/replay-manifest-v2.json
+  origin/original-attempt.checksums.txt
+  origin/original-attempt.json
+  checksums.txt                     # independent v2 kind=replay-attempt
 ```
 
 The run-level inventory covers the complete recursive regular-file set below the
@@ -89,7 +110,8 @@ Bundle kinds also enforce a minimum layout:
 | v1 `scenario` | `commands.json`, `environment.json`, `replay-manifest.json`, `replay.ps1`, `replay.sh`, `result.json`, `scenario.json`, `stderr.log`, `stdout.log` |
 | v2 `run` | v1 run paths plus `source-manifest.json` and `replay-qualifications.json` |
 | v2 `scenario` | v1 scenario paths plus `replay-manifest-v2.json` |
-| v2 `replay-attempt` | `attempt.json`, `commands.json`, `environment.json`, `result.json`, `stderr.log`, `stdout.log` |
+| v2 nested `replay-attempt` | `attempt.json`, `commands.json`, `environment.json`, `result.json`, `stderr.log`, `stdout.log` |
+| v2 detached public `replay-attempt` | nested attempt paths plus `public-replay-receipt.json` and the fixed `origin/` run/source/config/scenario/manifest/original-attempt records shown above |
 | v1/v2 `generic` | No TomorrowCI-specific required filenames |
 
 Conditional files are still integrity-protected whenever present. A verifier
@@ -109,7 +131,10 @@ or space and the case-insensitive Windows DOS device stems `CON`, `PRN`, `AUX`,
 extension such as `CON.txt`. Run IDs and scenario IDs used by the evidence store
 must additionally be a single component. Paths that collide after portable
 case folding (for example `A.json` and `a.json`) are rejected so a bundle has
-the same identity on case-sensitive and case-insensitive filesystems.
+the same identity on case-sensitive and case-insensitive filesystems. The
+legacy Windows aliases `COM¹`/`COM²`/`COM³` and
+`LPT¹`/`LPT²`/`LPT³`, plus `CONIN$` and `CONOUT$`, are also
+rejected.
 
 At its root, traversal, inventory, hashing, and verified-read checkpoints, the
 verifier uses link-aware metadata and rejects any observed symbolic link,
@@ -138,7 +163,8 @@ records fail closed.
 v1 stops at this integrity and typed-identity boundary and does not preserve
 each rerun separately. v2 additionally requires a strict source manifest and
 exact replay manifest, preserves every original attempt under `attempts/`, and
-seals each original or replay receipt as a nested `replay-attempt` bundle. The
+seals each scan-time original or replay attempt as a nested `replay-attempt`
+bundle. The
 exact manifest binds source, normalized configuration, scenario, lowercase
 image digest, commands, environment, and engine identity. A scenario
 qualification is recomputed from the selected original and its replay receipts;
@@ -148,6 +174,14 @@ qualification index must agree with its scenario records, and an observed
 frontier fails verification unless `qualified_against` succeeds against the
 actual sealed receipts. Negative and blocked attempts remain evidence rather
 than being rewritten as green.
+
+A public post-seal replay is never added to those nested run records. It creates
+a new directory outside the run, refuses to overwrite an existing receipt ID,
+and seals one replay attempt together with the original inventory generations
+and the minimal typed bytes needed to recompute their links. Its metadata binds
+the source, normalized config, scenario, exact manifest, selected original
+attempt, expected and observed engine, image digest, results, and equivalence.
+Changing or self-resealing any embedded field fails verification.
 
 A `generic` bundle intentionally has no TomorrowCI-specific semantic model and
 receives exact-set integrity checks only.
@@ -219,22 +253,42 @@ or argument-parsing errors are Clap usage errors and exit `2`.
 file bytes, and validates fixed typed JSON relationships; it does not execute
 `replay.sh`, `replay.ps1`, recorded commands, target code, or containers.
 
-A v1 `PASS` establishes exact-set byte integrity and internal identity
-consistency only. A v2 `PASS` additionally establishes that the sealed source,
+A v1 run `PASS` establishes exact-set byte integrity and internal identity
+consistency only. A v2 run `PASS` additionally establishes that the sealed source,
 manifest, attempt receipts, and qualification records are mutually consistent;
 for an observed frontier, the verifier recomputes the receipt digests and the
 two-or-more replay equivalence decisions. It still does not authenticate the
 producer, prove the records came from an independent party, or independently
 execute the recorded work.
 
+`verify <detached-receipt-path>` emits `PASS_INTERNAL`. It recomputes the strict
+receipt file set, all hashes, the three embedded inventories, their selected
+source/config/scenario/manifest/original-attempt bytes, and replay equivalence.
+It deliberately does not claim that the embedded run inventory was a valid
+complete run. `replay-qualify --original-run RUN RECEIPT1 RECEIPT2` is the
+stronger gate: it verifies the complete run, requires exactly two different
+receipt paths/IDs/inventory digests with consecutive ordinals and non-overlapping
+times, byte-matches both origins to that run, and requires both replays to be
+equivalent to the same selected original. These checks still do not authenticate
+the publisher or establish independent provenance.
+
 `tomorrowci replay` consumes verified v2 evidence, checks the current source
 tree against `source-manifest.json`, and runs the recorded digest-pinned target
-in a fresh disposable workspace. This post-seal command does not append a new
-receipt or modify the sealed run. The exact-replay sandbox currently supports
-the implicit `/workspace` mount only: explicit host mounts fail closed as
-`BLOCKED`, and generalized workdir/mount behavior remains outside this format's
-implemented execution boundary. These limits, plus the remaining independent
-qualification gates, mean v2 alone does not complete Phase 1.
+in a fresh disposable workspace. `--workspace PATH` permits a downloaded v2
+bundle to use a different canonical checkout/copy only after TomorrowCI applies
+the scan-time materialization boundary and matches the complete sealed file
+entries, tree digest, and source identity. Execution starts from that private,
+already-verified normalized copy. Changed source fails closed as `BLOCKED`; v1
+evidence has no equivalent source identity and still requires the canonical
+producer-recorded workspace. Every accepted post-seal v2 invocation creates a
+new sealed receipt outside the run and prints its path and inventory digest; it
+never appends to or reseals the original run. A reproduced target failure is
+recorded before exit `3`, and a blocked replay is recorded before exit `4`. The
+exact-replay sandbox currently supports
+the implicit `/workspace` mount only: additional explicit mounts fail closed
+as `BLOCKED`, and generalized workdir/mount behavior remains outside this
+format's implemented execution boundary. A reproduced target failure exits
+`3`; a blocked execution exits `4`.
 
 ## HTML
 
@@ -252,3 +306,59 @@ Accessibility: semantic landmarks, table headers, visible focus, text badges
 
 Optional `report.sarif` maps `FUTURE_FAIL` / `BASELINE_INVALID` to SARIF results
 (`tomorrowci/future-fail`).
+
+## Detached historical-backtest proof
+
+A successful snapshot-backed historical point produces a separately sealed
+`generic` bundle rather than modifying its run:
+
+```text
+.tomorrowci/backtests/<commit-prefix>-<proof-prefix>/
+  backtest-proof.json
+  witness/git-source-binding.json       # commit/tree and commit-only manifest identity
+  witness/run/                         # complete, independently sealed v2 run
+  witness/registry-snapshot/
+    snapshot-manifest.json
+    payload/...
+  checksums.txt                        # exact recursive outer inventory
+```
+
+`backtest-verify` re-verifies both inventories, the complete snapshot payload,
+and the typed run/source/config/verdict/frontier/image/outcome links. The proof
+does not embed the historical repository bytes: it proves internal integrity
+of the retained run and snapshot, while producer provenance or a separately
+supplied source checkout is still required to authenticate the source manifest
+against the named commit.
+
+## Weather-map output
+
+`weather --manifest <selection.json>` accepts a strict, predeclared cohort,
+selection-policy ID, time window, and run selectors. Each selected run is
+verified as a retained v2 generation before aggregation. JSON output records
+the exact denominator and one typed state per selection unit; missing,
+duplicate, blocked, unsupported, inconclusive, flaky, or window/policy-mixed
+units cannot disappear from the denominator or become PASS. Human and JSON
+formats are two renderings of the same typed map and are written atomically.
+
+## Detached Patch Lab proof
+
+Patch Lab also leaves the original run immutable and seals a `generic` proof:
+
+```text
+.tomorrowci/patches/<proof-id>/
+  patch-proof.json
+  proposal.patch
+  source-witness/original/<changed-path>  # when the path originally existed
+  source-witness/patched/<changed-path>   # when the path exists after apply
+  replays/<scenario-id>/attempt-000001/   # sealed exact replay receipts
+  checksums.txt
+```
+
+The verifier receives the original and patched sealed run directories. It
+requires their source-manifest delta to equal the strict unified diff exactly,
+applies `proposal.patch` itself to the retained changed-file witnesses, and
+byte-compares the result. `QUALIFIED` additionally requires the original
+observed frontier's exact scenario identity to move from failure to pass and
+recomputes the bound replay outcomes. Only changed source bytes are retained;
+the proof is evidence for that declared repair transition, not a general
+correctness or safety proof.

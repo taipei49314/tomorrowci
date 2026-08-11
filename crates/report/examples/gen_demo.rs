@@ -5,7 +5,7 @@ fn main() {
     let data = ReportData {
     run: RunManifest {
       run_id: RunId("demo-py-runtime".into()),
-      tool_version: "0.1.0".into(),
+      tool_version: env!("CARGO_PKG_VERSION").into(),
       started_at: Utc::now(),
       finished_at: Some(Utc::now()),
       repository: RepositorySnapshot {

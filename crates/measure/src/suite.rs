@@ -17,6 +17,8 @@ pub struct SuiteOptions {
     pub repo_root: PathBuf,
     pub evidence_root: PathBuf,
     pub work_root: PathBuf,
+    /// Container engine selection passed through to detection and every fixture scan.
+    pub engine: String,
     pub only: Option<Vec<String>>,
     pub catalog: Vec<FixtureExpectation>,
 }
@@ -37,6 +39,7 @@ pub struct MeasureReport {
     pub tool_version: String,
     pub started_at: chrono::DateTime<Utc>,
     pub finished_at: chrono::DateTime<Utc>,
+    pub engine_requested: String,
     pub engine_available: bool,
     pub engine_detail: String,
     pub fixtures: Vec<FixtureResult>,
@@ -49,7 +52,7 @@ pub async fn run_fixture_suite(opts: SuiteOptions) -> MeasureReport {
     let mut ledger = Ledger::default();
     let mut fixtures = Vec::new();
 
-    let engine = detect_engine("auto");
+    let engine = detect_engine(&opts.engine);
     let (engine_available, engine_detail) = match &engine {
         Ok(e) => (
             true,
@@ -70,7 +73,7 @@ pub async fn run_fixture_suite(opts: SuiteOptions) -> MeasureReport {
             engine_detail.clone(),
             0,
         )
-        .with_command("detect_engine(auto)"),
+        .with_command(format!("detect_engine({})", opts.engine)),
     );
 
     let only = opts.only.clone();
@@ -99,6 +102,7 @@ pub async fn run_fixture_suite(opts: SuiteOptions) -> MeasureReport {
         tool_version: env!("CARGO_PKG_VERSION").into(),
         started_at,
         finished_at,
+        engine_requested: opts.engine,
         engine_available,
         engine_detail,
         fixtures,
@@ -178,7 +182,8 @@ async fn measure_one_fixture(
         };
     }
 
-    let config = load_fixture_config(&path, exp);
+    let mut config = load_fixture_config(&path, exp);
+    config.sandbox.engine.clone_from(&opts.engine);
     let scan_t0 = Instant::now();
     let outcome = scan(ScanRequest {
         target: path.display().to_string(),

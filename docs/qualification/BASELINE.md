@@ -4,6 +4,41 @@ Audit date: 2026-08-09 (Asia/Taipei)
 
 This is a point-in-time record of inspected source, public GitHub Actions evidence, local checks, and the existing release. It is not a claim that TomorrowCI is 100% complete, production-qualified, independently adopted, or ready for a new release.
 
+## Subsequent merged evidence-trust qualification (2026-08-11)
+
+The historical baseline below remains unchanged. Two later evidence-trust changes
+were merged, culminating in default-branch commit
+[`5e17208851c4f01f984b7087a1c789b4fd782afa`](https://github.com/taipei49314/tomorrowci/commit/5e17208851c4f01f984b7087a1c789b4fd782afa).
+Its exact-SHA default CI run
+[`31445290798`](https://github.com/taipei49314/tomorrowci/actions/runs/31445290798)
+completed successfully across `rust`, `windows-verifier`, `schema`,
+`container-integration`, and `action-dogfood`.
+
+The preceding merged PR head was independently downloaded from
+[PR run `31316568858`](https://github.com/taipei49314/tomorrowci/actions/runs/31316568858).
+Artifact
+[`9039028300`](https://github.com/taipei49314/tomorrowci/actions/runs/31316568858/artifacts/9039028300)
+was 595,911 bytes; its downloaded SHA-256 was
+`b1353365f007d940b849d4573e263a4f7f216b4a02b364a1268f66954504fbc8`,
+matching GitHub's published artifact digest.
+
+- Six run bundles reverified with the merged default-branch binary as
+  `PASS version=2 kind=run`: `2f959f60225a` (242 files), `71c8a2f5fbe9`
+  (154), `71cfe110acff` (48), `73a40ade47c0` (225), `ba0481ea486c`
+  (47), and `cebb057f2626` (136).
+- Recursive inspection covered 94 v2 inventories and 2,080 listed hashes with
+  zero missing, extra, or mismatched files.
+- Twenty replay manifests used syntactically valid `sha256:<64 hex>` image
+  digests.
+- Eleven `FUTURE_FAIL` verdicts corresponded one-for-one with 11
+  qualifications and 22 retained replay receipts. Every qualification
+  recomputed as equivalent with no recorded mismatch.
+
+This is durable project-operated fixture evidence for the evidence and exact
+replay implementation. It does not satisfy the separate Podman, public
+external-target, independent auditor/adopter, product-scope, candidate, or
+stable-release gates.
+
 ## Repository identity and live state
 
 | Item | Observed value |

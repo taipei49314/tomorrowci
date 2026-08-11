@@ -2,82 +2,1662 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
+      mode:
+        description: "Freeze a candidate, or freeze detached external qualification"
+        required: true
+        type: choice
+        options:
+          - candidate
+          - qualification
+        default: candidate
       dry_run:
-        description: "Dry run (no GitHub release upload)"
+        description: "Dispatch is non-publishing; tag promotion is the only publish path"
+        required: true
         type: boolean
         default: true
+      candidate_run_id:
+        description: "Qualification mode: successful candidate workflow run ID"
+        required: false
+        type: string
+        default: ""
+      candidate_manifest_sha256:
+        description: "Qualification mode: frozen candidate-manifest.json SHA-256"
+        required: false
+        type: string
+        default: ""
+      qualification_index_json:
+        description: "Qualification mode: detached QUALIFIED evidence index JSON"
+        required: false
+        type: string
+        default: ""
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}-${{ inputs.mode || 'tag' }}
+  cancel-in-progress: false
+
+env:
+  CARGO_CYCLONEDX_VERSION: "0.5.9"
+  CARGO_INCREMENTAL: "0"
+  CYCLONEDX_SCHEMA_COMMIT: "c320fc0f0b46873864927d9d5684eea7ba439728"
+  CYCLONEDX_SCHEMA_SHA256: "067f7824b08653839ea050ae9e09ca48375eadc2652b0e2a299476e7db90335b"
+  CYCLONEDX_SPDX_SCHEMA_SHA256: "4f6e2b05c05d26a4f2dc5879fbc2fca94b0a28db46289d0c51345621b71cfbfc"
+  CYCLONEDX_JSF_SCHEMA_SHA256: "8bae002c25e723db7ee1f26afde680ae1a2b1a8f6b4b4b0fd65dc3becb090aae"
+  JSONSCHEMA_VERSION: "4.25.1"
+  RUST_TOOLCHAIN: "1.97.1"
+  SOURCE_DATE_EPOCH: "0"
 
 jobs:
-  build:
+  acceptance:
+    name: Full reusable acceptance
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate'
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      checks: write
+      contents: read
+
+  candidate-metadata:
+    name: Candidate metadata
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate'
+    needs: acceptance
+    runs-on: ubuntu-24.04
+    outputs:
+      source_sha: ${{ steps.metadata.outputs.source_sha }}
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - name: Check out the candidate source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require a dry-run on the current default-branch head
+        id: metadata
+        shell: bash
+        env:
+          CANDIDATE_MANIFEST_SHA256: ${{ inputs.candidate_manifest_sha256 }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          QUALIFICATION_INDEX_JSON: ${{ inputs.qualification_index_json }}
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [[ "$REQUESTED_DRY_RUN" != "true" ]]; then
+            echo "workflow_dispatch never publishes; dry_run must remain true" >&2
+            exit 1
+          fi
+          if [[ -n "$CANDIDATE_RUN_ID" || -n "$CANDIDATE_MANIFEST_SHA256" || -n "$QUALIFICATION_INDEX_JSON" ]]; then
+            echo "candidate dispatch must leave every qualification-only input empty" >&2
+            exit 1
+          fi
+          default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.default_branch')"
+          default_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$default_branch" --jq '.sha')"
+          if [[ "$GITHUB_REF" != "refs/heads/$default_branch" ]]; then
+            echo "candidate must run from refs/heads/$default_branch, got $GITHUB_REF" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_SHA" != "$default_sha" ]]; then
+            echo "candidate SHA $GITHUB_SHA is not current default SHA $default_sha" >&2
+            exit 1
+          fi
+
+          version="$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          root = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))
+          cli = tomllib.loads(Path("apps/cli/Cargo.toml").read_text(encoding="utf-8"))
+          lock = tomllib.loads(Path("Cargo.lock").read_text(encoding="utf-8"))
+          version = root["workspace"]["package"]["version"]
+          inherited = cli["package"].get("version")
+          if not isinstance(inherited, dict) or inherited.get("workspace") is not True:
+              raise SystemExit("tomorrowci CLI no longer inherits the workspace version")
+          locked = [p["version"] for p in lock["package"] if p["name"] == "tomorrowci"]
+          if locked != [version]:
+              raise SystemExit(f"Cargo.lock CLI version mismatch: {locked!r} != {[version]!r}")
+          print(version)
+          PY
+          )"
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "workspace version is not strict X.Y.Z SemVer: $version" >&2
+            exit 1
+          fi
+          grep -Fqx "## $version" CHANGELOG.md
+          grep -Fq "This source tree reports version \`$version\`." README.md
+          grep -Fq "Candidate version: \`$version\`" docs/qualification/SUPPORT_MATRIX.md
+          python3 - "$version" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          expected = sys.argv[1]
+          index = json.loads(Path("docs/qualification/EXTERNAL_EVIDENCE_INDEX.json").read_text(encoding="utf-8"))
+          if index.get("schema_version") != 1 or index.get("candidate_version") != expected:
+              raise SystemExit("external evidence snapshot schema/version does not match the candidate")
+          PY
+          echo "source_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build-platform:
+    name: Build and smoke ${{ matrix.target }}
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate'
+    needs: candidate-metadata
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            artifact: tomorrowci-x86_64-unknown-linux-gnu
-          - os: windows-latest
+            archive_format: tar.gz
+            binary_name: tomorrowci
+            python: python3
+          - runner: windows-2025
             target: x86_64-pc-windows-msvc
-            artifact: tomorrowci-x86_64-pc-windows-msvc
-          - os: macos-latest
+            archive_format: zip
+            binary_name: tomorrowci.exe
+            python: python
+          - runner: macos-15-intel
             target: x86_64-apple-darwin
-            artifact: tomorrowci-x86_64-apple-darwin
-    runs-on: ${{ matrix.os }}
+            archive_format: tar.gz
+            binary_name: tomorrowci
+            python: python3
+    runs-on: ${{ matrix.runner }}
+    env:
+      ARCHIVE_FORMAT: ${{ matrix.archive_format }}
+      BINARY_NAME: ${{ matrix.binary_name }}
+      RELEASE_VERSION: ${{ needs.candidate-metadata.outputs.version }}
+      SOURCE_SHA: ${{ needs.candidate-metadata.outputs.source_sha }}
+      TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build
-        run: cargo build -p tomorrowci --release
-      - name: Package (unix)
+      - name: Check out the candidate source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download sealed acceptance evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tomorrowci-ci-evidence
+          path: release-smoke-evidence
+
+      - name: Install the pinned Rust target (Unix)
         if: runner.os != 'Windows'
+        shell: bash
         run: |
-          stage=dist/${{ matrix.artifact }}
-          mkdir -p "$stage"
-          cp target/release/tomorrowci "$stage/"
-          cp README.md LICENSE CHANGELOG.md "$stage/"
-          (cd dist && tar -czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }})
-          sha256sum dist/${{ matrix.artifact }}.tar.gz > dist/${{ matrix.artifact }}.tar.gz.sha256
-      - name: Package (windows)
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup target add "$TARGET" --toolchain "$RUST_TOOLCHAIN"
+          rustc "+$RUST_TOOLCHAIN" -vV
+
+      - name: Install the pinned Rust target (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $stage = "dist/${{ matrix.artifact }}"
-          New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item target/release/tomorrowci.exe $stage/
-          Copy-Item README.md,LICENSE,CHANGELOG.md $stage/
-          Compress-Archive -Path $stage -DestinationPath "dist/${{ matrix.artifact }}.zip"
-          Get-FileHash "dist/${{ matrix.artifact }}.zip" -Algorithm SHA256 |
-            ForEach-Object { "$($_.Hash.ToLower())  ${{ matrix.artifact }}.zip" } |
-            Set-Content "dist/${{ matrix.artifact }}.zip.sha256"
-      - name: SBOM (cargo)
-        if: runner.os == 'Linux'
-        run: |
-          cargo install cargo-cyclonedx --locked || true
-          cargo cyclonedx -f json -o dist/sbom.cdx.json || echo '{"bomFormat":"CycloneDX","specVersion":"1.5","note":"cyclonedx unavailable"}' > dist/sbom.cdx.json
-      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
-        with:
-          name: ${{ matrix.artifact }}
-          path: dist/*
+          $ErrorActionPreference = "Stop"
+          rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal --no-self-update
+          rustup target add $env:TARGET --toolchain $env:RUST_TOOLCHAIN
+          rustc "+$env:RUST_TOOLCHAIN" -vV
+          if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
+            throw "Windows runner is not x86_64: $env:PROCESSOR_ARCHITECTURE"
+          }
 
-  publish:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' || inputs.dry_run == false
-    steps:
-      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
-        with:
-          path: artifacts
-      - name: List artifacts
-        run: find artifacts -type f | sort
-      - name: Create release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
-        with:
-          files: artifacts/**/*
+      - name: Build twice and package deterministically (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$(uname -m)" != "x86_64" ]]; then
+            echo "runner architecture does not match $TARGET: $(uname -m)" >&2
+            exit 1
+          fi
+          cargo "+$RUST_TOOLCHAIN" build -p tomorrowci --release --locked --target "$TARGET" --target-dir target-first
+          cargo "+$RUST_TOOLCHAIN" build -p tomorrowci --release --locked --target "$TARGET" --target-dir target-second
+          first="target-first/$TARGET/release/$BINARY_NAME"
+          second="target-second/$TARGET/release/$BINARY_NAME"
+          cmp "$first" "$second"
+          if [[ "$("$first" --version)" != "tomorrowci $RELEASE_VERSION" ]]; then
+            echo "native --version smoke failed" >&2
+            exit 1
+          fi
+          file "$first" | grep -Eq 'x86[_ -]64|x86-64'
+
+          root="tomorrowci-$RELEASE_VERSION-$TARGET"
+          archive="$root.$ARCHIVE_FORMAT"
+          mkdir -p dist-first dist-second smoke
+          for pair in "first:$first:dist-first" "second:$second:dist-second"; do
+            IFS=: read -r _ binary output_dir <<< "$pair"
+            ${{ matrix.python }} scripts/release/release.py package \
+              --format "$ARCHIVE_FORMAT" \
+              --binary "$binary" \
+              --output "$output_dir/$archive" \
+              --root "$root" \
+              --document README.md \
+              --document LICENSE \
+              --document CHANGELOG.md
+          done
+          cmp "dist-first/$archive" "dist-second/$archive"
+          ${{ matrix.python }} scripts/release/release.py extract-archive \
+            --format "$ARCHIVE_FORMAT" \
+            --archive "dist-first/$archive" \
+            --root "$root" \
+            --binary-name "$BINARY_NAME" \
+            --destination smoke
+
+      - name: Build twice and package deterministically (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cargo "+$env:RUST_TOOLCHAIN" build -p tomorrowci --release --locked --target $env:TARGET --target-dir target-first
+          cargo "+$env:RUST_TOOLCHAIN" build -p tomorrowci --release --locked --target $env:TARGET --target-dir target-second
+          $first = "target-first/$env:TARGET/release/$env:BINARY_NAME"
+          $second = "target-second/$env:TARGET/release/$env:BINARY_NAME"
+          $firstHash = (Get-FileHash -LiteralPath $first -Algorithm SHA256).Hash
+          $secondHash = (Get-FileHash -LiteralPath $second -Algorithm SHA256).Hash
+          if ($firstHash -ne $secondHash) { throw "the two clean release builds differ" }
+          if ((& $first --version) -ne "tomorrowci $env:RELEASE_VERSION") {
+            throw "native --version smoke failed"
+          }
+
+          $root = "tomorrowci-$env:RELEASE_VERSION-$env:TARGET"
+          $archive = "$root.$env:ARCHIVE_FORMAT"
+          New-Item -ItemType Directory -Path dist-first,dist-second,smoke | Out-Null
+          foreach ($build in @(
+            @{ Binary = $first; Directory = "dist-first" },
+            @{ Binary = $second; Directory = "dist-second" }
+          )) {
+            & "${{ matrix.python }}" scripts/release/release.py package `
+              --format $env:ARCHIVE_FORMAT `
+              --binary $build.Binary `
+              --output "$($build.Directory)/$archive" `
+              --root $root `
+              --document README.md `
+              --document LICENSE `
+              --document CHANGELOG.md
+            if ($LASTEXITCODE -ne 0) { throw "deterministic packaging failed" }
+          }
+          $firstArchiveHash = (Get-FileHash -LiteralPath "dist-first/$archive" -Algorithm SHA256).Hash
+          $secondArchiveHash = (Get-FileHash -LiteralPath "dist-second/$archive" -Algorithm SHA256).Hash
+          if ($firstArchiveHash -ne $secondArchiveHash) { throw "the two deterministic archives differ" }
+          & "${{ matrix.python }}" scripts/release/release.py extract-archive `
+            --format $env:ARCHIVE_FORMAT `
+            --archive "dist-first/$archive" `
+            --root $root `
+            --binary-name $env:BINARY_NAME `
+            --destination smoke
+          if ($LASTEXITCODE -ne 0) { throw "archive extraction validation failed" }
+
+      - name: Smoke the packaged CLI and sealed evidence (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="tomorrowci-$RELEASE_VERSION-$TARGET"
+          packaged="smoke/$root/$BINARY_NAME"
+          if [[ "$("$packaged" --version)" != "tomorrowci $RELEASE_VERSION" ]]; then
+            echo "packaged native --version smoke failed" >&2
+            exit 1
+          fi
+          set +e
+          doctor_output="$("$packaged" doctor 2>&1)"
+          doctor_status=$?
+          set -e
+          printf '%s\n' "$doctor_output"
+          case "$doctor_status" in
+            0)
+              grep -Eq '^sandbox[[:space:]]+\[ok\][[:space:]]+.+' <<< "$doctor_output"
+              ;;
+            4)
+              grep -Eq '^sandbox[[:space:]]+\[blocked\][[:space:]]+.+' <<< "$doctor_output"
+              ;;
+            *) echo "doctor returned unexpected exit $doctor_status" >&2; exit "$doctor_status" ;;
+          esac
+
+          ${{ matrix.python }} scripts/release/release.py acceptance-runs \
+            --evidence-root release-smoke-evidence \
+            --fixture-output fixture-run-ids.txt \
+            --all-output all-run-ids.txt
+          evidence_root="$(pwd)/release-smoke-evidence"
+          while IFS= read -r run_id; do
+            "$packaged" --evidence-root "$evidence_root" verify "$run_id"
+          done < all-run-ids.txt
+          run_id="$(sed -n '1p' fixture-run-ids.txt)"
+          if [[ -z "$run_id" ]]; then
+            echo "acceptance fixture run plan is empty" >&2
+            exit 1
+          fi
+          report="$RUNNER_TEMP/tomorrowci-$TARGET-report.json"
+          "$packaged" --evidence-root "$evidence_root" report "$run_id" --format json --output "$report"
+          ${{ matrix.python }} - "$report" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if not isinstance(value, dict) or not value:
+              raise SystemExit("packaged report JSON is empty")
+          PY
+
+      - name: Smoke the packaged CLI and sealed evidence (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $false
+          $root = "tomorrowci-$env:RELEASE_VERSION-$env:TARGET"
+          $packaged = "smoke/$root/$env:BINARY_NAME"
+          if ((& $packaged --version) -ne "tomorrowci $env:RELEASE_VERSION") {
+            throw "packaged native --version smoke failed"
+          }
+          $doctorOutput = (& $packaged doctor 2>&1 | Out-String)
+          $doctorStatus = $LASTEXITCODE
+          Write-Host $doctorOutput
+          if ($doctorStatus -eq 0) {
+            if ($doctorOutput -notmatch '(?m)^sandbox\s+\[ok\]\s+.+') { throw "doctor success omitted sandbox reason" }
+          } elseif ($doctorStatus -eq 4) {
+            if ($doctorOutput -notmatch '(?m)^sandbox\s+\[blocked\]\s+.+') { throw "doctor BLOCKED omitted its reason" }
+          } else {
+            throw "doctor returned unexpected exit $doctorStatus"
+          }
+
+          & "${{ matrix.python }}" scripts/release/release.py acceptance-runs `
+            --evidence-root release-smoke-evidence `
+            --fixture-output fixture-run-ids.txt `
+            --all-output all-run-ids.txt
+          if ($LASTEXITCODE -ne 0) { throw "acceptance run inventory validation failed" }
+          $evidenceRoot = (Resolve-Path release-smoke-evidence).Path
+          $allRuns = @(Get-Content -LiteralPath all-run-ids.txt)
+          foreach ($runId in $allRuns) {
+            & $packaged --evidence-root $evidenceRoot verify $runId
+            if ($LASTEXITCODE -ne 0) { throw "packaged verify smoke failed for $runId" }
+          }
+          $fixtureRuns = @(Get-Content -LiteralPath fixture-run-ids.txt)
+          if ($fixtureRuns.Count -ne 6) { throw "acceptance fixture run plan is not exactly six runs" }
+          $runId = $fixtureRuns[0]
+          $report = Join-Path $env:RUNNER_TEMP "tomorrowci-$env:TARGET-report.json"
+          & $packaged --evidence-root $evidenceRoot report $runId --format json --output $report
+          if ($LASTEXITCODE -ne 0) { throw "packaged report smoke failed" }
+          $parsed = Get-Content -Raw -LiteralPath $report | ConvertFrom-Json
+          if ($null -eq $parsed) { throw "packaged report JSON is empty" }
+
+      - name: Select one downloaded sealed scenario (Linux)
+        id: candidate_replay
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_root="$(pwd)/release-smoke-evidence"
+          python3 scripts/release/release.py prepare-replay \
+            --evidence-root "$evidence_root" \
+            --fixtures-root fixtures \
+            --expected-source-sha "$SOURCE_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Replay one downloaded sealed scenario twice (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_CLI_EXIT_CODE: ${{ steps.candidate_replay.outputs.expected_cli_exit_code }}
+          REPLAY_RUN_ID: ${{ steps.candidate_replay.outputs.run_id }}
+          SCENARIO_ID: ${{ steps.candidate_replay.outputs.scenario_id }}
+          SEALED_EXIT_CODE: ${{ steps.candidate_replay.outputs.sealed_exit_code }}
+          WORKSPACE: ${{ steps.candidate_replay.outputs.workspace }}
+        run: |
+          set -euo pipefail
+          root="tomorrowci-$RELEASE_VERSION-$TARGET"
+          packaged="smoke/$root/$BINARY_NAME"
+          evidence_root="$(pwd)/release-smoke-evidence"
+          receipt_root="$evidence_root/replay-receipts/$REPLAY_RUN_ID/$SCENARIO_ID"
+          mkdir -p "$receipt_root"
+          before_receipts="$RUNNER_TEMP/release-receipts-before.txt"
+          after_receipts="$RUNNER_TEMP/release-receipts-after.txt"
+          new_receipts="$RUNNER_TEMP/release-receipts-new.txt"
+          removed_receipts="$RUNNER_TEMP/release-receipts-removed.txt"
+          find "$receipt_root" -mindepth 1 -maxdepth 1 -type d -print \
+            | LC_ALL=C sort > "$before_receipts"
+          for replay_attempt in 1 2; do
+            set +e
+            replay_output="$("$packaged" \
+              --evidence-root "$evidence_root" \
+              replay "$REPLAY_RUN_ID" \
+              --scenario "$SCENARIO_ID" \
+              --workspace "$WORKSPACE" 2>&1)"
+            replay_status=$?
+            set -e
+            printf '%s\n' "$replay_output"
+            printf '%s\n' "$replay_output" > "replay-$replay_attempt.log"
+            printf '%s\n' "$replay_status" > "replay-$replay_attempt.exit-code"
+            if [[ "$replay_status" != "$EXPECTED_CLI_EXIT_CODE" ]]; then
+              echo "replay attempt $replay_attempt returned $replay_status; expected $EXPECTED_CLI_EXIT_CODE for sealed target exit $SEALED_EXIT_CODE" >&2
+              exit 1
+            fi
+            if [[ "$EXPECTED_CLI_EXIT_CODE" == "0" ]]; then
+              grep -Fq "exit Some(0)" <<< "$replay_output"
+            else
+              grep -Fq "REPLAY_FAILED:" <<< "$replay_output"
+            fi
+          done
+          "$packaged" --evidence-root "$evidence_root" verify "$REPLAY_RUN_ID"
+          find "$receipt_root" -mindepth 1 -maxdepth 1 -type d -print \
+            | LC_ALL=C sort > "$after_receipts"
+          comm -23 "$before_receipts" "$after_receipts" > "$removed_receipts"
+          comm -13 "$before_receipts" "$after_receipts" > "$new_receipts"
+          if [[ -s "$removed_receipts" ]]; then
+            echo "release replay removed a pre-existing detached receipt" >&2
+            exit 1
+          fi
+          receipt_directories=()
+          while IFS= read -r receipt_directory; do
+            receipt_directories[${#receipt_directories[@]}]="$receipt_directory"
+          done < "$new_receipts"
+          if [[ "${#receipt_directories[@]}" -ne 2 ]]; then
+            echo "two release replays must create exactly two new detached receipts" >&2
+            exit 1
+          fi
+          for receipt_directory in "${receipt_directories[@]}"; do
+            "$packaged" verify "$receipt_directory"
+          done
+          "$packaged" replay-qualify \
+            --original-run "$evidence_root/runs/$REPLAY_RUN_ID" \
+            "${receipt_directories[0]}" "${receipt_directories[1]}" \
+            | tee replay-pair.log
+          mkdir -p \
+            release-replay-package/evidence/runs \
+            "release-replay-package/evidence/replay-receipts/$REPLAY_RUN_ID/$SCENARIO_ID" \
+            release-replay-package/raw
+          cp -R \
+            "$evidence_root/runs/$REPLAY_RUN_ID" \
+            release-replay-package/evidence/runs/
+          for receipt_directory in "${receipt_directories[@]}"; do
+            cp -R "$receipt_directory" \
+              "release-replay-package/evidence/replay-receipts/$REPLAY_RUN_ID/$SCENARIO_ID/"
+          done
+          cp \
+            replay-1.log replay-2.log replay-pair.log \
+            replay-1.exit-code replay-2.exit-code \
+            release-replay-package/raw/
+
+      - name: Upload raw release replay evidence (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tomorrowci-release-replay-evidence
+          path: release-replay-package
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Record replay host boundary (non-Linux)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          echo "Replay: NOT_APPLICABLE_BY_HOST ($RUNNER_OS has no provisioned Linux-container daemon)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the single platform archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-input-${{ matrix.target }}
+          path: dist-first/tomorrowci-${{ needs.candidate-metadata.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_format }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
+
+  sbom:
+    name: Locked dependency SBOM
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate'
+    needs: candidate-metadata
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the candidate source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Generate and validate CycloneDX from Cargo.lock
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.candidate-metadata.outputs.version }}
+          SBOM_NAME: sbom.cdx.json
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          cargo "+$RUST_TOOLCHAIN" install cargo-cyclonedx --version "$CARGO_CYCLONEDX_VERSION" --locked
+          python3 -m pip install --disable-pip-version-check "jsonschema==$JSONSCHEMA_VERSION"
+          python3 - "$JSONSCHEMA_VERSION" <<'PY'
+          import importlib.metadata
+          import sys
+          actual = importlib.metadata.version("jsonschema")
+          if actual != sys.argv[1]:
+              raise SystemExit(f"jsonschema version mismatch: {actual}")
+          PY
+
+          mkdir -p schemas dist sbom-first sbom-second
+          schema_base="https://raw.githubusercontent.com/CycloneDX/specification/$CYCLONEDX_SCHEMA_COMMIT/schema"
+          curl --fail --location --silent --show-error \
+            "$schema_base/bom-1.5.schema.json" --output schemas/bom-1.5.schema.json
+          curl --fail --location --silent --show-error \
+            "$schema_base/spdx.schema.json" --output schemas/spdx.schema.json
+          curl --fail --location --silent --show-error \
+            "$schema_base/jsf-0.82.schema.json" --output schemas/jsf-0.82.schema.json
+          printf '%s  %s\n' \
+            "$CYCLONEDX_SCHEMA_SHA256" schemas/bom-1.5.schema.json \
+            "$CYCLONEDX_SPDX_SCHEMA_SHA256" schemas/spdx.schema.json \
+            "$CYCLONEDX_JSF_SCHEMA_SHA256" schemas/jsf-0.82.schema.json \
+            | sha256sum --check --strict
+          cargo "+$RUST_TOOLCHAIN" metadata --locked --no-deps --format-version 1 \
+            > cargo-metadata.json
+
+          for pass in first second; do
+            cargo "+$RUST_TOOLCHAIN" cyclonedx \
+              --manifest-path Cargo.toml \
+              --format json \
+              --describe crate \
+              --target all \
+              --spec-version 1.5
+            member_sboms=()
+            while IFS= read -r member_sbom; do
+              member_sboms[${#member_sboms[@]}]="$member_sbom"
+            done < <(find apps crates -type f -name '*.cdx.json' -print | sort)
+            merge_args=()
+            for member_sbom in "${member_sboms[@]}"; do
+              merge_args[${#merge_args[@]}]=--input
+              merge_args[${#merge_args[@]}]="$member_sbom"
+            done
+            python3 scripts/release/release.py merge-sboms \
+              "${merge_args[@]}" \
+              --metadata cargo-metadata.json \
+              --lock Cargo.lock \
+              --output "sbom-$pass/$SBOM_NAME" \
+              --expected-version "$RELEASE_VERSION" \
+              --source-date-epoch "$SOURCE_DATE_EPOCH"
+            python3 scripts/release/release.py validate-json-schema \
+              --schema schemas/bom-1.5.schema.json \
+              --reference schemas/spdx.schema.json \
+              --reference schemas/jsf-0.82.schema.json \
+              --instance "sbom-$pass/$SBOM_NAME"
+          done
+          cmp "sbom-first/$SBOM_NAME" "sbom-second/$SBOM_NAME"
+          cp "sbom-first/$SBOM_NAME" "dist/$SBOM_NAME"
+
+      - name: Upload the SBOM only
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-input-sbom
+          path: dist/sbom.cdx.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
+
+  freeze-candidate:
+    name: Freeze and attest candidate inventory
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate'
+    needs:
+      - candidate-metadata
+      - build-platform
+      - sbom
+    runs-on: ubuntu-24.04
+    permissions:
+      artifact-metadata: write
+      attestations: write
+      contents: read
+      id-token: write
+    outputs:
+      manifest_sha256: ${{ steps.freeze.outputs.manifest_sha256 }}
+    steps:
+      - name: Check out the candidate source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download exact build inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-input-*
+          path: inputs
+          merge-multiple: true
+
+      - name: Assemble, checksum, and seal the candidate
+        id: freeze
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.candidate-metadata.outputs.version }}
+          SOURCE_SHA: ${{ needs.candidate-metadata.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          mkdir candidate
+          cp "inputs/tomorrowci-$RELEASE_VERSION-x86_64-unknown-linux-gnu.tar.gz" candidate/
+          cp "inputs/tomorrowci-$RELEASE_VERSION-x86_64-pc-windows-msvc.zip" candidate/
+          cp "inputs/tomorrowci-$RELEASE_VERSION-x86_64-apple-darwin.tar.gz" candidate/
+          cp inputs/sbom.cdx.json candidate/
+          cp CLAIM_EVIDENCE.md candidate/claim-to-evidence.snapshot.md
+          cp docs/qualification/SUPPORT_MATRIX.md candidate/support-matrix.snapshot.md
+          python3 scripts/release/release.py freeze-external-inputs \
+            --index docs/qualification/EXTERNAL_EVIDENCE_INDEX.json \
+            --protocol docs/qualification/EXTERNAL_PROTOCOL.md \
+            --repository-root . \
+            --output candidate
+          python3 scripts/release/release.py create-run-binding \
+            --output candidate/candidate-run-binding.json \
+            --mode candidate \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --workflow-ref "$GITHUB_WORKFLOW_REF"
+
+          manifest_sha256="$(python3 scripts/release/release.py create-candidate \
+            --directory candidate \
+            --lock Cargo.lock \
+            --version "$RELEASE_VERSION" \
+            --source-sha "$SOURCE_SHA" \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --rust-toolchain "$RUST_TOOLCHAIN" \
+            --sbom-tool-version "$CARGO_CYCLONEDX_VERSION" \
+            --sbom-schema-commit "$CYCLONEDX_SCHEMA_COMMIT" \
+            --jsonschema-version "$JSONSCHEMA_VERSION" \
+            --source-date-epoch "$SOURCE_DATE_EPOCH")"
+          python3 scripts/release/release.py verify-candidate \
+            --directory candidate \
+            --lock Cargo.lock \
+            --expected-manifest-sha256 "$manifest_sha256" \
+            --expected-source-sha "$SOURCE_SHA" \
+            --expected-run-id "$GITHUB_RUN_ID" \
+            --expected-version "$RELEASE_VERSION" \
+            --expected-repository "$GITHUB_REPOSITORY"
+          echo "manifest_sha256=$manifest_sha256" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Frozen release candidate"
+            echo
+            echo "- Source SHA: \`$SOURCE_SHA\`"
+            echo "- Candidate artifact: \`tomorrowci-release-candidate\`"
+            echo "- Candidate run ID: \`$GITHUB_RUN_ID\`"
+            echo "- Candidate manifest SHA-256: \`$manifest_sha256\`"
+            echo
+            echo "This artifact is ready for external qualification; it does not authorize a tag."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create GitHub build-provenance attestations
+        id: attest
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: candidate/*
+
+      - name: Record attestation URL
+        shell: bash
+        env:
+          ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
+        run: |
+          echo "- GitHub provenance attestation: $ATTESTATION_URL" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the immutable candidate
+        id: candidate_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tomorrowci-release-candidate
+          path: candidate/*
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+      - name: Record the server-side candidate artifact identity
+        shell: bash
+        env:
+          ARTIFACT_DIGEST_HEX: ${{ steps.candidate_artifact.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ steps.candidate_artifact.outputs.artifact-id }}
+          ARTIFACT_URL: ${{ steps.candidate_artifact.outputs.artifact-url }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$ARTIFACT_DIGEST_HEX" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "upload-artifact did not return a lowercase SHA-256 hex digest" >&2
+            exit 1
+          fi
+          ARTIFACT_DIGEST="sha256:$ARTIFACT_DIGEST_HEX"
+          {
+            echo "- Candidate artifact ID: \`$ARTIFACT_ID\`"
+            echo "- Candidate artifact digest: \`$ARTIFACT_DIGEST\`"
+            echo "- Candidate artifact URL: $ARTIFACT_URL"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  freeze-qualification:
+    name: Freeze detached external qualification
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'qualification'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      artifact-metadata: write
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out the qualification validator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Download and validate the referenced candidate
+        id: candidate
+        shell: bash
+        env:
+          CANDIDATE_MANIFEST_SHA256: ${{ inputs.candidate_manifest_sha256 }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [[ "$REQUESTED_DRY_RUN" != "true" ]]; then
+            echo "qualification dispatch never publishes; dry_run must remain true" >&2
+            exit 1
+          fi
+          if [[ ! "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "candidate_run_id must be a positive integer" >&2
+            exit 1
+          fi
+          if [[ ! "$CANDIDATE_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "candidate_manifest_sha256 must be lowercase SHA-256" >&2
+            exit 1
+          fi
+          mkdir candidate
+          gh run download "$CANDIDATE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name tomorrowci-release-candidate \
+            --dir candidate
+          actual_manifest_sha256="$(sha256sum candidate/candidate-manifest.json | cut -d ' ' -f 1)"
+          if [[ "$actual_manifest_sha256" != "$CANDIDATE_MANIFEST_SHA256" ]]; then
+            echo "candidate manifest digest mismatch" >&2
+            exit 1
+          fi
+          source_sha="$(python3 -c 'import json; print(json.load(open("candidate/candidate-manifest.json", encoding="utf-8"))["source_sha"])')"
+          version="$(python3 -c 'import json; print(json.load(open("candidate/candidate-manifest.json", encoding="utf-8"))["version"])')"
+          candidate_attempt="$(python3 -c 'import json; print(json.load(open("candidate/candidate-manifest.json", encoding="utf-8"))["workflow"]["run_attempt"])')"
+          candidate_workflow_ref="$(python3 -c 'import json; print(json.load(open("candidate/candidate-manifest.json", encoding="utf-8"))["workflow"]["ref"])')"
+          default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.default_branch')"
+          default_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$default_branch" --jq '.sha')"
+          if [[ "$GITHUB_REF" != "refs/heads/$default_branch" || "$GITHUB_SHA" != "$default_sha" ]]; then
+            echo "qualification must run from the current default head" >&2
+            exit 1
+          fi
+          if [[ "$source_sha" != "$default_sha" ]]; then
+            echo "candidate is stale; rebuild it from current default before qualification" >&2
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID" > candidate-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID/artifacts" > candidate-artifacts.json
+          python3 scripts/release/release.py validate-run \
+            --run-json candidate-run.json \
+            --artifacts-json candidate-artifacts.json \
+            --run-id "$CANDIDATE_RUN_ID" \
+            --source-sha "$source_sha" \
+            --default-branch "$default_branch" \
+            --repository "$GITHUB_REPOSITORY" \
+            --artifact-name tomorrowci-release-candidate \
+            --expected-run-attempt "$candidate_attempt" \
+            --expected-workflow-ref "$candidate_workflow_ref" \
+            --input-binding candidate/candidate-run-binding.json \
+            --expected-mode candidate \
+            --require-referenced-workflow .github/workflows/ci.yml \
+            --github-output "$GITHUB_OUTPUT"
+          python3 scripts/release/release.py verify-candidate \
+            --directory candidate \
+            --lock Cargo.lock \
+            --expected-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" \
+            --expected-source-sha "$source_sha" \
+            --expected-run-id "$CANDIDATE_RUN_ID" \
+            --expected-version "$version" \
+            --expected-repository "$GITHUB_REPOSITORY"
+          signer="$GITHUB_REPOSITORY/.github/workflows/release.yml"
+          for subject in candidate/*; do
+            gh attestation verify "$subject" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$signer" \
+              --source-digest "$source_sha" \
+              --source-ref "refs/heads/$default_branch" \
+              --deny-self-hosted-runners >/dev/null
+          done
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Validate and freeze the detached qualification index
+        id: qualification
+        shell: bash
+        env:
+          CANDIDATE_MANIFEST_SHA256: ${{ inputs.candidate_manifest_sha256 }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ steps.candidate.outputs.artifact_digest }}
+          CANDIDATE_SOURCE_SHA: ${{ steps.candidate.outputs.source_sha }}
+          CANDIDATE_VERSION: ${{ steps.candidate.outputs.version }}
+          QUALIFICATION_INDEX_JSON: ${{ inputs.qualification_index_json }}
+        run: |
+          set -euo pipefail
+          mkdir qualification
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          value = os.environ.get("QUALIFICATION_INDEX_JSON", "")
+          if not value.strip():
+              raise SystemExit("qualification_index_json is required")
+          Path("qualification/qualification-index.json").write_text(value, encoding="utf-8", newline="\n")
+          PY
+          project_owner="${GITHUB_REPOSITORY%%/*}"
+          python3 scripts/release/release.py validate-qualification \
+            --index qualification/qualification-index.json \
+            --frozen-index candidate/external-evidence-index.snapshot.json \
+            --expected-source-sha "$CANDIDATE_SOURCE_SHA" \
+            --expected-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" \
+            --expected-candidate-artifact-digest "$CANDIDATE_ARTIFACT_DIGEST" \
+            --expected-version "$CANDIDATE_VERSION" \
+            --project-owner "$project_owner" \
+            --project-repository "$GITHUB_REPOSITORY"
+          qualification_sha256="$(sha256sum qualification/qualification-index.json | cut -d ' ' -f 1)"
+          python3 scripts/release/release.py create-run-binding \
+            --output qualification/qualification-run-binding.json \
+            --mode qualification \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --candidate-run-id "$CANDIDATE_RUN_ID" \
+            --candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" \
+            --qualification-index-sha256 "$qualification_sha256"
+          echo "qualification_sha256=$qualification_sha256" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Frozen detached qualification"
+            echo
+            echo "- Candidate run ID: \`$CANDIDATE_RUN_ID\`"
+            echo "- Candidate manifest SHA-256: \`$CANDIDATE_MANIFEST_SHA256\`"
+            echo "- Candidate artifact digest: \`$CANDIDATE_ARTIFACT_DIGEST\`"
+            echo "- Qualification run ID: \`$GITHUB_RUN_ID\`"
+            echo "- Qualification index SHA-256: \`$qualification_sha256\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Live-verify every external run, artifact, and independent attestation
+        shell: bash
+        env:
+          CANDIDATE_SOURCE_SHA: ${{ steps.candidate.outputs.source_sha }}
+          CANDIDATE_VERSION: ${{ steps.candidate.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          project_owner="${GITHUB_REPOSITORY%%/*}"
+          default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.default_branch')"
+          candidate_root="tomorrowci-$CANDIDATE_VERSION-x86_64-unknown-linux-gnu"
+          python3 scripts/release/release.py extract-archive \
+            --format tar.gz \
+            --archive "candidate/$candidate_root.tar.gz" \
+            --root "$candidate_root" \
+            --binary-name tomorrowci \
+            --destination live-candidate
+          candidate_binary="live-candidate/$candidate_root/tomorrowci"
+          if [[ "$("$candidate_binary" --version)" != "tomorrowci $CANDIDATE_VERSION" ]]; then
+            echo "qualification candidate --version smoke failed" >&2
+            exit 1
+          fi
+          mkdir live-results live-api live-subjects live-bundles live-extracted
+          public_get() {
+            local url="$1"
+            local output="$2"
+            env -u GH_TOKEN -u GITHUB_TOKEN curl --disable \
+              --fail --silent --show-error --location --max-redirs 5 \
+              --proto '=https' --proto-redir '=https' --tlsv1.2 \
+              --connect-timeout 15 --max-time 300 --max-filesize 1073741824 \
+              --retry 2 --retry-all-errors --retry-delay 1 --retry-max-time 300 \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2026-03-10' \
+              --output "$output" "$url"
+          }
+          python3 scripts/release/release.py export-live-results \
+            --index qualification/qualification-index.json \
+            --output live-results
+          for record in live-results/*.json; do
+            name="${record##*/}"
+            case "$name" in
+              project-*.json) kind=project ;;
+              independent-*.json) kind=independent ;;
+              *) echo "unexpected live-result export: $name" >&2; exit 1 ;;
+            esac
+            stem="${name%.json}"
+            coordinates="$(python3 scripts/release/release.py live-result-coordinates \
+              --record "$record" \
+              --kind "$kind" \
+              --project-owner "$project_owner")"
+            repository="$(jq -er .repository <<< "$coordinates")"
+            run_id="$(jq -er .run_id <<< "$coordinates")"
+            signer_workflow="$(jq -er .signer_workflow <<< "$coordinates")"
+            workflow_source_sha="$(jq -er .workflow_source_sha <<< "$coordinates")"
+            subject="live-subjects/$stem-qualification-result.json"
+            if [[ "$kind" == project ]]; then
+              artifact_id="$(jq -er .artifact_id <<< "$coordinates")"
+              gh api "repos/$repository" > "live-api/$stem-repository.json"
+              gh api "repos/$repository/actions/runs/$run_id" > "live-api/$stem-run.json"
+              gh api "repos/$repository/actions/runs/$run_id/artifacts" > "live-api/$stem-artifacts.json"
+              gh api "repos/$repository/actions/artifacts/$artifact_id/zip" > "live-api/$stem.zip"
+              python3 scripts/release/release.py validate-live-result \
+                --record "$record" \
+                --kind "$kind" \
+                --project-owner "$project_owner" \
+                --project-repository "$GITHUB_REPOSITORY" \
+                --candidate-source-sha "$CANDIDATE_SOURCE_SHA" \
+                --project-default-branch "$default_branch" \
+                --repository-json "live-api/$stem-repository.json" \
+                --run-json "live-api/$stem-run.json" \
+                --artifacts-json "live-api/$stem-artifacts.json" \
+                --artifact-zip "live-api/$stem.zip" \
+                --subject-output "$subject"
+              gh attestation verify "$subject" \
+                --repo "$GITHUB_REPOSITORY" \
+                --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/external-targets.yml" \
+                --source-digest "$CANDIDATE_SOURCE_SHA" \
+                --source-ref "refs/heads/$default_branch" \
+                --deny-self-hosted-runners >/dev/null
+            else
+              release_id="$(jq -er .release_id <<< "$coordinates")"
+              release_asset_id="$(jq -er .release_asset_id <<< "$coordinates")"
+              release_tag="$(jq -er .release_tag <<< "$coordinates")"
+              evidence_url="$(jq -er .evidence_url <<< "$coordinates")"
+              api_base="https://api.github.com/repos/$repository"
+              public_get "$api_base" "live-api/$stem-repository.json"
+              public_get "$api_base/actions/runs/$run_id" "live-api/$stem-run.json"
+              public_get "$api_base/releases/$release_id" "live-api/$stem-release.json"
+              public_get "$api_base/releases/assets/$release_asset_id" "live-api/$stem-release-asset.json"
+              public_get "$api_base/git/ref/tags/$release_tag" "live-api/$stem-tag-ref.json"
+              public_get "$evidence_url" "live-api/$stem.zip"
+              bundle="live-bundles/$stem-attestation.jsonl"
+              python3 scripts/release/release.py validate-live-result \
+                --record "$record" \
+                --kind "$kind" \
+                --project-owner "$project_owner" \
+                --project-repository "$GITHUB_REPOSITORY" \
+                --candidate-source-sha "$CANDIDATE_SOURCE_SHA" \
+                --project-default-branch "$default_branch" \
+                --repository-json "live-api/$stem-repository.json" \
+                --run-json "live-api/$stem-run.json" \
+                --release-json "live-api/$stem-release.json" \
+                --release-asset-json "live-api/$stem-release-asset.json" \
+                --tag-ref-json "live-api/$stem-tag-ref.json" \
+                --artifact-zip "live-api/$stem.zip" \
+                --subject-output "$subject" \
+                --bundle-output "$bundle" \
+                --extract-output "live-extracted/$stem"
+              env -u GH_TOKEN -u GITHUB_TOKEN gh attestation verify "$subject" \
+                --repo "$repository" \
+                --bundle "$bundle" \
+                --signer-workflow "$signer_workflow" \
+                --source-digest "$workflow_source_sha" \
+                --deny-self-hosted-runners >/dev/null
+              evidence="live-extracted/$stem/evidence"
+              evidence_run_id="$(jq -er .evidence_run_id "$record")"
+              scenario_id="$(jq -er .replay_scenario_id "$record")"
+              original_run="$evidence/runs/$evidence_run_id"
+              "$candidate_binary" verify "$original_run"
+              receipt_root="$evidence/replay-receipts/$evidence_run_id/$scenario_id"
+              receipt_directories=()
+              while IFS= read -r receipt_directory; do
+                receipt_directories[${#receipt_directories[@]}]="$receipt_directory"
+              done < <(find "$receipt_root" -mindepth 1 -maxdepth 1 -type d -print \
+                | LC_ALL=C sort)
+              if [[ "${#receipt_directories[@]}" -ne 2 ]]; then
+                echo "independent qualification must contain exactly two detached receipts" >&2
+                exit 1
+              fi
+              for receipt_directory in "${receipt_directories[@]}"; do
+                "$candidate_binary" verify "$receipt_directory"
+              done
+              "$candidate_binary" replay-qualify \
+                --original-run "$original_run" \
+                "${receipt_directories[0]}" "${receipt_directories[1]}" >/dev/null
+            fi
+          done
+
+      - name: Attest the detached qualification index and run binding
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: qualification/*
+
+      - name: Upload the immutable qualification artifact
+        id: qualification_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tomorrowci-release-qualification
+          path: qualification/*
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Record qualification artifact and exact annotated-tag metadata
+        shell: bash
+        env:
+          CANDIDATE_ARTIFACT_DIGEST: ${{ steps.candidate.outputs.artifact_digest }}
+          CANDIDATE_MANIFEST_SHA256: ${{ inputs.candidate_manifest_sha256 }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          QUALIFICATION_ARTIFACT_DIGEST_HEX: ${{ steps.qualification_artifact.outputs.artifact-digest }}
+          QUALIFICATION_SHA256: ${{ steps.qualification.outputs.qualification_sha256 }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$QUALIFICATION_ARTIFACT_DIGEST_HEX" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "upload-artifact did not return a lowercase qualification SHA-256 hex digest" >&2
+            exit 1
+          fi
+          QUALIFICATION_ARTIFACT_DIGEST="sha256:$QUALIFICATION_ARTIFACT_DIGEST_HEX"
+          {
+            echo "- Qualification artifact digest: \`$QUALIFICATION_ARTIFACT_DIGEST\`"
+            echo
+            echo "An authorized annotated tag message must contain exactly one of each:"
+            echo
+            echo '```text'
+            echo "candidate-run-id: $CANDIDATE_RUN_ID"
+            echo "candidate-manifest-sha256: $CANDIDATE_MANIFEST_SHA256"
+            echo "candidate-artifact-digest: $CANDIDATE_ARTIFACT_DIGEST"
+            echo "qualification-run-id: $GITHUB_RUN_ID"
+            echo "qualification-index-sha256: $QUALIFICATION_SHA256"
+            echo "qualification-artifact-digest: $QUALIFICATION_ARTIFACT_DIGEST"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  prepare-release:
+    name: Validate promotion and create draft release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      artifact-metadata: write
+      attestations: write
+      contents: write
+      id-token: write
+    outputs:
+      candidate_artifact_digest: ${{ steps.tag.outputs.candidate_artifact_digest }}
+      candidate_manifest_sha256: ${{ steps.tag.outputs.candidate_manifest_sha256 }}
+      candidate_run_id: ${{ steps.tag.outputs.candidate_run_id }}
+      peeled_commit_sha: ${{ steps.tag.outputs.peeled_commit_sha }}
+      qualification_index_sha256: ${{ steps.tag.outputs.qualification_index_sha256 }}
+      qualification_artifact_digest: ${{ steps.tag.outputs.qualification_artifact_digest }}
+      qualification_run_id: ${{ steps.tag.outputs.qualification_run_id }}
+      tag_object_sha: ${{ steps.tag.outputs.tag_object_sha }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - name: Check out the annotated tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Parse and validate annotated tag metadata
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_ref="refs/tags/$GITHUB_REF_NAME"
+          if [[ "$(git cat-file -t "$tag_ref")" != "tag" ]]; then
+            echo "lightweight tags cannot promote release candidates" >&2
+            exit 1
+          fi
+          tag_object_sha="$(git rev-parse "$tag_ref^{tag}")"
+          peeled_commit_sha="$(git rev-parse "$tag_ref^{commit}")"
+          git for-each-ref --format='%(contents)' "$tag_ref" > tag-message.txt
+          python3 scripts/release/release.py parse-tag \
+            --tag-name "$GITHUB_REF_NAME" \
+            --message tag-message.txt \
+            --github-output "$GITHUB_OUTPUT"
+          echo "tag_object_sha=$tag_object_sha" >> "$GITHUB_OUTPUT"
+          echo "peeled_commit_sha=$peeled_commit_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch referenced candidate and qualification run metadata
+        shell: bash
+        env:
+          CANDIDATE_RUN_ID: ${{ steps.tag.outputs.candidate_run_id }}
+          GH_TOKEN: ${{ github.token }}
+          PEELED_COMMIT_SHA: ${{ steps.tag.outputs.peeled_commit_sha }}
+          QUALIFICATION_RUN_ID: ${{ steps.tag.outputs.qualification_run_id }}
+        run: |
+          set -euo pipefail
+          default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.default_branch')"
+          default_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$default_branch" --jq '.sha')"
+          if [[ "$default_sha" != "$PEELED_COMMIT_SHA" ]]; then
+            echo "tag peels to $PEELED_COMMIT_SHA but current default head is $default_sha" >&2
+            exit 1
+          fi
+          for record in \
+            "candidate:$CANDIDATE_RUN_ID" \
+            "qualification:$QUALIFICATION_RUN_ID"; do
+            IFS=: read -r label run_id <<< "$record"
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > "$label-run.json"
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts" > "$label-artifacts.json"
+          done
+
+      - name: Download, verify, and attest identities
+        shell: bash
+        env:
+          CANDIDATE_ARTIFACT_DIGEST: ${{ steps.tag.outputs.candidate_artifact_digest }}
+          CANDIDATE_MANIFEST_SHA256: ${{ steps.tag.outputs.candidate_manifest_sha256 }}
+          CANDIDATE_RUN_ID: ${{ steps.tag.outputs.candidate_run_id }}
+          GH_TOKEN: ${{ github.token }}
+          PEELED_COMMIT_SHA: ${{ steps.tag.outputs.peeled_commit_sha }}
+          QUALIFICATION_INDEX_SHA256: ${{ steps.tag.outputs.qualification_index_sha256 }}
+          QUALIFICATION_ARTIFACT_DIGEST: ${{ steps.tag.outputs.qualification_artifact_digest }}
+          QUALIFICATION_RUN_ID: ${{ steps.tag.outputs.qualification_run_id }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir candidate qualification
+          gh run download "$CANDIDATE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name tomorrowci-release-candidate \
+            --dir candidate
+          gh run download "$QUALIFICATION_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name tomorrowci-release-qualification \
+            --dir qualification
+          default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.default_branch')"
+          candidate_attempt="$(python3 -c 'import json; print(json.load(open("candidate/candidate-manifest.json", encoding="utf-8"))["workflow"]["run_attempt"])')"
+          candidate_workflow_ref="$(python3 -c 'import json; print(json.load(open("candidate/candidate-manifest.json", encoding="utf-8"))["workflow"]["ref"])')"
+          qualification_input_sha256="$(sha256sum qualification/qualification-index.json | cut -d ' ' -f 1)"
+          qualification_workflow_ref="$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/heads/$default_branch"
+          python3 scripts/release/release.py validate-run \
+            --run-json candidate-run.json \
+            --artifacts-json candidate-artifacts.json \
+            --run-id "$CANDIDATE_RUN_ID" \
+            --source-sha "$PEELED_COMMIT_SHA" \
+            --default-branch "$default_branch" \
+            --repository "$GITHUB_REPOSITORY" \
+            --artifact-name tomorrowci-release-candidate \
+            --expected-artifact-digest "$CANDIDATE_ARTIFACT_DIGEST" \
+            --expected-run-attempt "$candidate_attempt" \
+            --expected-workflow-ref "$candidate_workflow_ref" \
+            --input-binding candidate/candidate-run-binding.json \
+            --expected-mode candidate \
+            --require-referenced-workflow .github/workflows/ci.yml
+          python3 scripts/release/release.py validate-run \
+            --run-json qualification-run.json \
+            --artifacts-json qualification-artifacts.json \
+            --run-id "$QUALIFICATION_RUN_ID" \
+            --source-sha "$PEELED_COMMIT_SHA" \
+            --default-branch "$default_branch" \
+            --repository "$GITHUB_REPOSITORY" \
+            --artifact-name tomorrowci-release-qualification \
+            --expected-artifact-digest "$QUALIFICATION_ARTIFACT_DIGEST" \
+            --expected-workflow-ref "$qualification_workflow_ref" \
+            --input-binding qualification/qualification-run-binding.json \
+            --expected-mode qualification \
+            --expected-candidate-run-id "$CANDIDATE_RUN_ID" \
+            --expected-candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" \
+            --expected-qualification-input-sha256 "$qualification_input_sha256"
+          python3 scripts/release/release.py verify-candidate \
+            --directory candidate \
+            --lock Cargo.lock \
+            --expected-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" \
+            --expected-source-sha "$PEELED_COMMIT_SHA" \
+            --expected-run-id "$CANDIDATE_RUN_ID" \
+            --expected-version "$VERSION" \
+            --expected-repository "$GITHUB_REPOSITORY"
+          project_owner="${GITHUB_REPOSITORY%%/*}"
+          python3 scripts/release/release.py validate-qualification \
+            --index qualification/qualification-index.json \
+            --frozen-index candidate/external-evidence-index.snapshot.json \
+            --expected-source-sha "$PEELED_COMMIT_SHA" \
+            --expected-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" \
+            --expected-candidate-artifact-digest "$CANDIDATE_ARTIFACT_DIGEST" \
+            --expected-version "$VERSION" \
+            --expected-digest "$QUALIFICATION_INDEX_SHA256" \
+            --project-owner "$project_owner" \
+            --project-repository "$GITHUB_REPOSITORY"
+          signer="$GITHUB_REPOSITORY/.github/workflows/release.yml"
+          for subject in candidate/* qualification/*; do
+            gh attestation verify "$subject" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$signer" \
+              --source-digest "$PEELED_COMMIT_SHA" \
+              --source-ref "refs/heads/$default_branch" \
+              --deny-self-hosted-runners >/dev/null
+          done
+
+      - name: Add the detached qualification and tag-promotion attestation
+        shell: bash
+        env:
+          CANDIDATE_ARTIFACT_DIGEST: ${{ steps.tag.outputs.candidate_artifact_digest }}
+          CANDIDATE_MANIFEST_SHA256: ${{ steps.tag.outputs.candidate_manifest_sha256 }}
+          CANDIDATE_RUN_ID: ${{ steps.tag.outputs.candidate_run_id }}
+          PEELED_COMMIT_SHA: ${{ steps.tag.outputs.peeled_commit_sha }}
+          QUALIFICATION_INDEX_SHA256: ${{ steps.tag.outputs.qualification_index_sha256 }}
+          QUALIFICATION_ARTIFACT_DIGEST: ${{ steps.tag.outputs.qualification_artifact_digest }}
+          QUALIFICATION_RUN_ID: ${{ steps.tag.outputs.qualification_run_id }}
+          TAG_OBJECT_SHA: ${{ steps.tag.outputs.tag_object_sha }}
+        run: |
+          set -euo pipefail
+          mkdir release
+          cp candidate/* release/
+          cp qualification/* release/
+          project_owner="${GITHUB_REPOSITORY%%/*}"
+          python3 scripts/release/release.py create-promotion \
+            --directory release \
+            --output release/TAG_PROMOTION_ATTESTATION.json \
+            --lock Cargo.lock \
+            --tag-name "$GITHUB_REF_NAME" \
+            --tag-object-sha "$TAG_OBJECT_SHA" \
+            --peeled-commit-sha "$PEELED_COMMIT_SHA" \
+            --candidate-run-id "$CANDIDATE_RUN_ID" \
+            --candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" \
+            --candidate-artifact-digest "$CANDIDATE_ARTIFACT_DIGEST" \
+            --qualification-run-id "$QUALIFICATION_RUN_ID" \
+            --qualification-index-sha256 "$QUALIFICATION_INDEX_SHA256" \
+            --qualification-artifact-digest "$QUALIFICATION_ARTIFACT_DIGEST" \
+            --project-owner "$project_owner" \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --workflow-ref "$GITHUB_WORKFLOW_REF"
+          python3 scripts/release/release.py verify-release \
+            --directory release \
+            --lock Cargo.lock \
+            --tag-name "$GITHUB_REF_NAME" \
+            --tag-object-sha "$TAG_OBJECT_SHA" \
+            --peeled-commit-sha "$PEELED_COMMIT_SHA" \
+            --candidate-run-id "$CANDIDATE_RUN_ID" \
+            --candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" \
+            --candidate-artifact-digest "$CANDIDATE_ARTIFACT_DIGEST" \
+            --qualification-run-id "$QUALIFICATION_RUN_ID" \
+            --qualification-index-sha256 "$QUALIFICATION_INDEX_SHA256" \
+            --qualification-artifact-digest "$QUALIFICATION_ARTIFACT_DIGEST" \
+            --project-owner "$project_owner" \
+            --repository "$GITHUB_REPOSITORY"
+
+      - name: Attest the detached promotion identity
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: release/TAG_PROMOTION_ATTESTATION.json
+
+      - name: Create draft stable release from the exact inventory
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          if existing="$(gh release view "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,tagName 2>/dev/null)"; then
+            python3 - "$GITHUB_REF_NAME" "$existing" <<'PY'
+          import json
+          import sys
+          value = json.loads(sys.argv[2])
+          if value.get("tagName") != sys.argv[1] or value.get("isDraft") is not True:
+              raise SystemExit("refusing to replace an existing published or mismatched release")
+          PY
+            gh release delete "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --yes
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            "release/tomorrowci-$VERSION-x86_64-unknown-linux-gnu.tar.gz" \
+            "release/tomorrowci-$VERSION-x86_64-pc-windows-msvc.zip" \
+            "release/tomorrowci-$VERSION-x86_64-apple-darwin.tar.gz" \
+            release/sbom.cdx.json \
+            release/claim-to-evidence.snapshot.md \
+            release/support-matrix.snapshot.md \
+            release/external-evidence-index.snapshot.json \
+            release/external-protocol.snapshot.md \
+            release/external-python.snapshot.yml \
+            release/external-node.snapshot.yml \
+            release/external-rust.snapshot.yml \
+            release/candidate-run-binding.json \
+            release/SHA256SUMS.txt \
+            release/candidate-manifest.json \
+            release/qualification-index.json \
+            release/qualification-run-binding.json \
+            release/TAG_PROMOTION_ATTESTATION.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --draft \
+            --title "TomorrowCI $GITHUB_REF_NAME" \
+            --notes "Qualified stable release promoted byte-for-byte from candidate run ${{ steps.tag.outputs.candidate_run_id }} and detached qualification run ${{ steps.tag.outputs.qualification_run_id }}."
+
+  release-readback:
+    name: Draft read-back ${{ matrix.target }}
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: prepare-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            archive_format: tar.gz
+            binary_name: tomorrowci
+            python: python3
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            archive_format: zip
+            binary_name: tomorrowci.exe
+            python: python
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            archive_format: tar.gz
+            binary_name: tomorrowci
+            python: python3
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+    env:
+      ARCHIVE_FORMAT: ${{ matrix.archive_format }}
+      BINARY_NAME: ${{ matrix.binary_name }}
+      CANDIDATE_ARTIFACT_DIGEST: ${{ needs.prepare-release.outputs.candidate_artifact_digest }}
+      CANDIDATE_MANIFEST_SHA256: ${{ needs.prepare-release.outputs.candidate_manifest_sha256 }}
+      CANDIDATE_RUN_ID: ${{ needs.prepare-release.outputs.candidate_run_id }}
+      PEELED_COMMIT_SHA: ${{ needs.prepare-release.outputs.peeled_commit_sha }}
+      QUALIFICATION_INDEX_SHA256: ${{ needs.prepare-release.outputs.qualification_index_sha256 }}
+      QUALIFICATION_ARTIFACT_DIGEST: ${{ needs.prepare-release.outputs.qualification_artifact_digest }}
+      QUALIFICATION_RUN_ID: ${{ needs.prepare-release.outputs.qualification_run_id }}
+      RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+      TAG_OBJECT_SHA: ${{ needs.prepare-release.outputs.tag_object_sha }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Download all draft release assets and candidate evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir readback release-smoke-evidence
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir readback
+          gh run download "$CANDIDATE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name tomorrowci-ci-evidence \
+            --dir release-smoke-evidence
+
+      - name: Verify exact inventory, qualification, and GitHub provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          project_owner="${GITHUB_REPOSITORY%%/*}"
+          ${{ matrix.python }} scripts/release/release.py verify-release \
+            --directory readback \
+            --lock Cargo.lock \
+            --tag-name "$GITHUB_REF_NAME" \
+            --tag-object-sha "$TAG_OBJECT_SHA" \
+            --peeled-commit-sha "$PEELED_COMMIT_SHA" \
+            --candidate-run-id "$CANDIDATE_RUN_ID" \
+            --candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" \
+            --candidate-artifact-digest "$CANDIDATE_ARTIFACT_DIGEST" \
+            --qualification-run-id "$QUALIFICATION_RUN_ID" \
+            --qualification-index-sha256 "$QUALIFICATION_INDEX_SHA256" \
+            --qualification-artifact-digest "$QUALIFICATION_ARTIFACT_DIGEST" \
+            --project-owner "$project_owner" \
+            --repository "$GITHUB_REPOSITORY"
+          default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.default_branch')"
+          signer="$GITHUB_REPOSITORY/.github/workflows/release.yml"
+          for subject in \
+            readback/tomorrowci-"$RELEASE_VERSION"-x86_64-unknown-linux-gnu.tar.gz \
+            readback/tomorrowci-"$RELEASE_VERSION"-x86_64-pc-windows-msvc.zip \
+            readback/tomorrowci-"$RELEASE_VERSION"-x86_64-apple-darwin.tar.gz \
+            readback/sbom.cdx.json \
+            readback/claim-to-evidence.snapshot.md \
+            readback/support-matrix.snapshot.md \
+            readback/external-evidence-index.snapshot.json \
+            readback/external-protocol.snapshot.md \
+            readback/external-python.snapshot.yml \
+            readback/external-node.snapshot.yml \
+            readback/external-rust.snapshot.yml \
+            readback/candidate-run-binding.json \
+            readback/candidate-manifest.json; do
+            gh attestation verify "$subject" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$signer" \
+              --source-digest "$PEELED_COMMIT_SHA" \
+              --source-ref "refs/heads/$default_branch" \
+              --deny-self-hosted-runners >/dev/null
+          done
+          for subject in \
+            readback/qualification-index.json \
+            readback/qualification-run-binding.json; do
+            gh attestation verify "$subject" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$signer" \
+              --source-digest "$PEELED_COMMIT_SHA" \
+              --source-ref "refs/heads/$default_branch" \
+              --deny-self-hosted-runners >/dev/null
+          done
+          gh attestation verify readback/TAG_PROMOTION_ATTESTATION.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$signer" \
+            --source-digest "$PEELED_COMMIT_SHA" \
+            --source-ref "$GITHUB_REF" \
+            --deny-self-hosted-runners >/dev/null
+
+      - name: Extract and smoke draft archive (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$(uname -m)" != "x86_64" ]]; then
+            echo "runner architecture does not match $TARGET: $(uname -m)" >&2
+            exit 1
+          fi
+          root="tomorrowci-$RELEASE_VERSION-$TARGET"
+          archive="readback/$root.$ARCHIVE_FORMAT"
+          ${{ matrix.python }} scripts/release/release.py extract-archive \
+            --format "$ARCHIVE_FORMAT" \
+            --archive "$archive" \
+            --root "$root" \
+            --binary-name "$BINARY_NAME" \
+            --destination extracted
+          packaged="extracted/$root/$BINARY_NAME"
+          if [[ "$("$packaged" --version)" != "tomorrowci $RELEASE_VERSION" ]]; then
+            echo "draft archive --version smoke failed" >&2
+            exit 1
+          fi
+          set +e
+          doctor_output="$("$packaged" doctor 2>&1)"
+          doctor_status=$?
+          set -e
+          printf '%s\n' "$doctor_output"
+          case "$doctor_status" in
+            0)
+              grep -Eq '^sandbox[[:space:]]+\[ok\][[:space:]]+.+' <<< "$doctor_output"
+              ;;
+            4)
+              grep -Eq '^sandbox[[:space:]]+\[blocked\][[:space:]]+.+' <<< "$doctor_output"
+              ;;
+            *) echo "doctor returned unexpected exit $doctor_status" >&2; exit "$doctor_status" ;;
+          esac
+          ${{ matrix.python }} scripts/release/release.py acceptance-runs \
+            --evidence-root release-smoke-evidence \
+            --fixture-output fixture-run-ids.txt \
+            --all-output all-run-ids.txt
+          evidence_root="$(pwd)/release-smoke-evidence"
+          while IFS= read -r run_id; do
+            "$packaged" --evidence-root "$evidence_root" verify "$run_id"
+          done < all-run-ids.txt
+          run_id="$(sed -n '1p' fixture-run-ids.txt)"
+          if [[ -z "$run_id" ]]; then
+            echo "acceptance fixture run plan is empty" >&2
+            exit 1
+          fi
+          report="$RUNNER_TEMP/tomorrowci-$TARGET-draft-report.json"
+          "$packaged" --evidence-root "$evidence_root" report "$run_id" --format json --output "$report"
+          ${{ matrix.python }} - "$report" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if not isinstance(value, dict) or not value:
+              raise SystemExit("draft report JSON is empty")
+          PY
+
+      - name: Extract and smoke draft archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $false
+          if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
+            throw "Windows runner is not x86_64: $env:PROCESSOR_ARCHITECTURE"
+          }
+          $root = "tomorrowci-$env:RELEASE_VERSION-$env:TARGET"
+          $archive = "readback/$root.$env:ARCHIVE_FORMAT"
+          & "${{ matrix.python }}" scripts/release/release.py extract-archive `
+            --format $env:ARCHIVE_FORMAT `
+            --archive $archive `
+            --root $root `
+            --binary-name $env:BINARY_NAME `
+            --destination extracted
+          if ($LASTEXITCODE -ne 0) { throw "draft archive extraction failed" }
+          $packaged = "extracted/$root/$env:BINARY_NAME"
+          if ((& $packaged --version) -ne "tomorrowci $env:RELEASE_VERSION") {
+            throw "draft archive --version smoke failed"
+          }
+          $doctorOutput = (& $packaged doctor 2>&1 | Out-String)
+          $doctorStatus = $LASTEXITCODE
+          Write-Host $doctorOutput
+          if ($doctorStatus -eq 0) {
+            if ($doctorOutput -notmatch '(?m)^sandbox\s+\[ok\]\s+.+') { throw "doctor success omitted sandbox reason" }
+          } elseif ($doctorStatus -eq 4) {
+            if ($doctorOutput -notmatch '(?m)^sandbox\s+\[blocked\]\s+.+') { throw "doctor BLOCKED omitted its reason" }
+          } else {
+            throw "doctor returned unexpected exit $doctorStatus"
+          }
+          & "${{ matrix.python }}" scripts/release/release.py acceptance-runs `
+            --evidence-root release-smoke-evidence `
+            --fixture-output fixture-run-ids.txt `
+            --all-output all-run-ids.txt
+          if ($LASTEXITCODE -ne 0) { throw "acceptance run inventory validation failed" }
+          $evidenceRoot = (Resolve-Path release-smoke-evidence).Path
+          $allRuns = @(Get-Content -LiteralPath all-run-ids.txt)
+          foreach ($runId in $allRuns) {
+            & $packaged --evidence-root $evidenceRoot verify $runId
+            if ($LASTEXITCODE -ne 0) { throw "draft verify smoke failed for $runId" }
+          }
+          $fixtureRuns = @(Get-Content -LiteralPath fixture-run-ids.txt)
+          if ($fixtureRuns.Count -ne 6) { throw "acceptance fixture run plan is not exactly six runs" }
+          $runId = $fixtureRuns[0]
+          $report = Join-Path $env:RUNNER_TEMP "tomorrowci-$env:TARGET-draft-report.json"
+          & $packaged --evidence-root $evidenceRoot report $runId --format json --output $report
+          if ($LASTEXITCODE -ne 0) { throw "draft report smoke failed" }
+          $parsed = Get-Content -Raw -LiteralPath $report | ConvertFrom-Json
+          if ($null -eq $parsed) { throw "draft report JSON is empty" }
+
+      - name: Select downloaded sealed scenario for draft replay (Linux)
+        id: draft_replay
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_root="$(pwd)/release-smoke-evidence"
+          python3 scripts/release/release.py prepare-replay \
+            --evidence-root "$evidence_root" \
+            --fixtures-root fixtures \
+            --expected-source-sha "$PEELED_COMMIT_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Replay downloaded sealed scenario twice and final-verify (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          EXPECTED_CLI_EXIT_CODE: ${{ steps.draft_replay.outputs.expected_cli_exit_code }}
+          REPLAY_RUN_ID: ${{ steps.draft_replay.outputs.run_id }}
+          SCENARIO_ID: ${{ steps.draft_replay.outputs.scenario_id }}
+          SEALED_EXIT_CODE: ${{ steps.draft_replay.outputs.sealed_exit_code }}
+          WORKSPACE: ${{ steps.draft_replay.outputs.workspace }}
+        run: |
+          set -euo pipefail
+          root="tomorrowci-$RELEASE_VERSION-$TARGET"
+          packaged="extracted/$root/$BINARY_NAME"
+          evidence_root="$(pwd)/release-smoke-evidence"
+          receipt_root="$evidence_root/replay-receipts/$REPLAY_RUN_ID/$SCENARIO_ID"
+          mkdir -p "$receipt_root"
+          before_receipts="$RUNNER_TEMP/draft-receipts-before.txt"
+          after_receipts="$RUNNER_TEMP/draft-receipts-after.txt"
+          new_receipts="$RUNNER_TEMP/draft-receipts-new.txt"
+          removed_receipts="$RUNNER_TEMP/draft-receipts-removed.txt"
+          find "$receipt_root" -mindepth 1 -maxdepth 1 -type d -print \
+            | LC_ALL=C sort > "$before_receipts"
+          for replay_attempt in 1 2; do
+            set +e
+            replay_output="$("$packaged" \
+              --evidence-root "$evidence_root" \
+              replay "$REPLAY_RUN_ID" \
+              --scenario "$SCENARIO_ID" \
+              --workspace "$WORKSPACE" 2>&1)"
+            replay_status=$?
+            set -e
+            printf '%s\n' "$replay_output"
+            printf '%s\n' "$replay_output" > "draft-replay-$replay_attempt.log"
+            printf '%s\n' "$replay_status" > "draft-replay-$replay_attempt.exit-code"
+            if [[ "$replay_status" != "$EXPECTED_CLI_EXIT_CODE" ]]; then
+              echo "draft replay attempt $replay_attempt returned $replay_status; expected $EXPECTED_CLI_EXIT_CODE for sealed target exit $SEALED_EXIT_CODE" >&2
+              exit 1
+            fi
+            if [[ "$EXPECTED_CLI_EXIT_CODE" == "0" ]]; then
+              grep -Fq "exit Some(0)" <<< "$replay_output"
+            else
+              grep -Fq "REPLAY_FAILED:" <<< "$replay_output"
+            fi
+          done
+          "$packaged" --evidence-root "$evidence_root" verify "$REPLAY_RUN_ID"
+          find "$receipt_root" -mindepth 1 -maxdepth 1 -type d -print \
+            | LC_ALL=C sort > "$after_receipts"
+          comm -23 "$before_receipts" "$after_receipts" > "$removed_receipts"
+          comm -13 "$before_receipts" "$after_receipts" > "$new_receipts"
+          if [[ -s "$removed_receipts" ]]; then
+            echo "draft replay removed a pre-existing detached receipt" >&2
+            exit 1
+          fi
+          receipt_directories=()
+          while IFS= read -r receipt_directory; do
+            receipt_directories[${#receipt_directories[@]}]="$receipt_directory"
+          done < "$new_receipts"
+          if [[ "${#receipt_directories[@]}" -ne 2 ]]; then
+            echo "two draft replays must create exactly two new detached receipts" >&2
+            exit 1
+          fi
+          for receipt_directory in "${receipt_directories[@]}"; do
+            "$packaged" verify "$receipt_directory"
+          done
+          "$packaged" replay-qualify \
+            --original-run "$evidence_root/runs/$REPLAY_RUN_ID" \
+            "${receipt_directories[0]}" "${receipt_directories[1]}" \
+            | tee draft-replay-pair.log
+
+      - name: Record draft replay host boundary (non-Linux)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          echo "Draft replay: NOT_APPLICABLE_BY_HOST ($RUNNER_OS has no provisioned Linux-container daemon)." >> "$GITHUB_STEP_SUMMARY"
+
+  publish-release:
+    name: Publish verified stable release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs:
+      - prepare-release
+      - release-readback
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Publish only after all three native read-backs pass
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release edit "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --prerelease=false
+          gh release view "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,isPrerelease,tagName,url > published-release.json
+          python3 - "$GITHUB_REF_NAME" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          value = json.loads(Path("published-release.json").read_text(encoding="utf-8"))
+          if value.get("isDraft") is not False or value.get("isPrerelease") is not False:
+              raise SystemExit("release did not publish as stable")
+          if value.get("tagName") != sys.argv[1] or not value.get("url"):
+              raise SystemExit("published release identity mismatch")
+          PY
+          echo "Published https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME" >> "$GITHUB_STEP_SUMMARY"

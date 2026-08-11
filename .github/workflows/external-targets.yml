@@ -1,0 +1,738 @@
+name: External target qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: Successful release candidate workflow run ID
+        required: true
+        type: string
+      candidate_manifest_sha256:
+        description: Exact lowercase SHA-256 of candidate-manifest.json
+        required: true
+        type: string
+      candidate_artifact_digest:
+        description: Exact server digest of tomorrowci-release-candidate (sha256:...)
+        required: true
+        type: string
+
+concurrency:
+  group: external-targets-${{ inputs.candidate_run_id }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  execute:
+    name: Execute frozen ${{ matrix.ecosystem }} target
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      actions: read
+      artifact-metadata: write
+      attestations: write
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        ecosystem: [python, node, rust]
+    steps:
+      - name: Check out the candidate validator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download, authenticate, and resolve the frozen candidate target
+        id: candidate
+        shell: bash
+        env:
+          CANDIDATE_ARTIFACT_DIGEST: ${{ inputs.candidate_artifact_digest }}
+          CANDIDATE_MANIFEST_SHA256: ${{ inputs.candidate_manifest_sha256 }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          ECOSYSTEM: ${{ matrix.ecosystem }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "candidate_run_id must be a positive integer" >&2
+            exit 1
+          fi
+          if [[ ! "$CANDIDATE_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "candidate_manifest_sha256 must be lowercase SHA-256" >&2
+            exit 1
+          fi
+          if [[ ! "$CANDIDATE_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "candidate_artifact_digest must be a canonical sha256 digest" >&2
+            exit 1
+          fi
+          project_owner="${GITHUB_REPOSITORY%%/*}"
+          default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.default_branch')"
+          default_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$default_branch" --jq '.sha')"
+          if [[ "$GITHUB_REF" != "refs/heads/$default_branch" || "$GITHUB_SHA" != "$default_sha" ]]; then
+            echo "external qualification must run from the current default branch head" >&2
+            exit 1
+          fi
+          mkdir candidate
+          gh run download "$CANDIDATE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name tomorrowci-release-candidate \
+            --dir candidate
+          actual_manifest_sha256="$(sha256sum candidate/candidate-manifest.json | cut -d ' ' -f 1)"
+          if [[ "$actual_manifest_sha256" != "$CANDIDATE_MANIFEST_SHA256" ]]; then
+            echo "candidate manifest digest mismatch" >&2
+            exit 1
+          fi
+          source_sha="$(jq -er '.source_sha' candidate/candidate-manifest.json)"
+          version="$(jq -er '.version' candidate/candidate-manifest.json)"
+          candidate_attempt="$(jq -er '.workflow.run_attempt' candidate/candidate-manifest.json)"
+          candidate_workflow_ref="$(jq -er '.workflow.ref' candidate/candidate-manifest.json)"
+          if [[ "$source_sha" != "$default_sha" ]]; then
+            echo "candidate source is not the current default head" >&2
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID" > candidate-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID/artifacts" > candidate-artifacts.json
+          python3 scripts/release/release.py validate-run \
+            --run-json candidate-run.json \
+            --artifacts-json candidate-artifacts.json \
+            --run-id "$CANDIDATE_RUN_ID" \
+            --source-sha "$source_sha" \
+            --default-branch "$default_branch" \
+            --repository "$GITHUB_REPOSITORY" \
+            --artifact-name tomorrowci-release-candidate \
+            --expected-artifact-digest "$CANDIDATE_ARTIFACT_DIGEST" \
+            --expected-run-attempt "$candidate_attempt" \
+            --expected-workflow-ref "$candidate_workflow_ref" \
+            --input-binding candidate/candidate-run-binding.json \
+            --expected-mode candidate \
+            --require-referenced-workflow .github/workflows/ci.yml
+          python3 scripts/release/release.py verify-candidate \
+            --directory candidate \
+            --lock Cargo.lock \
+            --expected-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" \
+            --expected-source-sha "$source_sha" \
+            --expected-run-id "$CANDIDATE_RUN_ID" \
+            --expected-version "$version" \
+            --expected-repository "$GITHUB_REPOSITORY"
+          signer="$GITHUB_REPOSITORY/.github/workflows/release.yml"
+          for subject in candidate/*; do
+            gh attestation verify "$subject" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$signer" \
+              --source-digest "$source_sha" \
+              --source-ref "refs/heads/$default_branch" \
+              --deny-self-hosted-runners >/dev/null
+          done
+          python3 scripts/release/release.py external-target-plan \
+            --candidate-dir candidate \
+            --expected-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" \
+            --expected-candidate-artifact-digest "$CANDIDATE_ARTIFACT_DIGEST" \
+            --expected-source-sha "$source_sha" \
+            --expected-run-id "$CANDIDATE_RUN_ID" \
+            --expected-version "$version" \
+            --expected-repository "$GITHUB_REPOSITORY" \
+            --project-owner "$project_owner" \
+            --ecosystem "$ECOSYSTEM" \
+            --lock Cargo.lock \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Extract and smoke-test the attested Linux candidate
+        id: binary
+        shell: bash
+        env:
+          VERSION: ${{ steps.candidate.outputs.candidate_version }}
+        run: |
+          set -euo pipefail
+          archive="candidate/tomorrowci-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
+          root="tomorrowci-$VERSION-x86_64-unknown-linux-gnu"
+          python3 scripts/release/release.py extract-archive \
+            --format tar.gz \
+            --archive "$archive" \
+            --root "$root" \
+            --binary-name tomorrowci \
+            --destination extracted
+          binary="$PWD/extracted/$root/tomorrowci"
+          if [[ "$("$binary" --version)" != "tomorrowci $VERSION" ]]; then
+            echo "candidate binary version differs from the frozen manifest" >&2
+            exit 1
+          fi
+          set +e
+          doctor_output="$("$binary" doctor 2>&1)"
+          doctor_status=$?
+          set -e
+          printf '%s\n' "$doctor_output"
+          if [[ "$doctor_status" -eq 4 ]]; then
+            echo "candidate doctor is BLOCKED; project-operated evidence cannot pass" >&2
+            exit 4
+          fi
+          if [[ "$doctor_status" -ne 0 || "$doctor_output" != *"sandbox [ok]"* ]]; then
+            echo "candidate doctor did not confirm a working sandbox" >&2
+            exit 1
+          fi
+          docker info >/dev/null
+          echo "path=$binary" >> "$GITHUB_OUTPUT"
+
+      - name: Acquire and validate the exact preregistered public Git checkout
+        id: checkout_target
+        shell: bash
+        env:
+          ECOSYSTEM: ${{ matrix.ecosystem }}
+          TARGET_REPOSITORY: ${{ steps.candidate.outputs.repository }}
+          TARGET_SOURCE_SHA: ${{ steps.candidate.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TARGET_REPOSITORY" =~ ^https://github\.com/[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]+$ ]]; then
+            echo "frozen target repository is not canonical GitHub HTTPS" >&2
+            exit 1
+          fi
+          if [[ ! "$TARGET_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "frozen target source is not an exact lowercase Git SHA" >&2
+            exit 1
+          fi
+          target_dir="$RUNNER_TEMP/tomorrowci-external-$ECOSYSTEM"
+          template_dir="$RUNNER_TEMP/tomorrowci-empty-template-$ECOSYSTEM"
+          hooks_dir="$RUNNER_TEMP/tomorrowci-empty-hooks-$ECOSYSTEM"
+          mkdir "$template_dir" "$hooks_dir"
+          git init --template="$template_dir" "$target_dir"
+          git -C "$target_dir" remote add origin "$TARGET_REPOSITORY"
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+          export GIT_TERMINAL_PROMPT=0
+          export GCM_INTERACTIVE=Never
+          export GIT_LFS_SKIP_SMUDGE=1
+          export GIT_ASKPASS=/bin/false
+          export SSH_ASKPASS=/bin/false
+          git -C "$target_dir" \
+            -c credential.helper= \
+            -c core.askPass= \
+            -c core.hooksPath="$hooks_dir" \
+            -c filter.lfs.smudge= \
+            -c filter.lfs.required=false \
+            -c http.extraHeader= \
+            -c http.followRedirects=false \
+            -c protocol.ext.allow=never \
+            -c protocol.file.allow=never \
+            fetch --depth=1 --no-tags origin "$TARGET_SOURCE_SHA"
+          git -C "$target_dir" \
+            -c core.hooksPath="$hooks_dir" \
+            -c filter.lfs.smudge= \
+            -c filter.lfs.required=false \
+            checkout --detach --force FETCH_HEAD
+          head_sha="$(git -C "$target_dir" rev-parse --verify 'HEAD^{commit}')"
+          fetch_origin="$(git -C "$target_dir" remote get-url --all origin)"
+          push_origin="$(git -C "$target_dir" remote get-url --push --all origin)"
+          if [[ "$head_sha" != "$TARGET_SOURCE_SHA" ]]; then
+            echo "exact checkout HEAD differs from the frozen SHA" >&2
+            exit 1
+          fi
+          if [[ "$fetch_origin" != "$TARGET_REPOSITORY" || "$push_origin" != "$TARGET_REPOSITORY" ]]; then
+            echo "exact checkout origin differs from the frozen canonical URL" >&2
+            exit 1
+          fi
+          if [[ -n "$(git -C "$target_dir" status --porcelain=v1 --untracked-files=all)" ]]; then
+            echo "exact checkout is not clean" >&2
+            exit 1
+          fi
+          git -C "$target_dir" fsck --full --strict
+          git -C "$target_dir" ls-files --stage -z > tracked-index.bin
+          CHECKOUT_ROOT="$target_dir" python3 - <<'PY'
+          import os
+          import stat
+          from pathlib import Path, PurePosixPath
+
+          root = Path(os.environ["CHECKOUT_ROOT"]).resolve(strict=True)
+          records = Path("tracked-index.bin").read_bytes().split(b"\0")
+          count = 0
+          tracked_bytes = 0
+          for raw in records:
+              if not raw:
+                  continue
+              try:
+                  metadata, raw_path = raw.split(b"\t", 1)
+                  mode, _object_id, stage = metadata.split(b" ")
+                  relative_text = raw_path.decode("utf-8")
+              except (ValueError, UnicodeDecodeError) as error:
+                  raise SystemExit(f"invalid tracked Git index record: {error}")
+              relative = PurePosixPath(relative_text)
+              if (
+                  stage != b"0"
+                  or mode not in {b"100644", b"100755"}
+                  or relative.is_absolute()
+                  or ".." in relative.parts
+                  or "\\" in relative_text
+              ):
+                  raise SystemExit(f"unsafe gitlink/symlink/stage/path: {relative_text!r}")
+              candidate = (root / Path(*relative.parts)).resolve(strict=True)
+              try:
+                  candidate.relative_to(root)
+              except ValueError as error:
+                  raise SystemExit("tracked path escapes checkout") from error
+              details = candidate.lstat()
+              if not stat.S_ISREG(details.st_mode) or candidate.is_symlink():
+                  raise SystemExit(f"tracked entry is not a regular file: {relative_text}")
+              tracked_bytes += details.st_size
+              with candidate.open("rb") as handle:
+                  prefix = handle.read(43)
+              if prefix.startswith(b"version https://git-lfs.github.com/spec/v1"):
+                  raise SystemExit(f"Git LFS pointer is forbidden: {relative_text}")
+              count += 1
+          if count == 0 or count > 10_000:
+              raise SystemExit(f"tracked file count outside bound: {count}")
+          if tracked_bytes > 512 * 1024 * 1024:
+              raise SystemExit(f"tracked bytes exceed 512 MiB: {tracked_bytes}")
+          print(f"PASS exact_checkout_files={count} tracked_bytes={tracked_bytes}")
+          PY
+          echo "path=$target_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Run sealed scan and first verification
+        id: scan
+        shell: bash
+        env:
+          BINARY: ${{ steps.binary.outputs.path }}
+          CONFIG_SHA256: ${{ steps.candidate.outputs.config_sha256 }}
+          ECOSYSTEM: ${{ matrix.ecosystem }}
+          TARGET_CONFIG: ${{ steps.candidate.outputs.config }}
+          TARGET_DIR: ${{ steps.checkout_target.outputs.path }}
+          TARGET_REPOSITORY: ${{ steps.candidate.outputs.repository }}
+          TARGET_SOURCE_SHA: ${{ steps.candidate.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          evidence_root="$RUNNER_TEMP/tomorrowci-evidence-$ECOSYSTEM"
+          mkdir "$evidence_root"
+          set +e
+          "$BINARY" \
+            --evidence-root "$evidence_root" \
+            --work-root "$evidence_root/work" \
+            scan "$TARGET_DIR" \
+            --config "$TARGET_CONFIG" 2>&1 | tee scan.log
+          scan_status=${PIPESTATUS[0]}
+          set -e
+          case "$scan_status" in
+            0|3) ;;
+            4)
+              echo "TomorrowCI scan returned BLOCKED (4); it is not qualifying PASS evidence" >&2
+              exit 4
+              ;;
+            *)
+              echo "TomorrowCI scan returned unexpected exit $scan_status" >&2
+              exit "$scan_status"
+              ;;
+          esac
+          run_directories=()
+          while IFS= read -r run_directory; do
+            run_directories[${#run_directories[@]}]="$run_directory"
+          done < <(find "$evidence_root/runs" -mindepth 1 -maxdepth 1 -type d -print)
+          if [[ "${#run_directories[@]}" -ne 1 ]]; then
+            echo "scan must create exactly one evidence run" >&2
+            exit 1
+          fi
+          run_id="$(basename "${run_directories[0]}")"
+          "$BINARY" --evidence-root "$evidence_root" verify "$run_id"
+          python3 scripts/release/release.py prepare-external-replay \
+            --evidence-root "$evidence_root" \
+            --checkout "$TARGET_DIR" \
+            --config "$TARGET_CONFIG" \
+            --config-sha256 "$CONFIG_SHA256" \
+            --ecosystem "$ECOSYSTEM" \
+            --repository "$TARGET_REPOSITORY" \
+            --source-sha "$TARGET_SOURCE_SHA" \
+            --scan-exit-code "$scan_status" \
+            --output external-replay-selection.json \
+            --github-output "$GITHUB_OUTPUT"
+          echo "evidence_root=$evidence_root" >> "$GITHUB_OUTPUT"
+          echo "scan_exit_code=$scan_status" >> "$GITHUB_OUTPUT"
+
+      - name: Replay the recorded scenario twice and verify the final seal
+        id: replay
+        shell: bash
+        env:
+          BINARY: ${{ steps.binary.outputs.path }}
+          EVIDENCE_ROOT: ${{ steps.scan.outputs.evidence_root }}
+          EXPECTED_CLI_EXIT_CODE: ${{ steps.scan.outputs.expected_cli_exit_code }}
+          REPLAY_SCENARIO_ID: ${{ steps.scan.outputs.replay_scenario_id }}
+          RUN_ID: ${{ steps.scan.outputs.run_id }}
+          WORKSPACE: ${{ steps.scan.outputs.workspace }}
+        run: |
+          set -euo pipefail
+          for ordinal in 1 2; do
+            set +e
+            "$BINARY" \
+              --evidence-root "$EVIDENCE_ROOT" \
+              replay "$RUN_ID" \
+              --scenario "$REPLAY_SCENARIO_ID" \
+              --workspace "$WORKSPACE" 2>&1 | tee "replay-$ordinal.log"
+            replay_status=${PIPESTATUS[0]}
+            set -e
+            if [[ "$replay_status" -eq 4 ]]; then
+              echo "TomorrowCI replay $ordinal returned BLOCKED (4); it is not PASS" >&2
+              exit 4
+            fi
+            if [[ "$replay_status" != "$EXPECTED_CLI_EXIT_CODE" ]]; then
+              echo "replay $ordinal exit $replay_status differs from sealed contract $EXPECTED_CLI_EXIT_CODE" >&2
+              exit 1
+            fi
+            if [[ "$ordinal" -eq 1 ]]; then
+              echo "first_replay_exit_code=$replay_status" >> "$GITHUB_OUTPUT"
+            else
+              echo "second_replay_exit_code=$replay_status" >> "$GITHUB_OUTPUT"
+            fi
+          done
+          "$BINARY" --evidence-root "$EVIDENCE_ROOT" verify "$RUN_ID"
+          receipt_directories=()
+          while IFS= read -r receipt_directory; do
+            receipt_directories[${#receipt_directories[@]}]="$receipt_directory"
+          done < <(find "$EVIDENCE_ROOT/replay-receipts/$RUN_ID/$REPLAY_SCENARIO_ID" \
+            -mindepth 1 -maxdepth 1 -type d -print | sort)
+          if [[ "${#receipt_directories[@]}" -ne 2 ]]; then
+            echo "two replay invocations must create exactly two detached receipts" >&2
+            exit 1
+          fi
+          for receipt_directory in "${receipt_directories[@]}"; do
+            "$BINARY" verify "$receipt_directory"
+          done
+          "$BINARY" replay-qualify \
+            --original-run "$EVIDENCE_ROOT/runs/$RUN_ID" \
+            "${receipt_directories[0]}" "${receipt_directories[1]}" \
+            | tee replay-pair.log
+          echo "receipt_root=$EVIDENCE_ROOT/replay-receipts" >> "$GITHUB_OUTPUT"
+
+      - name: Create the project-operated provenance subject and stage sealed evidence
+        id: subject
+        shell: bash
+        env:
+          CANDIDATE_ARTIFACT_DIGEST: ${{ inputs.candidate_artifact_digest }}
+          CANDIDATE_MANIFEST_SHA256: ${{ inputs.candidate_manifest_sha256 }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          CANDIDATE_SOURCE_SHA: ${{ steps.candidate.outputs.candidate_source_sha }}
+          ECOSYSTEM: ${{ matrix.ecosystem }}
+          EVIDENCE_ROOT: ${{ steps.scan.outputs.evidence_root }}
+          FIRST_REPLAY_EXIT_CODE: ${{ steps.replay.outputs.first_replay_exit_code }}
+          SECOND_REPLAY_EXIT_CODE: ${{ steps.replay.outputs.second_replay_exit_code }}
+        run: |
+          set -euo pipefail
+          project_owner="${GITHUB_REPOSITORY%%/*}"
+          artifact_name="tomorrowci-project-operated-evidence-$ECOSYSTEM-$CANDIDATE_RUN_ID"
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          signer="$GITHUB_REPOSITORY/.github/workflows/external-targets.yml"
+          python3 scripts/release/release.py create-external-subject \
+            --selection external-replay-selection.json \
+            --candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" \
+            --candidate-artifact-digest "$CANDIDATE_ARTIFACT_DIGEST" \
+            --candidate-source-sha "$CANDIDATE_SOURCE_SHA" \
+            --first-replay-exit-code "$FIRST_REPLAY_EXIT_CODE" \
+            --second-replay-exit-code "$SECOND_REPLAY_EXIT_CODE" \
+            --evidence-artifact-name "$artifact_name" \
+            --run-url "$run_url" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --signer-workflow "$signer" \
+            --workflow-source-sha "$GITHUB_SHA" \
+            --project-owner "$project_owner" \
+            --project-repository "$GITHUB_REPOSITORY" \
+            --output qualification-result.subject.json \
+            --github-output "$GITHUB_OUTPUT"
+          python3 scripts/release/release.py stage-external-evidence \
+            --evidence-root "$EVIDENCE_ROOT" \
+            --selection external-replay-selection.json \
+            --subject qualification-result.subject.json \
+            --output external-package
+          mkdir -p external-package/evidence/replay-receipts external-package/raw
+          cp -R "$EVIDENCE_ROOT/replay-receipts/." external-package/evidence/replay-receipts/
+          cp replay-1.log replay-2.log replay-pair.log external-package/raw/
+          printf '%s\n' "$FIRST_REPLAY_EXIT_CODE" > external-package/raw/replay-1.exit-code
+          printf '%s\n' "$SECOND_REPLAY_EXIT_CODE" > external-package/raw/replay-2.exit-code
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the exact pre-upload qualification subject
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: external-package/qualification-result.json
+
+      - name: Upload raw sealed target evidence
+        id: evidence_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.subject.outputs.artifact_name }}
+          path: external-package
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+      - name: Attest the immutable raw evidence artifact digest
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-name: ${{ steps.subject.outputs.artifact_name }}.zip
+          subject-digest: sha256:${{ steps.evidence_artifact.outputs.artifact-digest }}
+
+      - name: Download and verify the raw evidence bytes
+        shell: bash
+        env:
+          ARTIFACT_DIGEST_HEX: ${{ steps.evidence_artifact.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ steps.evidence_artifact.outputs.artifact-id }}
+          BINARY: ${{ steps.binary.outputs.path }}
+          EXPECTED_CLI_EXIT_CODE: ${{ steps.scan.outputs.expected_cli_exit_code }}
+          GH_TOKEN: ${{ github.token }}
+          REPLAY_SCENARIO_ID: ${{ steps.scan.outputs.replay_scenario_id }}
+          RUN_ID: ${{ steps.scan.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$ARTIFACT_DIGEST_HEX" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "raw evidence upload returned a malformed SHA-256 hex digest" >&2
+            exit 1
+          fi
+          ARTIFACT_DIGEST="sha256:$ARTIFACT_DIGEST_HEX"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > evidence-readback.zip
+          python3 scripts/release/release.py validate-external-evidence-archive \
+            --artifact-zip evidence-readback.zip \
+            --expected-digest "$ARTIFACT_DIGEST" \
+            --selection external-replay-selection.json \
+            --subject qualification-result.subject.json
+          rm -rf evidence-readback
+          python3 - <<'PY'
+          import zipfile
+          with zipfile.ZipFile("evidence-readback.zip", "r") as archive:
+              archive.extractall("evidence-readback")
+          PY
+          receipt_directories=()
+          while IFS= read -r receipt_directory; do
+            receipt_directories[${#receipt_directories[@]}]="$receipt_directory"
+          done < <(find "evidence-readback/evidence/replay-receipts/$RUN_ID/$REPLAY_SCENARIO_ID" \
+            -mindepth 1 -maxdepth 1 -type d -print | sort)
+          if [[ "${#receipt_directories[@]}" -ne 2 ]]; then
+            echo "downloaded raw artifact does not contain exactly two receipt directories" >&2
+            exit 1
+          fi
+          for receipt_directory in "${receipt_directories[@]}"; do
+            "$BINARY" verify "$receipt_directory"
+          done
+          "$BINARY" replay-qualify \
+            --original-run "evidence-readback/evidence/runs/$RUN_ID" \
+            "${receipt_directories[0]}" "${receipt_directories[1]}"
+          if [[ "$(tr -d '\r\n' < evidence-readback/raw/replay-1.exit-code)" != "$EXPECTED_CLI_EXIT_CODE" \
+            || "$(tr -d '\r\n' < evidence-readback/raw/replay-2.exit-code)" != "$EXPECTED_CLI_EXIT_CODE" ]]; then
+            echo "downloaded raw replay exit records differ from the sealed contract" >&2
+            exit 1
+          fi
+          signer="$GITHUB_REPOSITORY/.github/workflows/external-targets.yml"
+          gh attestation verify evidence-readback.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$signer" \
+            --source-digest "$GITHUB_SHA" \
+            --source-ref "$GITHUB_REF" \
+            --deny-self-hosted-runners >/dev/null
+
+      - name: Finalize the strict project-operated result
+        shell: bash
+        env:
+          ARTIFACT_DIGEST_HEX: ${{ steps.evidence_artifact.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ steps.evidence_artifact.outputs.artifact-id }}
+          ARTIFACT_URL: ${{ steps.evidence_artifact.outputs.artifact-url }}
+          CANDIDATE_SOURCE_SHA: ${{ steps.candidate.outputs.candidate_source_sha }}
+          ECOSYSTEM: ${{ matrix.ecosystem }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$ARTIFACT_DIGEST_HEX" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "raw evidence upload returned a malformed SHA-256 hex digest" >&2
+            exit 1
+          fi
+          ARTIFACT_DIGEST="sha256:$ARTIFACT_DIGEST_HEX"
+          project_owner="${GITHUB_REPOSITORY%%/*}"
+          mkdir -p "strict/$ECOSYSTEM"
+          python3 scripts/release/release.py finalize-external-result \
+            --subject qualification-result.subject.json \
+            --artifact-id "$ARTIFACT_ID" \
+            --artifact-digest "$ARTIFACT_DIGEST" \
+            --artifact-url "$ARTIFACT_URL" \
+            --candidate-source-sha "$CANDIDATE_SOURCE_SHA" \
+            --project-owner "$project_owner" \
+            --project-repository "$GITHUB_REPOSITORY" \
+            --output "strict/$ECOSYSTEM/qualification-result.json"
+
+      - name: Attest the strict post-upload result
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: strict/${{ matrix.ecosystem }}/qualification-result.json
+
+      - name: Upload the strict result for consolidation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tomorrowci-project-operated-result-${{ inputs.candidate_run_id }}-${{ matrix.ecosystem }}
+          path: strict
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+  consolidate:
+    name: Consolidate project-operated results
+    needs: execute
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      artifact-metadata: write
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out the candidate validator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download the exact candidate again
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tomorrowci-release-candidate
+          path: candidate
+          run-id: ${{ inputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Revalidate the candidate identity and frozen inputs
+        id: candidate
+        shell: bash
+        env:
+          CANDIDATE_ARTIFACT_DIGEST: ${{ inputs.candidate_artifact_digest }}
+          CANDIDATE_MANIFEST_SHA256: ${{ inputs.candidate_manifest_sha256 }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          source_sha="$(jq -er '.source_sha' candidate/candidate-manifest.json)"
+          version="$(jq -er '.version' candidate/candidate-manifest.json)"
+          if [[ "$source_sha" != "$GITHUB_SHA" ]]; then
+            echo "consolidation source differs from candidate source" >&2
+            exit 1
+          fi
+          if [[ "$(sha256sum candidate/candidate-manifest.json | cut -d ' ' -f 1)" != "$CANDIDATE_MANIFEST_SHA256" ]]; then
+            echo "consolidation candidate manifest digest mismatch" >&2
+            exit 1
+          fi
+          artifact_digest="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID/artifacts" \
+            --jq '.artifacts | map(select(.name == "tomorrowci-release-candidate" and .expired == false)) | if length == 1 then .[0].digest else error("candidate artifact missing or duplicated") end')"
+          if [[ "$artifact_digest" != "$CANDIDATE_ARTIFACT_DIGEST" ]]; then
+            echo "consolidation candidate server artifact digest mismatch" >&2
+            exit 1
+          fi
+          python3 scripts/release/release.py verify-candidate \
+            --directory candidate \
+            --lock Cargo.lock \
+            --expected-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" \
+            --expected-source-sha "$source_sha" \
+            --expected-run-id "$CANDIDATE_RUN_ID" \
+            --expected-version "$version" \
+            --expected-repository "$GITHUB_REPOSITORY"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Download the three strict matrix results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: tomorrowci-project-operated-result-${{ inputs.candidate_run_id }}-*
+          path: results
+          merge-multiple: true
+
+      - name: Validate and combine exactly three project-operated results
+        id: combined
+        shell: bash
+        env:
+          CANDIDATE_ARTIFACT_DIGEST: ${{ inputs.candidate_artifact_digest }}
+          CANDIDATE_MANIFEST_SHA256: ${{ inputs.candidate_manifest_sha256 }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          CANDIDATE_SOURCE_SHA: ${{ steps.candidate.outputs.source_sha }}
+          CANDIDATE_VERSION: ${{ steps.candidate.outputs.version }}
+        run: |
+          set -euo pipefail
+          project_owner="${GITHUB_REPOSITORY%%/*}"
+          python3 scripts/release/release.py combine-project-results \
+            --candidate-dir candidate \
+            --expected-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" \
+            --candidate-artifact-digest "$CANDIDATE_ARTIFACT_DIGEST" \
+            --expected-source-sha "$CANDIDATE_SOURCE_SHA" \
+            --expected-run-id "$CANDIDATE_RUN_ID" \
+            --expected-version "$CANDIDATE_VERSION" \
+            --expected-repository "$GITHUB_REPOSITORY" \
+            --project-owner "$project_owner" \
+            --lock Cargo.lock \
+            --result results/python/qualification-result.json \
+            --result results/node/qualification-result.json \
+            --result results/rust/qualification-result.json \
+            --output combined \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Attest the combined index fragment
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: combined/project-operated-results.json
+
+      - name: Attest all three strict result files
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: combined/*/qualification-result.json
+
+      - name: Upload the combined project-operated result set
+        id: combined_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tomorrowci-project-operated-results-${{ inputs.candidate_run_id }}
+          path: combined
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+      - name: Attest the combined artifact digest
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-name: tomorrowci-project-operated-results-${{ inputs.candidate_run_id }}.zip
+          subject-digest: sha256:${{ steps.combined_artifact.outputs.artifact-digest }}
+
+      - name: Read back and verify the combined artifact digest and provenance
+        shell: bash
+        env:
+          ARTIFACT_DIGEST_HEX: ${{ steps.combined_artifact.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ steps.combined_artifact.outputs.artifact-id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ inputs.candidate_artifact_digest }}
+          CANDIDATE_MANIFEST_SHA256: ${{ inputs.candidate_manifest_sha256 }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          COMBINED_RESULTS_SHA256: ${{ steps.combined.outputs.results_sha256 }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$ARTIFACT_DIGEST_HEX" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "combined upload returned a malformed SHA-256 hex digest" >&2
+            exit 1
+          fi
+          ARTIFACT_DIGEST="sha256:$ARTIFACT_DIGEST_HEX"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > combined-readback.zip
+          if [[ "sha256:$(sha256sum combined-readback.zip | cut -d ' ' -f 1)" != "$ARTIFACT_DIGEST" ]]; then
+            echo "combined project-operated artifact readback digest mismatch" >&2
+            exit 1
+          fi
+          signer="$GITHUB_REPOSITORY/.github/workflows/external-targets.yml"
+          gh attestation verify combined-readback.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$signer" \
+            --source-digest "$GITHUB_SHA" \
+            --source-ref "$GITHUB_REF" \
+            --deny-self-hosted-runners >/dev/null
+          {
+            echo "## Project-operated external results"
+            echo
+            echo "- Candidate run: \`$CANDIDATE_RUN_ID\`"
+            echo "- Candidate manifest SHA-256: \`$CANDIDATE_MANIFEST_SHA256\`"
+            echo "- Candidate artifact digest: \`$CANDIDATE_ARTIFACT_DIGEST\`"
+            echo "- Result run: \`$GITHUB_RUN_ID\` (project-operated; never independent)"
+            echo "- Combined artifact ID: \`$ARTIFACT_ID\`"
+            echo "- Combined artifact digest: \`$ARTIFACT_DIGEST\`"
+            echo "- Combined index fragment SHA-256: \`$COMBINED_RESULTS_SHA256\`"
+            echo
+            echo "A detached QUALIFIED index still requires at least one genuinely independent result."
+          } >> "$GITHUB_STEP_SUMMARY"

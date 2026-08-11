@@ -4,6 +4,7 @@
 
 use std::path::Path;
 use tomorrowci_adapters::{AdapterError, DetectionResult, EcosystemAdapter, Result};
+use tomorrowci_core::backtest::{snapshot_container_payload, workspace_registry_snapshot};
 use tomorrowci_core::signature::normalize_failure;
 use tomorrowci_core::{
     Baseline, Candidate, CommandPhase, CommandSpec, Config, DependencyMode, Ecosystem,
@@ -189,8 +190,8 @@ impl EcosystemAdapter for RustAdapter {
         Ok(out)
     }
 
-    fn materialize(&self, scenario: &Scenario, _workspace: &Path) -> Result<EnvironmentSpec> {
-        Ok(EnvironmentSpec {
+    fn materialize(&self, scenario: &Scenario, workspace: &Path) -> Result<EnvironmentSpec> {
+        let mut environment = EnvironmentSpec {
             image_ref: if scenario.image_ref.is_empty() {
                 let ver = &scenario.runtime_version;
                 if ver == "beta" || ver == "nightly" {
@@ -214,16 +215,25 @@ impl EcosystemAdapter for RustAdapter {
             cpus: 2.0,
             pids_limit: 512,
             timeout_seconds: 900,
-        })
+        };
+        if workspace_registry_snapshot(workspace, Ecosystem::Rust)
+            .map_err(|error| AdapterError::Materialize(error.to_string()))?
+            .is_some()
+        {
+            environment.network_mode = NetworkMode::None;
+            environment
+                .env
+                .insert("CARGO_NET_OFFLINE".into(), "true".into());
+        }
+        Ok(environment)
     }
 
     fn commands(&self, scenario: &Scenario, config: &Config) -> Result<Vec<CommandSpec>> {
         let mut cmds = Vec::new();
         match scenario.dependency_mode {
             DependencyMode::Locked => {
-                // Prefer --locked when Cargo.lock exists; otherwise plain fetch.
-                // (Checked at materialize time is ideal; v0.1 uses non-locked fetch
-                // plus test without --locked when lock is absent — see commands below.)
+                // Workspace-aware command generation adds --locked when the
+                // source snapshot actually contains Cargo.lock.
                 cmds.push(CommandSpec {
                     phase: CommandPhase::Fetch,
                     program: "cargo".into(),
@@ -272,8 +282,9 @@ impl EcosystemAdapter for RustAdapter {
                 .map(|s| s.to_string())
                 .collect()
         } else {
-            // Do not force --locked: fixtures may ship without a lockfile, and
-            // container toolchains can disagree with a host-generated lock.
+            // Workspace-aware command generation enforces a source-bound
+            // Cargo.lock while preserving lock-less fixtures as explicit
+            // online resolution cases.
             vec!["cargo".into(), "test".into()]
         };
         let (program, args) = test_parts
@@ -288,6 +299,57 @@ impl EcosystemAdapter for RustAdapter {
             env: IndexMap::new(),
         });
         Ok(cmds)
+    }
+
+    fn commands_in_workspace(
+        &self,
+        scenario: &Scenario,
+        config: &Config,
+        workspace: &Path,
+    ) -> Result<Vec<CommandSpec>> {
+        let snapshot = workspace_registry_snapshot(workspace, Ecosystem::Rust)
+            .map_err(|error| AdapterError::Materialize(error.to_string()))?;
+        let mut commands = self.commands(scenario, config)?;
+
+        // A source-bound Cargo.lock is part of the meaning of a locked
+        // scenario. Make Cargo reject any resolution that would rewrite or
+        // bypass it, both while fetching and while building/testing.
+        if scenario.dependency_mode == DependencyMode::Locked
+            && workspace.join("Cargo.lock").is_file()
+        {
+            for command in &mut commands {
+                if command.program == "cargo"
+                    && !command.args.iter().any(|argument| argument == "--locked")
+                {
+                    command.args.insert(0, "--locked".into());
+                }
+            }
+        }
+
+        let Some(_snapshot) = snapshot else {
+            return Ok(commands);
+        };
+        let payload = snapshot_container_payload();
+        let source_replace = "source.crates-io.replace-with=\"tomorrowci-snapshot\"";
+        let source_directory = format!("source.tomorrowci-snapshot.directory=\"{payload}\"");
+        for command in &mut commands {
+            if command.program == "cargo" {
+                let original = std::mem::take(&mut command.args);
+                command.args = vec![
+                    "--offline".into(),
+                    "--config".into(),
+                    source_replace.into(),
+                    "--config".into(),
+                    source_directory.clone(),
+                ];
+                command.args.extend(original);
+                command.network_required = false;
+                command
+                    .env
+                    .insert("CARGO_NET_OFFLINE".into(), "true".into());
+            }
+        }
+        Ok(commands)
     }
 
     fn normalize_failure(&self, result: &RawExecutionResult) -> FailureSignature {
@@ -351,5 +413,94 @@ edition = "2021"
         .unwrap();
         let a = RustAdapter::new();
         assert!(a.detect(d.path()).unwrap().detection.supported);
+    }
+
+    #[test]
+    fn verified_vendor_commands_are_offline_and_container_relative() {
+        let workspace = tempdir().unwrap();
+        stage_snapshot_fixture(workspace.path(), "rust");
+        fs::write(
+            workspace.path().join("Cargo.toml"),
+            "[package]\nname='x'\nversion='0.1.0'\nedition='2021'\n",
+        )
+        .unwrap();
+        let adapter = RustAdapter::new();
+        let baseline = adapter
+            .baseline(workspace.path(), &Config::default())
+            .unwrap();
+        let scenario = baseline_scenario(&baseline);
+        let environment = adapter.materialize(&scenario, workspace.path()).unwrap();
+        assert_eq!(environment.network_mode, NetworkMode::None);
+        let commands = adapter
+            .commands_in_workspace(&scenario, &Config::default(), workspace.path())
+            .unwrap();
+        fake_offline_executor(&commands, workspace.path());
+        assert!(commands.iter().all(|command| command.program != "cargo"
+            || command.args.iter().any(|argument| argument == "--offline")));
+    }
+
+    #[test]
+    fn source_bound_cargo_lock_is_enforced_by_fetch_and_test() {
+        let workspace = tempdir().unwrap();
+        fs::write(
+            workspace.path().join("Cargo.toml"),
+            "[package]\nname='x'\nversion='0.1.0'\nedition='2021'\n",
+        )
+        .unwrap();
+        fs::write(
+            workspace.path().join("Cargo.lock"),
+            "version = 3\n\n[[package]]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let adapter = RustAdapter::new();
+        let baseline = adapter
+            .baseline(workspace.path(), &Config::default())
+            .unwrap();
+        let commands = adapter
+            .commands_in_workspace(
+                &baseline_scenario(&baseline),
+                &Config::default(),
+                workspace.path(),
+            )
+            .unwrap();
+        assert!(commands
+            .iter()
+            .filter(|command| command.program == "cargo")
+            .all(|command| command.args.iter().any(|argument| argument == "--locked")));
+    }
+
+    fn stage_snapshot_fixture(workspace: &Path, ecosystem: &str) {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/backtest-snapshots")
+            .join(ecosystem)
+            .join("2026-01-15");
+        let destination = workspace.join(tomorrowci_core::backtest::WORKSPACE_SNAPSHOT_DIR);
+        copy_fixture_tree(&source, &destination);
+    }
+
+    fn copy_fixture_tree(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).unwrap();
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let target = destination.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_fixture_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    fn fake_offline_executor(commands: &[CommandSpec], host_workspace: &Path) {
+        for command in commands {
+            assert!(!command.network_required);
+            assert_eq!(command.workdir, "/workspace");
+            for value in command.args.iter().chain(command.env.values()) {
+                assert!(!value.contains(host_workspace.to_string_lossy().as_ref()));
+                if value.contains("registry-snapshot") {
+                    assert!(value.starts_with("/workspace/") || value.contains("=\"/workspace/"));
+                }
+            }
+        }
     }
 }

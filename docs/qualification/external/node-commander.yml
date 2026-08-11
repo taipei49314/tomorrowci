@@ -1,0 +1,25 @@
+version: 1
+project:
+  ecosystem: node
+  test_command: npm test
+baseline:
+  runtime: auto
+  dependencies: locked
+candidates:
+  runtime:
+    channels: [stable]
+    max_versions: 3
+  dependencies:
+    latest_allowed: true
+    prerelease: false
+execution:
+  max_scenarios: 6
+  timeout_seconds: 900
+  reruns_on_failure: 2
+  max_parallel: 1
+sandbox:
+  engine: docker
+  network: fetch-only
+  memory_mb: 2048
+  cpus: 2
+  pids_limit: 256

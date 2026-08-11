@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   pull_request:
   push:
     branches: [main, master]
@@ -10,31 +11,140 @@ permissions:
 
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
+          toolchain: 1.97.1
           components: rustfmt, clippy
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: test
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
       - name: release build
-        run: cargo build -p tomorrowci --release
-      - name: doctor
-        run: ./target/release/tomorrowci doctor || true
+        run: cargo build --locked -p tomorrowci --release
+      - name: doctor (ready or explicitly blocked)
+        shell: bash
+        run: |
+          set +e
+          ./target/release/tomorrowci doctor
+          status=$?
+          set -e
+          echo "doctor exit=$status (allowed: 0=ready, 4=explicitly blocked)"
+          case "$status" in
+            0|4) ;;
+            *) exit "$status" ;;
+          esac
+
+  msrv:
+    name: minimum supported Rust 1.85
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: "1.85.0"
+      - name: check locked workspace at declared MSRV
+        run: cargo check --locked --workspace --all-targets
+
+  rust-audit:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: audit Rust dependencies against the RustSec advisory database
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  web:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: install locked web dependencies
+        working-directory: apps/web
+        run: npm ci
+      - name: audit production and development dependencies
+        working-directory: apps/web
+        run: npm audit --audit-level=high
+      - name: lint
+        working-directory: apps/web
+        run: npm run lint
+      - name: test
+        working-directory: apps/web
+        run: npm test
+      - name: build
+        working-directory: apps/web
+        run: npm run build
+
+  cli-smoke:
+    name: cli-smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15-intel]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.97.1
+      - name: build release CLI
+        run: cargo build -p tomorrowci --release --locked
+      - name: execute built binary and print version
+        shell: bash
+        run: |
+          bin=./target/release/tomorrowci
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            bin="${bin}.exe"
+          fi
+          test -x "$bin"
+          expected=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          actual=$("$bin" --version)
+          echo "$actual"
+          test "$actual" = "tomorrowci $expected"
+      - name: doctor (ready or explicitly blocked)
+        shell: bash
+        run: |
+          bin=./target/release/tomorrowci
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            bin="${bin}.exe"
+          fi
+          set +e
+          "$bin" doctor
+          status=$?
+          set -e
+          echo "doctor exit=$status (allowed: 0=ready, 4=explicitly blocked)"
+          case "$status" in
+            0|4) ;;
+            *) exit "$status" ;;
+          esac
+      - name: verify and report integration smoke
+        shell: bash
+        run: |
+          cargo test --locked -p tomorrowci --test verify verifies_existing_path_and_run_id -- --exact
+          cargo test --locked -p tomorrowci --test verify report_verifies_before_reading_and_writes_outside_the_sealed_bundle -- --exact
 
   container-integration:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: rust
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.97.1
       - name: build
-        run: cargo build -p tomorrowci --release
+        run: cargo build --locked -p tomorrowci --release
       - name: measure all (instruments → trust)
         run: ./target/release/tomorrowci measure all --out .tomorrowci/measure --evidence-root .tomorrowci
       - name: verify every sealed fixture run
@@ -47,51 +157,335 @@ jobs:
             count=$((count + 1))
           done
           test "$count" -eq 6
+      - name: public replay receipts for all six fixtures
+        shell: bash
+        run: |
+          bash scripts/ci/replay-receipts.sh \
+            ./target/release/tomorrowci \
+            .tomorrowci \
+            .tomorrowci/measure/suite-report.json \
+            fixtures \
+            .tomorrowci/replay-logs
+      - name: regenerate deterministic offline snapshot fixtures
+        run: |
+          python3 scripts/ci/generate-backtest-fixtures.py
+          git diff --exit-code -- fixtures/backtest-snapshots
+      - name: live historical backtest with pinned offline snapshots
+        shell: bash
+        run: >-
+          bash scripts/ci/live-backtest.sh
+          ./target/release/tomorrowci
+          "$GITHUB_WORKSPACE"
+          .tomorrowci/live-backtest
+      - name: live Patch Lab proposal, exact replay, and detached verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          original_run=$(jq -er '.fixtures[] | select(.id == "python-runtime-break") | .run_id' \
+            .tomorrowci/measure/suite-report.json)
+          ./target/release/tomorrowci \
+            --evidence-root .tomorrowci \
+            --work-root .tomorrowci/work \
+            patch propose "$original_run" \
+            --source fixtures/python-runtime-break \
+            --patch fixtures/patches/python-runtime-fix.patch
+          shopt -s nullglob
+          proofs=(.tomorrowci/patches/*)
+          test "${#proofs[@]}" -eq 1
+          proof="${proofs[0]}"
+          jq -e '.disposition == "QUALIFIED" and .original.run_id == $original' \
+            --arg original "$original_run" "$proof/patch-proof.json"
+          patched_run=$(jq -er '.patched.run_id' "$proof/patch-proof.json")
+          ./target/release/tomorrowci verify "$original_run" --evidence-root .tomorrowci
+          ./target/release/tomorrowci verify "$patched_run" --evidence-root .tomorrowci
+          ./target/release/tomorrowci patch verify \
+            --proof "$proof" \
+            --original-run ".tomorrowci/runs/$original_run" \
+            --patched-run ".tomorrowci/runs/$patched_run"
       - name: upload evidence
         if: always()
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tomorrowci-ci-evidence
           path: |
             .tomorrowci/runs/
+            .tomorrowci/replay-receipts/
+            .tomorrowci/replay-logs/
             .tomorrowci/measure/
+            .tomorrowci/live-backtest/backtest-*.json
+            .tomorrowci/live-backtest/backtest-*.html
+            .tomorrowci/live-backtest/evidence-*/runs/
+            .tomorrowci/live-backtest/evidence-*/backtests/
+            .tomorrowci/patches/
+          include-hidden-files: true
+
+  live-podman:
+    runs-on: ubuntu-24.04
+    needs: rust
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.97.1
+      - name: install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes podman
+      - name: record live Podman diagnostics
+        run: |
+          set -euo pipefail
+          mkdir -p .tomorrowci/podman-diagnostics
+          podman version | tee .tomorrowci/podman-diagnostics/version.txt
+          podman info --debug | tee .tomorrowci/podman-diagnostics/info.txt
+      - name: build
+        run: cargo build -p tomorrowci --release --locked
+      - name: measure all six fixtures with Podman
+        run: >-
+          ./target/release/tomorrowci
+          --evidence-root .tomorrowci/podman
+          --work-root .tomorrowci/podman-work
+          measure all
+          --engine podman
+          --out .tomorrowci/podman-measure
+      - name: prove Podman override and verify every sealed run
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e '.engine_requested == "podman" and .engine_available == true' \
+            .tomorrowci/podman-measure/suite-report.json
+          shopt -s nullglob
+          runs=(.tomorrowci/podman/runs/*)
+          test "${#runs[@]}" -eq 6
+          for run in "${runs[@]}"; do
+            test -d "$run"
+            ./target/release/tomorrowci verify "$run"
+            jq -e '.sandbox_engine == "podman"' "$run/run.json"
+          done
+      - name: public Podman replay receipts for all six fixtures
+        shell: bash
+        run: |
+          bash scripts/ci/replay-receipts.sh \
+            ./target/release/tomorrowci \
+            .tomorrowci/podman \
+            .tomorrowci/podman-measure/suite-report.json \
+            fixtures \
+            .tomorrowci/podman-replay-logs
+      - name: upload public Podman evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tomorrowci-live-podman-evidence
+          path: |
+            .tomorrowci/podman-diagnostics/
+            .tomorrowci/podman/runs/
+            .tomorrowci/podman/replay-receipts/
+            .tomorrowci/podman-replay-logs/
+            .tomorrowci/podman-measure/
+          include-hidden-files: true
 
   windows-verifier:
-    runs-on: windows-latest
+    runs-on: windows-2025
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
+          toolchain: 1.97.1
           components: rustfmt, clippy
       - name: verifier and Windows filesystem regressions
         shell: pwsh
-        run: cargo test -p tomorrowci-evidence -p tomorrowci --all-targets
+        run: cargo test --locked -p tomorrowci-evidence -p tomorrowci --all-targets
 
   action-dogfood:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: rust
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Run composite action (fixture)
         uses: ./action
         with:
           target: fixtures/python-runtime-break
+          evidence-root: .tomorrowci/action-head
+          artifact-name: tomorrowci-action-head-evidence
           advisory: "true"
       - name: Run composite action with base compare (same tree → unchanged/regressed honest)
         uses: ./action
         with:
           target: fixtures/baseline-fail
+          evidence-root: .tomorrowci/action-compare
+          artifact-name: tomorrowci-action-compare-evidence
           base-ref: HEAD
           fail-on-regression: "false"
           advisory: "true"
 
-  schema:
-    runs-on: ubuntu-latest
+  action-consumer:
+    runs-on: ubuntu-24.04
+    needs: rust
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - name: schema present
-        run: test -f packages/schema/config-v1.json
+      - name: Checkout TomorrowCI action source separately
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tool
+      - name: Create an independent consumer checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir consumer
+          cp -a tool/fixtures/python-runtime-break/. consumer/
+          git -C consumer init
+          git -C consumer config user.name tomorrowci-consumer
+          git -C consumer config user.email tomorrowci-consumer@example.invalid
+          git -C consumer add .
+          git -C consumer commit -m fixture
+          mkdir -p .tomorrowci-consumer/runs/preexisting-attacker
+          printf '%s\n' 'unsealed attacker-controlled bundle' \
+            > .tomorrowci-consumer/runs/preexisting-attacker/run.json
+          touch -d '2037-01-01T00:00:00Z' .tomorrowci-consumer/runs/preexisting-attacker
+      - name: Invoke the checked-in action from the consumer workspace
+        uses: ./tool/action
+        with:
+          target: consumer
+          evidence-root: .tomorrowci-consumer
+          artifact-name: tomorrowci-action-consumer-evidence
+          advisory: "true"
+      - name: Prove consumer evidence is separate and sealed
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          sealed=(.tomorrowci-consumer/runs/*/checksums.txt)
+          test "${#sealed[@]}" -eq 1
+          test -f .tomorrowci-consumer/runs/preexisting-attacker/run.json
+          test ! -f .tomorrowci-consumer/runs/preexisting-attacker/checksums.txt
+          test ! -e tool/.tomorrowci-consumer
+
+  evidence-negative:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.97.1
+      - name: Run evidence mutation, identity, path, and forgery regressions
+        run: |
+          cargo test --locked -p tomorrowci-evidence
+          cargo test --locked -p tomorrowci --test verify
+
+  schema:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: install pinned schema validators
+        run: |
+          SCHEMA_VENV="$RUNNER_TEMP/tomorrowci-schema-venv"
+          python3 -m venv "$SCHEMA_VENV"
+          "$SCHEMA_VENV/bin/python" -m pip install \
+            --disable-pip-version-check \
+            --no-input \
+            --only-binary=:all: \
+            "jsonschema==4.25.1" \
+            "PyYAML==6.0.2"
+      - name: parse schema and validate fixture, sample, and default configs
+        shell: bash
+        run: |
+          SCHEMA_VENV="$RUNNER_TEMP/tomorrowci-schema-venv"
+          "$SCHEMA_VENV/bin/python" - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          import yaml
+          from jsonschema import Draft202012Validator
+
+          schema_path = Path("packages/schema/config-v1.json")
+          schema = json.loads(schema_path.read_text(encoding="utf-8"))
+          Draft202012Validator.check_schema(schema)
+          validator = Draft202012Validator(schema)
+
+          action = yaml.safe_load(Path("action/action.yml").read_text(encoding="utf-8"))
+          for step in action["runs"]["steps"]:
+              script = step.get("run", "")
+              if "$" + "{{ inputs." in script:
+                  raise SystemExit(
+                      f"action step {step.get('name', '<unnamed>')} interpolates an input into shell"
+                  )
+
+          upload_steps = [("action/action.yml", step) for step in action["runs"]["steps"]]
+          for workflow_path in sorted(Path(".github/workflows").glob("*.yml")):
+              workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+              for job in workflow.get("jobs", {}).values():
+                  upload_steps.extend((str(workflow_path), step) for step in job.get("steps", []))
+          upload_steps = [
+              (path, step)
+              for path, step in upload_steps
+              if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+          ]
+          if not upload_steps:
+              raise SystemExit("no upload-artifact steps found")
+          for path, step in upload_steps:
+              include_hidden = step.get("with", {}).get("include-hidden-files")
+              if include_hidden not in (True, "true"):
+                  raise SystemExit(
+                      f"{path}: upload step {step.get('name', '<unnamed>')} must preserve "
+                      "hidden files for exact evidence/artifact readback"
+                  )
+
+          def validate(label, document):
+              errors = sorted(validator.iter_errors(document), key=lambda error: list(error.path))
+              if errors:
+                  rendered = "; ".join(
+                      f"{'.'.join(map(str, error.path)) or '<root>'}: {error.message}"
+                      for error in errors
+                  )
+                  raise SystemExit(f"{label}: {rendered}")
+              print(f"validated {label}")
+
+          default_config = {"version": 1}
+          validate("default config", default_config)
+
+          readme = Path("README.md").read_text(encoding="utf-8")
+          configuration = readme.split("## Configuration", 1)[1]
+          sample_match = re.search(r"```yaml\s*\n(.*?)\n```", configuration, re.DOTALL)
+          if sample_match is None:
+              raise SystemExit("README configuration sample not found")
+          validate("README configuration sample", yaml.safe_load(sample_match.group(1)))
+
+          expected_fixture_names = {
+              "baseline-fail",
+              "flaky-project",
+              "node-dependency-break",
+              "python-dependency-break",
+              "python-runtime-break",
+              "rust-msrv-break",
+          }
+          fixture_dirs = sorted(Path("fixtures") / name for name in expected_fixture_names)
+          missing_fixtures = [str(path) for path in fixture_dirs if not path.is_dir()]
+          if missing_fixtures:
+              raise SystemExit(f"missing built-in fixture directories: {missing_fixtures}")
+          for fixture_dir in fixture_dirs:
+              config_path = fixture_dir / ".tomorrowci.yml"
+              if config_path.is_file():
+                  document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                  label = str(config_path)
+              else:
+                  document = default_config
+                  label = f"{fixture_dir} (default config)"
+              validate(label, document)
+
+          external_configs = sorted(Path("docs/qualification/external").glob("*.yml"))
+          if len(external_configs) != 3:
+              raise SystemExit(
+                  f"expected three pre-registered external configs, found {len(external_configs)}"
+              )
+          for config_path in external_configs:
+              validate(
+                  str(config_path),
+                  yaml.safe_load(config_path.read_text(encoding="utf-8")),
+              )
+          PY

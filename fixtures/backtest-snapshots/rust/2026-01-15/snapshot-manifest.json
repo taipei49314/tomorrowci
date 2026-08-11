@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "sha256:352b37c8a07c55f9448b4b5d88588dbc1aee84edefaed79ec29ae0a257d6cc96",
+  "ecosystem": "rust",
+  "effective_at": "2026-01-15T12:00:00Z",
+  "captured_at": "2026-01-15T13:00:00Z",
+  "source": {
+    "url": "https://github.com/rust-lang/crates.io-index",
+    "immutable_revision": "sha256:5f8193d7ee6e8eb2175d943f23b43816a236552129e69ede01451cf22a26d129"
+  },
+  "resolver_mode": "cargo_vendor",
+  "files": [
+    {
+      "path": "tomorrowci-snapshot-dep-1.0.0/.cargo-checksum.json",
+      "sha256": "b217c1e4d3341da8c9e4cf0b4f230493ce1d0ba5247fa4f745cdc8fc7ebbb9ae",
+      "size": 249
+    },
+    {
+      "path": "tomorrowci-snapshot-dep-1.0.0/Cargo.toml",
+      "sha256": "2566662f3cac463e9e8c8272eb4f59d577880fdefdc3d3f7c4ccddc2c6076c86",
+      "size": 187
+    },
+    {
+      "path": "tomorrowci-snapshot-dep-1.0.0/src/lib.rs",
+      "sha256": "1847989fe7585b1998b688417afef3102e787d021588b50fb893193d3cc45d3c",
+      "size": 81
+    }
+  ]
+}

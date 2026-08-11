@@ -9,7 +9,10 @@ use tomorrowci_core::{
     NetworkMode, ProjectDetection, RawExecutionResult, RepositorySnapshot, RunId, RunManifest,
     RunStatus, Scenario, ScenarioId, ScenarioKind, ScenarioVerdict, Verdict,
 };
-use tomorrowci_evidence::{seal_bundle, verify_bundle, BundleKind, EvidenceStore};
+use tomorrowci_evidence::{
+    seal_bundle, seal_bundle_version, verify_bundle, BundleKind, EvidenceStore,
+    INVENTORY_VERSION_V2,
+};
 
 const ZERO_DIGEST: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -20,12 +23,34 @@ fn tomorrowci() -> Command {
 fn build_fake_docker(root: &Path) -> PathBuf {
     const SOURCE: &str = r#"
 use std::env;
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::path::PathBuf;
 use std::process;
+
+fn network_state_path(name: &str) -> Option<PathBuf> {
+    env::var_os("TOMORROWCI_FAKE_DOCKER_LOG")
+        .map(PathBuf::from)
+        .map(|path| path.with_extension("network-states").join(name))
+}
+
+fn set_network_state(name: &str, value: &str) {
+    if let Some(path) = network_state_path(name) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, value).unwrap();
+    }
+}
 
 fn main() {
     let args = env::args().skip(1).collect::<Vec<_>>();
+    let engine = env::current_exe()
+        .ok()
+        .and_then(|path| path.file_stem().map(|name| name.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "unknown".into());
+    if let Some(path) = env::var_os("TOMORROWCI_FAKE_ENGINE_MARKER") {
+        let mut marker = OpenOptions::new().create(true).append(true).open(path).unwrap();
+        writeln!(marker, "{engine}").unwrap();
+    }
     if let Some(path) = env::var_os("TOMORROWCI_FAKE_DOCKER_LOG") {
         let mut log = OpenOptions::new().create(true).append(true).open(path).unwrap();
         writeln!(log, "{}", args.join("\t")).unwrap();
@@ -55,6 +80,39 @@ fn main() {
             if mode == "digest-unavailable" {
                 eprintln!("pull rejected api_key=pull-secret");
                 process::exit(1);
+            }
+        }
+        Some("create") => {
+            let name = args
+                .iter()
+                .position(|arg| arg == "--name")
+                .and_then(|index| args.get(index + 1))
+                .unwrap();
+            set_network_state(name, "connected");
+            println!("fixture-container");
+        }
+        Some("inspect") => {
+            let name = args.last().unwrap();
+            let connected = network_state_path(name)
+                .and_then(|path| fs::read_to_string(path).ok())
+                .is_some_and(|value| value == "connected");
+            if connected {
+                let network = if engine == "docker" { "bridge" } else { "podman" };
+                println!("{{\"{network}\":{{}}}}");
+            } else {
+                println!("{{}}");
+            }
+        }
+        Some("network") if args.get(1).map(String::as_str) == Some("disconnect") => {
+            set_network_state(args.last().unwrap(), "offline");
+        }
+        Some("network") if args.get(1).map(String::as_str) == Some("connect") => {
+            set_network_state(args.last().unwrap(), "connected");
+        }
+        Some("start") | Some("kill") => {}
+        Some("rm") => {
+            if let Some(path) = network_state_path(args.last().unwrap()) {
+                let _ = fs::remove_file(path);
             }
         }
         Some("exec") => {
@@ -90,6 +148,11 @@ fn main() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    fs::copy(
+        &binary,
+        bin_dir.join(format!("podman{}", std::env::consts::EXE_SUFFIX)),
+    )
+    .unwrap();
     bin_dir
 }
 
@@ -101,25 +164,91 @@ fn path_with_fake_engine(bin_dir: &Path) -> OsString {
     std::env::join_paths(entries).unwrap()
 }
 
-fn replay_command(
+fn replay_command_with_workspace(
     evidence_root: &Path,
-    work_root: &Path,
     fake_bin: &Path,
     fake_log: &Path,
     run_id: &str,
+    workspace: &Path,
     mode: &str,
 ) -> Command {
     let mut command = tomorrowci();
     command
         .arg("--evidence-root")
         .arg(evidence_root)
-        .arg("--work-root")
-        .arg(work_root)
-        .args(["replay", run_id, "--scenario", "baseline"])
+        .args(["replay", run_id, "--scenario", "baseline", "--workspace"])
+        .arg(workspace)
         .env("PATH", path_with_fake_engine(fake_bin))
         .env("TOMORROWCI_FAKE_DOCKER_LOG", fake_log)
         .env("TOMORROWCI_FAKE_DOCKER_MODE", mode);
     command
+}
+
+fn scan_v2_with_fake_engine(root: &Path, fake_bin: &Path) -> (PathBuf, PathBuf, String) {
+    scan_v2_with_fake_engine_mode(root, fake_bin, "success", 0)
+}
+
+fn scan_v2_with_fake_engine_mode(
+    root: &Path,
+    fake_bin: &Path,
+    mode: &str,
+    expected_exit: i32,
+) -> (PathBuf, PathBuf, String) {
+    scan_v2_with_fake_engine_mode_and_preference(root, fake_bin, mode, expected_exit, None)
+}
+
+fn scan_v2_with_fake_engine_mode_and_preference(
+    root: &Path,
+    fake_bin: &Path,
+    mode: &str,
+    expected_exit: i32,
+    engine: Option<&str>,
+) -> (PathBuf, PathBuf, String) {
+    let source = root.join("portable-source");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("requirements.txt"), b"\n").unwrap();
+    let evidence = root.join("portable-evidence");
+    let work = root.join("portable-work");
+    let mut command = tomorrowci();
+    command
+        .current_dir(root)
+        .arg("--evidence-root")
+        .arg(&evidence)
+        .arg("--work-root")
+        .arg(&work)
+        .arg("scan")
+        .arg(&source);
+    if let Some(engine) = engine {
+        let config = root.join("podman.tomorrowci.yml");
+        fs::write(
+            &config,
+            format!("version: 1\nsandbox:\n  engine: {engine}\n"),
+        )
+        .unwrap();
+        command.arg("--config").arg(config);
+    }
+    let output = command
+        .env("PATH", path_with_fake_engine(fake_bin))
+        .env(
+            "TOMORROWCI_FAKE_DOCKER_LOG",
+            root.join("portable-scan-docker.log"),
+        )
+        .env("TOMORROWCI_FAKE_DOCKER_MODE", mode)
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(expected_exit),
+        "v2 fixture scan failed: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let runs = fs::read_dir(evidence.join("runs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(runs.len(), 1);
+    (evidence, source, runs[0].clone())
 }
 
 fn make_bundle(path: &Path) {
@@ -293,7 +422,7 @@ fn make_reportable_bundle_for_replay(
     };
     let run = RunManifest {
         run_id: RunId(run_id.into()),
-        tool_version: "0.1.0".into(),
+        tool_version: env!("CARGO_PKG_VERSION").into(),
         started_at: captured_at,
         finished_at: Some(captured_at + chrono::Duration::minutes(1)),
         repository: repository.clone(),
@@ -509,25 +638,16 @@ fn real_cli_sanitizes_hostile_errors_and_uses_non_green_unsupported_exit() {
 fn real_replay_cli_is_non_green_for_target_and_digest_failures_and_keeps_run_sealed() {
     let temp = tempdir().unwrap();
     let fake_bin = build_fake_docker(temp.path());
-    let digest = Some(format!("sha256:{}", "a".repeat(64)));
-
-    let target_evidence = temp.path().join("target-evidence");
-    let target_work = temp.path().join("target-work");
-    let target_run_id = "target-nonzero";
-    let target_workspace = target_work.join("workspaces").join(target_run_id);
-    fs::create_dir_all(&target_workspace).unwrap();
-    make_reportable_bundle_for_replay(
-        &target_evidence.join("runs").join(target_run_id),
-        target_run_id,
-        target_workspace,
-        digest.clone(),
-    );
-    let target_output = replay_command(
+    let target_root = temp.path().join("target-case");
+    fs::create_dir(&target_root).unwrap();
+    let (target_evidence, target_source, target_run_id) =
+        scan_v2_with_fake_engine_mode(&target_root, &fake_bin, "target-nonzero", 2);
+    let target_output = replay_command_with_workspace(
         &target_evidence,
-        &target_work,
         &fake_bin,
         &temp.path().join("target-docker.log"),
-        target_run_id,
+        &target_run_id,
+        &target_source,
         "target-nonzero",
     )
     .output()
@@ -538,29 +658,28 @@ fn real_replay_cli_is_non_green_for_target_and_digest_failures_and_keeps_run_sea
         !target_output.status.success(),
         "target exit 23 must be non-green: stdout={target_stdout:?} stderr={target_stderr:?}"
     );
+    assert_eq!(
+        target_output.status.code(),
+        Some(3),
+        "reproduced target failure must use exit 3: stdout={target_stdout:?} stderr={target_stderr:?}"
+    );
     assert!(!target_stdout.contains("target-secret"));
     assert!(!target_stderr.contains("target-secret"));
     assert!(!target_stdout.contains('\u{1b}'));
     assert!(!target_stderr.contains('\u{1b}'));
+    assert!(target_stderr.contains("REPLAY_RECEIPT "));
 
-    let digest_evidence = temp.path().join("digest-evidence");
-    let digest_work = temp.path().join("digest-work");
-    let digest_run_id = "digest-unavailable";
-    let digest_workspace = digest_work.join("workspaces").join(digest_run_id);
-    fs::create_dir_all(&digest_workspace).unwrap();
-    make_reportable_bundle_for_replay(
-        &digest_evidence.join("runs").join(digest_run_id),
-        digest_run_id,
-        digest_workspace,
-        digest.clone(),
-    );
+    let digest_root = temp.path().join("digest-case");
+    fs::create_dir(&digest_root).unwrap();
+    let (digest_evidence, digest_source, digest_run_id) =
+        scan_v2_with_fake_engine(&digest_root, &fake_bin);
     let digest_log = temp.path().join("digest-docker.log");
-    let digest_output = replay_command(
+    let digest_output = replay_command_with_workspace(
         &digest_evidence,
-        &digest_work,
         &fake_bin,
         &digest_log,
-        digest_run_id,
+        &digest_run_id,
+        &digest_source,
         "digest-unavailable",
     )
     .output()
@@ -576,6 +695,7 @@ fn real_replay_cli_is_non_green_for_target_and_digest_failures_and_keeps_run_sea
     assert!(!digest_stderr.contains("digest-secret"));
     assert!(!digest_stdout.contains("pull-secret"));
     assert!(!digest_stderr.contains("pull-secret"));
+    assert!(digest_stderr.contains("REPLAY_RECEIPT "));
     let digest_invocations = fs::read_to_string(&digest_log).unwrap();
     for invocation in digest_invocations
         .lines()
@@ -587,34 +707,29 @@ fn real_replay_cli_is_non_green_for_target_and_digest_failures_and_keeps_run_sea
         );
     }
 
-    let flow_evidence = temp.path().join("flow-evidence");
-    let flow_work = temp.path().join("flow-work");
-    let flow_run_id = "selector-flow";
-    let flow_workspace = flow_work.join("workspaces").join(flow_run_id);
-    fs::create_dir_all(&flow_workspace).unwrap();
-    make_reportable_bundle_for_replay(
-        &flow_evidence.join("runs").join(flow_run_id),
-        flow_run_id,
-        flow_workspace,
-        digest,
-    );
+    let flow_root = temp.path().join("flow-case");
+    fs::create_dir(&flow_root).unwrap();
+    let (flow_evidence, flow_source, flow_run_id) = scan_v2_with_fake_engine(&flow_root, &fake_bin);
 
     let mut before = tomorrowci();
-    assert_pass(
-        before
-            .arg("--evidence-root")
-            .arg(&flow_evidence)
-            .args(["verify", flow_run_id])
-            .output()
-            .unwrap(),
+    let before_output = before
+        .arg("--evidence-root")
+        .arg(&flow_evidence)
+        .args(["verify", &flow_run_id])
+        .output()
+        .unwrap();
+    assert!(
+        before_output.status.success(),
+        "v2 pre-replay verify failed: {:?}",
+        String::from_utf8_lossy(&before_output.stderr)
     );
 
-    let first_replay = replay_command(
+    let first_replay = replay_command_with_workspace(
         &flow_evidence,
-        &flow_work,
         &fake_bin,
         &temp.path().join("flow-docker.log"),
-        flow_run_id,
+        &flow_run_id,
+        &flow_source,
         "success",
     )
     .output()
@@ -627,12 +742,12 @@ fn real_replay_cli_is_non_green_for_target_and_digest_failures_and_keeps_run_sea
         String::from_utf8_lossy(&first_replay.stderr)
     );
 
-    let second_replay = replay_command(
+    let second_replay = replay_command_with_workspace(
         &flow_evidence,
-        &flow_work,
         &fake_bin,
         &temp.path().join("flow-docker.log"),
-        flow_run_id,
+        &flow_run_id,
+        &flow_source,
         "success",
     )
     .output()
@@ -644,14 +759,260 @@ fn real_replay_cli_is_non_green_for_target_and_digest_failures_and_keeps_run_sea
         String::from_utf8_lossy(&second_replay.stderr)
     );
 
+    let receipt_root = flow_evidence
+        .join("replay-receipts")
+        .join(&flow_run_id)
+        .join("baseline");
+    let mut receipts = fs::read_dir(&receipt_root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    receipts.sort();
+    assert_eq!(receipts.len(), 2);
+    for receipt in &receipts {
+        let output = tomorrowci().arg("verify").arg(receipt).output().unwrap();
+        assert!(
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).starts_with("PASS_INTERNAL "),
+            "detached receipt failed internal readback: stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let pair = tomorrowci()
+        .arg("replay-qualify")
+        .arg("--original-run")
+        .arg(flow_evidence.join("runs").join(&flow_run_id))
+        .arg(&receipts[0])
+        .arg(&receipts[1])
+        .output()
+        .unwrap();
+    assert!(
+        pair.status.success()
+            && String::from_utf8_lossy(&pair.stdout)
+                .starts_with("PASS kind=replay-pair receipt_count=2 "),
+        "receipt pair did not qualify: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&pair.stdout),
+        String::from_utf8_lossy(&pair.stderr)
+    );
+    let duplicate_pair = tomorrowci()
+        .arg("replay-qualify")
+        .arg("--original-run")
+        .arg(flow_evidence.join("runs").join(&flow_run_id))
+        .arg(&receipts[0])
+        .arg(&receipts[0])
+        .output()
+        .unwrap();
+    assert!(!duplicate_pair.status.success());
+    let mismatched_origin = tomorrowci()
+        .arg("replay-qualify")
+        .arg("--original-run")
+        .arg(target_evidence.join("runs").join(&target_run_id))
+        .arg(&receipts[0])
+        .arg(&receipts[1])
+        .output()
+        .unwrap();
+    assert!(!mismatched_origin.status.success());
+
     let mut after = tomorrowci();
-    assert_pass(
-        after
+    let after_output = after
+        .arg("--evidence-root")
+        .arg(&flow_evidence)
+        .args(["verify", &flow_run_id])
+        .output()
+        .unwrap();
+    assert!(
+        after_output.status.success(),
+        "v2 post-replay verify failed: {:?}",
+        String::from_utf8_lossy(&after_output.stderr)
+    );
+
+    let receipt_path = receipts[0].join("public-replay-receipt.json");
+    let mut receipt: serde_json::Value =
+        serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+    receipt["original_run_inventory_sha256"] = serde_json::json!("0".repeat(64));
+    fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
+    let reseal = seal_bundle_version(
+        &receipts[0],
+        BundleKind::ReplayAttempt,
+        INVENTORY_VERSION_V2,
+    );
+    assert!(
+        reseal.is_err(),
+        "self-resealed receipt with a forged origin digest was accepted"
+    );
+}
+
+#[test]
+fn public_replay_selects_the_sealed_podman_when_docker_is_also_available() {
+    let temp = tempdir().unwrap();
+    let fake_bin = build_fake_docker(temp.path());
+    let scan_root = temp.path().join("podman-case");
+    fs::create_dir(&scan_root).unwrap();
+    let (evidence, source, run_id) = scan_v2_with_fake_engine_mode_and_preference(
+        &scan_root,
+        &fake_bin,
+        "success",
+        0,
+        Some("podman"),
+    );
+
+    let marker = temp.path().join("selected-replay-engine.log");
+    let mut replay = replay_command_with_workspace(
+        &evidence,
+        &fake_bin,
+        &temp.path().join("podman-replay.log"),
+        &run_id,
+        &source,
+        "success",
+    );
+    let output = replay
+        .env("TOMORROWCI_FAKE_ENGINE_MARKER", &marker)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "sealed Podman replay was not selected: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let selected = fs::read_to_string(&marker).unwrap();
+    assert!(
+        !selected.is_empty()
+            && !selected.lines().any(|engine| engine == "docker")
+            && selected.lines().all(|engine| engine == "podman"),
+        "public replay probed an engine other than sealed Podman: {selected:?}"
+    );
+
+    let receipt_root = evidence
+        .join("replay-receipts")
+        .join(&run_id)
+        .join("baseline");
+    let receipts = fs::read_dir(receipt_root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(receipts.len(), 1);
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&fs::read(receipts[0].join("public-replay-receipt.json")).unwrap())
+            .unwrap();
+    assert_eq!(receipt["expected_engine"]["name"], "podman");
+    assert_eq!(receipt["observed_engine"]["name"], "podman");
+}
+
+#[test]
+fn downloaded_v2_replay_accepts_only_an_exact_portable_workspace_and_keeps_evidence_immutable() {
+    let temp = tempdir().unwrap();
+    let fake_bin = build_fake_docker(temp.path());
+    let (evidence, source, run_id) = scan_v2_with_fake_engine(temp.path(), &fake_bin);
+    let run_path = evidence.join("runs").join(&run_id);
+    let sealed_inventory_before = fs::read(run_path.join("checksums.txt")).unwrap();
+
+    let verify = |label: &str| {
+        let output = tomorrowci()
             .arg("--evidence-root")
-            .arg(&flow_evidence)
-            .args(["verify", flow_run_id])
+            .arg(&evidence)
+            .args(["verify", &run_id])
             .output()
-            .unwrap(),
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{label} verify failed: stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    verify("initial");
+
+    // Simulate a separately checked-out source. The .git directory is outside
+    // the scan-time materialization boundary and is excluded consistently.
+    let portable = temp.path().join("downloaded-checkout");
+    fs::create_dir_all(portable.join(".git")).unwrap();
+    fs::copy(
+        source.join("requirements.txt"),
+        portable.join("requirements.txt"),
+    )
+    .unwrap();
+    fs::write(portable.join(".git/HEAD"), b"ref: refs/heads/main\n").unwrap();
+
+    for ordinal in 1..=2 {
+        let output = replay_command_with_workspace(
+            &evidence,
+            &fake_bin,
+            &temp.path().join("portable-replay-docker.log"),
+            &run_id,
+            &portable,
+            "success",
+        )
+        .output()
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "portable replay {ordinal} failed: stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    verify("post-replay");
+    assert_eq!(
+        fs::read(run_path.join("checksums.txt")).unwrap(),
+        sealed_inventory_before,
+        "post-seal replay changed the run inventory"
+    );
+
+    fs::write(portable.join("requirements.txt"), b"changed==1\n").unwrap();
+    let changed = replay_command_with_workspace(
+        &evidence,
+        &fake_bin,
+        &temp.path().join("changed-replay-docker.log"),
+        &run_id,
+        &portable,
+        "success",
+    )
+    .output()
+    .unwrap();
+    assert_eq!(
+        changed.status.code(),
+        Some(4),
+        "changed portable source must be BLOCKED: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&changed.stdout),
+        String::from_utf8_lossy(&changed.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&changed.stderr).contains("source snapshot mismatch"),
+        "unexpected changed-source error: {:?}",
+        String::from_utf8_lossy(&changed.stderr)
+    );
+
+    let v1_evidence = temp.path().join("v1-evidence");
+    let v1_work = temp.path().join("v1-work");
+    let v1_run_id = "v1-portable-rejected";
+    let recorded = v1_work.join("workspaces").join(v1_run_id);
+    fs::create_dir_all(&recorded).unwrap();
+    make_reportable_bundle_for_replay(
+        &v1_evidence.join("runs").join(v1_run_id),
+        v1_run_id,
+        recorded,
+        Some(format!("sha256:{}", "a".repeat(64))),
+    );
+    let other_v1_source = temp.path().join("other-v1-source");
+    fs::create_dir(&other_v1_source).unwrap();
+    let rejected = replay_command_with_workspace(
+        &v1_evidence,
+        &fake_bin,
+        &temp.path().join("v1-replay-docker.log"),
+        v1_run_id,
+        &other_v1_source,
+        "success",
+    )
+    .output()
+    .unwrap();
+    assert_eq!(rejected.status.code(), Some(4));
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr)
+            .contains("public replay requires a sealed v2 origin"),
+        "unexpected v1 rejection: {:?}",
+        String::from_utf8_lossy(&rejected.stderr)
     );
 }
 
@@ -713,7 +1074,7 @@ fn rejects_generic_and_scenario_bundles_as_run_paths() {
             .arg(&generic)
             .output()
             .unwrap(),
-        "verify requires a run bundle, found generic",
+        "verify requires a run or detached public replay receipt, found generic",
     );
 
     let run = temp.path().join("run");
@@ -725,7 +1086,7 @@ fn rejects_generic_and_scenario_bundles_as_run_paths() {
             .arg(run.join("scenarios/baseline"))
             .output()
             .unwrap(),
-        "verify requires a run bundle, found scenario",
+        "verify requires a run or detached public replay receipt, found scenario",
     );
 }
 

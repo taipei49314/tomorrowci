@@ -1,0 +1,16 @@
+[package]
+name = "tomorrowci-adapter-example"
+description = "Minimal out-of-tree-style adapter example for the TomorrowCI SDK"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+tomorrowci-core = { path = "../core" }
+tomorrowci-adapters = { path = "../adapters" }
+
+[dev-dependencies]
+serde_json.workspace = true

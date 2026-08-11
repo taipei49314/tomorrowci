@@ -9,6 +9,7 @@
 //! - target code is never executed on the host by default
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -57,6 +58,10 @@ pub struct EngineInfo {
     pub version: String,
 }
 
+fn daemon_probe_args(_kind: EngineKind) -> &'static [&'static str] {
+    &["info"]
+}
+
 /// Detect available sandbox engine.
 pub fn detect_engine(preference: &str) -> Result<EngineInfo> {
     let order: Vec<EngineKind> = match preference {
@@ -94,9 +99,12 @@ pub fn detect_engine(preference: &str) -> Result<EngineInfo> {
                 })
                 .unwrap_or_else(|| "unknown".into());
 
-            // Probe daemon
+            // Probe daemon readiness with the cross-engine command itself.
+            // Docker's Go template exposes `.ID`, while current Podman does
+            // not, so a Docker-specific formatted probe incorrectly reports
+            // a healthy Podman service as unavailable.
             let probe = std::process::Command::new(&path)
-                .args(["info", "--format", "{{.ID}}"])
+                .args(daemon_probe_args(kind))
                 .output();
             match probe {
                 Ok(o) if o.status.success() => {
@@ -180,11 +188,43 @@ pub struct SandboxExecOptions {
     pub allowlist_env: Vec<String>,
 }
 
+const ENGINE_CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
+const ENGINE_CONTROL_OUTPUT_LIMIT: usize = 64 * 1024;
+
+/// Validate the joint environment/command network policy before creating a
+/// container. A Fetch label alone never grants network access: the recorded
+/// command and environment must both explicitly permit it.
+pub fn validate_network_policy(env: &EnvironmentSpec, commands: &[CommandSpec]) -> Result<()> {
+    for command in commands {
+        command_network_access(env.network_mode, command)?;
+    }
+    Ok(())
+}
+
+fn command_network_access(mode: NetworkMode, command: &CommandSpec) -> Result<bool> {
+    if command.network_required && command.phase != CommandPhase::Fetch {
+        return Err(SandboxError::Blocked(format!(
+            "network was requested outside the fetch phase by '{}'",
+            command.program
+        )));
+    }
+    if command.network_required && mode == NetworkMode::None {
+        return Err(SandboxError::Blocked(format!(
+            "command '{}' requires network but the recorded environment forbids it",
+            command.program
+        )));
+    }
+    Ok(command.phase == CommandPhase::Fetch
+        && command.network_required
+        && matches!(mode, NetworkMode::FetchOnly | NetworkMode::Full))
+}
+
 /// Execute commands inside **one** isolated container session.
 ///
 /// Install/fetch state must persist across commands (pip install then pytest).
-/// Network policy: start with bridge for fetch; disconnect before test/build when
-/// `network_mode` is `fetch-only` or `none`.
+/// Network policy: execute every recorded command with no attached network
+/// unless it is an explicitly network-required Fetch command, verify every
+/// transition, and disconnect again before accepting its result.
 pub async fn execute_scenario(
     opts: &SandboxExecOptions,
     commands: &[CommandSpec],
@@ -209,6 +249,7 @@ pub async fn execute_scenario(
             "refusing workspace path that references docker.sock".into(),
         ));
     }
+    validate_network_policy(&opts.env, commands)?;
 
     let engine = &opts.engine;
     let name = format!(
@@ -222,7 +263,7 @@ pub async fn execute_scenario(
         "--name".into(),
         name.clone(),
         "--network".into(),
-        "bridge".into(),
+        engine_default_network(engine).into(),
         "--memory".into(),
         format!("{}m", opts.env.memory_mb),
         "--cpus".into(),
@@ -271,9 +312,10 @@ pub async fn execute_scenario(
         }
     }
 
+    // Override any image entrypoint so startup cannot execute unrecorded code.
+    create_args.push("--entrypoint".into());
+    create_args.push("/bin/sleep".into());
     create_args.push(opts.env.image_ref.clone());
-    // Keep container alive for docker exec sessions.
-    create_args.push("sleep".into());
     create_args.push("infinity".into());
 
     let create = Command::new(&engine.path)
@@ -302,6 +344,19 @@ pub async fn execute_scenario(
         )));
     }
 
+    // Start only the fixed image-provided `/bin/sleep`, then detach the named
+    // network before any recorded target command is executed. Podman 4.x does
+    // not persist a network disconnect made while a container is stopped;
+    // disconnecting the running inert container is portable across Docker and
+    // Podman while preserving the target-code isolation boundary.
+    if let Err(error) = disconnect_container_network(engine, &name).await {
+        let _ = Command::new(&engine.path)
+            .args(["rm", "-f", &name])
+            .output()
+            .await;
+        return Err(error);
+    }
+
     let cleanup = |engine: EngineInfo, name: String| async move {
         // Best-effort terminate then remove (cancellation / crash safety).
         let _ = Command::new(&engine.path)
@@ -319,9 +374,15 @@ pub async fn execute_scenario(
     let mut last_exit = Some(0);
     let mut network_used = false;
     let mut timed_out = false;
-    let mut network_connected = true; // created with bridge
     let start = Instant::now();
     let wall = Duration::from_secs(opts.env.timeout_seconds.max(1));
+
+    // An inspect failure is not evidence of isolation. Require the engine to
+    // corroborate the post-start disconnect before any target command executes.
+    if let Err(error) = ensure_container_offline(engine, &name).await {
+        cleanup(engine.clone(), name.clone()).await;
+        return Err(error);
+    }
 
     for cmd in commands {
         if start.elapsed() > wall {
@@ -329,34 +390,30 @@ pub async fn execute_scenario(
             break;
         }
         let remaining = wall.saturating_sub(start.elapsed());
-        let use_net = match (cmd.phase, opts.env.network_mode) {
-            (CommandPhase::Fetch, _) => true,
-            (_, NetworkMode::Full) => true,
-            (_, NetworkMode::None) => false,
-            (_, NetworkMode::FetchOnly) => false,
+        let use_net = command_network_access(opts.env.network_mode, cmd)
+            .expect("network policy was validated before container creation");
+        let transition = if use_net {
+            connect_container_network(engine, &name).await
+        } else {
+            ensure_container_offline(engine, &name).await
         };
-        if use_net {
-            network_used = true;
-        }
-
-        // Toggle network for fetch-only / none policies.
-        if use_net && !network_connected {
-            let _ = Command::new(&engine.path)
-                .args(["network", "connect", "bridge", &name])
-                .output()
-                .await;
-            network_connected = true;
-        } else if !use_net && network_connected {
-            let _ = Command::new(&engine.path)
-                .args(["network", "disconnect", "-f", "bridge", &name])
-                .output()
-                .await;
-            network_connected = false;
+        if let Err(error) = transition {
+            cleanup(engine.clone(), name.clone()).await;
+            return Err(error);
         }
 
         let result = exec_in_container(engine, &name, cmd, use_net, remaining).await;
+        // Never interpret or return a networked command result until the
+        // engine confirms that egress has been removed again.
+        if use_net {
+            if let Err(error) = disconnect_container_network(engine, &name).await {
+                cleanup(engine.clone(), name.clone()).await;
+                return Err(error);
+            }
+        }
         match result {
             Ok(raw) => {
+                network_used |= raw.network_used;
                 combined_stdout.push_str(&raw.stdout);
                 combined_stderr.push_str(&raw.stderr);
                 last_exit = raw.exit_code;
@@ -397,6 +454,150 @@ pub async fn execute_scenario(
         network_used,
         error: None,
     })
+}
+
+fn engine_default_network(engine: &EngineInfo) -> &'static str {
+    match engine.kind {
+        EngineKind::Docker => "bridge",
+        EngineKind::Podman => "podman",
+    }
+}
+
+async fn engine_control_output(
+    engine: &EngineInfo,
+    args: &[&str],
+    operation: &str,
+) -> Result<std::process::Output> {
+    let mut command = Command::new(&engine.path);
+    command
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let child = command.spawn().map_err(|error| {
+        SandboxError::Blocked(format!(
+            "container network {operation} could not start: {error}"
+        ))
+    })?;
+    let output = tokio::time::timeout(ENGINE_CONTROL_TIMEOUT, child.wait_with_output())
+        .await
+        .map_err(|_| {
+            SandboxError::Blocked(format!(
+                "container network {operation} timed out after {} seconds",
+                ENGINE_CONTROL_TIMEOUT.as_secs()
+            ))
+        })?
+        .map_err(|error| {
+            SandboxError::Blocked(format!("container network {operation} failed: {error}"))
+        })?;
+    if output.stdout.len() > ENGINE_CONTROL_OUTPUT_LIMIT
+        || output.stderr.len() > ENGINE_CONTROL_OUTPUT_LIMIT
+    {
+        return Err(SandboxError::Blocked(format!(
+            "container network {operation} exceeded the control-output limit"
+        )));
+    }
+    if !output.status.success() {
+        return Err(SandboxError::Blocked(format!(
+            "container network {operation} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(output)
+}
+
+async fn inspect_container_networks(engine: &EngineInfo, name: &str) -> Result<BTreeSet<String>> {
+    let output = engine_control_output(
+        engine,
+        &[
+            "inspect",
+            "--format",
+            "{{json .NetworkSettings.Networks}}",
+            name,
+        ],
+        "status inspection",
+    )
+    .await?;
+    parse_container_networks(&output.stdout)
+}
+
+fn parse_container_networks(bytes: &[u8]) -> Result<BTreeSet<String>> {
+    let value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|_| SandboxError::Blocked("container network status was not valid JSON".into()))?;
+    // Podman 4.9 renders `.NetworkSettings.Networks` as JSON `null` after the
+    // last network is detached. Docker and newer Podman render `{}`. Both are
+    // engine attestations that no named network remains attached.
+    if value.is_null() {
+        return Ok(BTreeSet::new());
+    }
+    let networks = value.as_object().ok_or_else(|| {
+        SandboxError::Blocked("container network status was not a JSON object".into())
+    })?;
+    if networks.keys().any(|name| name.trim().is_empty()) {
+        return Err(SandboxError::Blocked(
+            "container network status contained an empty network name".into(),
+        ));
+    }
+    Ok(networks.keys().cloned().collect())
+}
+
+fn networks_are_offline(networks: &BTreeSet<String>) -> bool {
+    networks.is_empty()
+}
+
+async fn ensure_container_offline(engine: &EngineInfo, name: &str) -> Result<()> {
+    let networks = inspect_container_networks(engine, name).await?;
+    if networks_are_offline(&networks) {
+        Ok(())
+    } else {
+        Err(SandboxError::Blocked(format!(
+            "container unexpectedly has active networks: {}",
+            networks.into_iter().collect::<Vec<_>>().join(", ")
+        )))
+    }
+}
+
+async fn connect_container_network(engine: &EngineInfo, name: &str) -> Result<()> {
+    let before = inspect_container_networks(engine, name).await?;
+    if !networks_are_offline(&before) {
+        return Err(SandboxError::Blocked(
+            "container was already network-connected before an allowed fetch".into(),
+        ));
+    }
+
+    let network = engine_default_network(engine);
+    engine_control_output(engine, &["network", "connect", network, name], "connect").await?;
+    let after = inspect_container_networks(engine, name).await?;
+    if after.len() != 1 || !after.contains(network) {
+        return Err(SandboxError::Blocked(format!(
+            "container network connect was not corroborated for {network}"
+        )));
+    }
+    Ok(())
+}
+
+async fn disconnect_container_network(engine: &EngineInfo, name: &str) -> Result<()> {
+    let network = engine_default_network(engine);
+    let before = inspect_container_networks(engine, name).await?;
+    if before.len() != 1 || !before.contains(network) {
+        return Err(SandboxError::Blocked(format!(
+            "container network state changed before disconnect: {}",
+            before.into_iter().collect::<Vec<_>>().join(", ")
+        )));
+    }
+    engine_control_output(
+        engine,
+        &["network", "disconnect", "--force", network, name],
+        "disconnect",
+    )
+    .await?;
+    let after = inspect_container_networks(engine, name).await?;
+    if !networks_are_offline(&after) {
+        return Err(SandboxError::Blocked(
+            "container network disconnect was not corroborated".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Docker Desktop on Windows expects Linux-style paths for -v mounts when using
@@ -539,8 +740,29 @@ pub fn doctor_sandbox(preference: &str) -> DoctorSandboxReport {
 
 /// Copy repository into a disposable workspace (does not mutate original).
 pub fn materialize_workspace(source: &Path, dest: &Path) -> Result<()> {
-    if dest.exists() {
-        std::fs::remove_dir_all(dest)?;
+    let source_metadata = std::fs::symlink_metadata(source)?;
+    if !source_metadata.is_dir()
+        || source_metadata.file_type().is_symlink()
+        || is_reparse_point(&source_metadata)
+    {
+        return Err(SandboxError::Blocked(
+            "workspace source must be a plain directory".into(),
+        ));
+    }
+    match std::fs::symlink_metadata(dest) {
+        Ok(metadata) => {
+            if !metadata.is_dir()
+                || metadata.file_type().is_symlink()
+                || is_reparse_point(&metadata)
+            {
+                return Err(SandboxError::Blocked(
+                    "workspace destination must be a plain directory".into(),
+                ));
+            }
+            std::fs::remove_dir_all(dest)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
     std::fs::create_dir_all(dest)?;
     copy_dir_recursive(source, dest)?;
@@ -566,21 +788,134 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
             }
             continue;
         }
+        let metadata = std::fs::symlink_metadata(entry.path())?;
+        if ty.is_symlink() || is_reparse_point(&metadata) {
+            return Err(SandboxError::Blocked(format!(
+                "workspace contains unsupported link or reparse entry: {}",
+                entry.path().display()
+            )));
+        }
         if ty.is_dir() {
             copy_dir_recursive(&entry.path(), &to)?;
-        } else if ty.is_symlink() {
-            // Do not follow; skip symlinks to avoid escapes at copy time
-            tracing::warn!(path = %entry.path().display(), "skipping symlink during workspace copy");
-        } else {
+        } else if ty.is_file() {
             std::fs::copy(entry.path(), &to)?;
+        } else {
+            return Err(SandboxError::Blocked(format!(
+                "workspace contains unsupported non-regular entry: {}",
+                entry.path().display()
+            )));
         }
     }
     Ok(())
 }
 
+#[cfg(windows)]
+fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse_point(_metadata: &std::fs::Metadata) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
+    use tomorrowci_core::IndexMap;
+
+    fn command(phase: CommandPhase, network_required: bool) -> CommandSpec {
+        CommandSpec {
+            phase,
+            program: "fixture".into(),
+            args: vec![],
+            workdir: "/workspace".into(),
+            network_required,
+            env: IndexMap::new(),
+        }
+    }
+
+    fn environment(network_mode: NetworkMode) -> EnvironmentSpec {
+        EnvironmentSpec {
+            image_ref: "fixture@sha256:deadbeef".into(),
+            image_digest: None,
+            workdir: "/workspace".into(),
+            user: None,
+            env: IndexMap::new(),
+            mounts: vec![],
+            network_mode,
+            read_only_root: false,
+            memory_mb: 128,
+            cpus: 1.0,
+            pids_limit: 16,
+            timeout_seconds: 10,
+        }
+    }
+
+    #[test]
+    fn daemon_readiness_probe_is_portable_across_supported_engines() {
+        assert_eq!(daemon_probe_args(EngineKind::Docker), ["info"]);
+        assert_eq!(daemon_probe_args(EngineKind::Podman), ["info"]);
+    }
+
+    #[test]
+    fn fetch_needs_both_recorded_command_and_environment_permission() {
+        let implicit_fetch = command(CommandPhase::Fetch, false);
+        assert!(!command_network_access(NetworkMode::FetchOnly, &implicit_fetch).unwrap());
+        assert!(!command_network_access(NetworkMode::Full, &implicit_fetch).unwrap());
+
+        let explicit_fetch = command(CommandPhase::Fetch, true);
+        assert!(command_network_access(NetworkMode::FetchOnly, &explicit_fetch).unwrap());
+        assert!(command_network_access(NetworkMode::Full, &explicit_fetch).unwrap());
+        assert!(command_network_access(NetworkMode::None, &explicit_fetch).is_err());
+        assert!(validate_network_policy(
+            &environment(NetworkMode::None),
+            std::slice::from_ref(&explicit_fetch)
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn forged_non_fetch_network_request_is_blocked_in_every_mode() {
+        for phase in [CommandPhase::Build, CommandPhase::Test, CommandPhase::Probe] {
+            for mode in [NetworkMode::None, NetworkMode::FetchOnly, NetworkMode::Full] {
+                assert!(command_network_access(mode, &command(phase, true)).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn network_status_must_be_valid_and_corroborate_isolation() {
+        let none = parse_container_networks(br#"{"none":{}}"#).unwrap();
+        assert!(!networks_are_offline(&none));
+        let detached = parse_container_networks(br#"{}"#).unwrap();
+        assert!(networks_are_offline(&detached));
+        let podman_detached = parse_container_networks(b"null").unwrap();
+        assert!(networks_are_offline(&podman_detached));
+        let bridge = parse_container_networks(br#"{"bridge":{}}"#).unwrap();
+        assert!(!networks_are_offline(&bridge));
+
+        assert!(parse_container_networks(b"not-json").is_err());
+        assert!(parse_container_networks(b"[]").is_err());
+        assert!(parse_container_networks(br#"{"":{}}"#).is_err());
+    }
+
+    #[tokio::test]
+    async fn network_status_process_error_fails_closed() {
+        let engine = EngineInfo {
+            kind: EngineKind::Docker,
+            path: PathBuf::from("definitely-missing-tomorrowci-engine-binary"),
+            version: "test".into(),
+        };
+        let error = inspect_container_networks(&engine, "fixture")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("could not start"), "{error}");
+    }
 
     #[test]
     fn forbidden_env_detected() {
@@ -593,5 +928,44 @@ mod tests {
     fn doctor_without_engine_is_blocked() {
         // May or may not have engine; just ensure function returns
         let _ = doctor_sandbox("auto");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialization_rejects_source_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("destination");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("target"), b"data").unwrap();
+        symlink("target", source.join("link")).unwrap();
+
+        let error = materialize_workspace(&source, &destination).unwrap_err();
+        assert!(error.to_string().contains("link or reparse"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn materialization_rejects_source_junctions() {
+        let root = tempdir().unwrap();
+        let source = root.path().join("source");
+        let external = root.path().join("external");
+        let destination = root.path().join("destination");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&external).unwrap();
+        std::fs::write(external.join("secret"), b"data").unwrap();
+        let junction = source.join("junction");
+        let status = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&external)
+            .status()
+            .unwrap();
+        assert!(status.success(), "test junction could not be created");
+
+        let error = materialize_workspace(&source, &destination).unwrap_err();
+        assert!(error.to_string().contains("link or reparse"));
     }
 }

@@ -1,8 +1,17 @@
 //! Evidence bundle writer and replay manifest consumer.
 
+mod patch;
 mod replay_v2;
+mod weather;
 
-pub use replay_v2::{capture_source_snapshot_v2, AttemptEvidenceV2};
+pub use patch::{verify_patch_proof_bundle, VerifiedPatchProof};
+pub use replay_v2::{
+    capture_source_snapshot_v2, load_public_replay_origin_v2, next_public_replay_ordinal_v2,
+    read_public_replay_receipt_v2, verify_public_replay_receipt_pair_v2,
+    write_independent_attempt_bundle_v2, write_public_replay_receipt_v2, AttemptEvidenceV2,
+    PublicReplayOriginV2, SealedPublicReplayReceiptV2, VerifiedPublicReplayPairV2,
+};
+pub use weather::{aggregate_verified_weather_map, VerifiedWeatherRun};
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -217,6 +226,15 @@ pub struct VerifiedBundle {
 }
 
 impl VerifiedBundle {
+    /// SHA-256 of the canonical inventory generation retained by this
+    /// verification result. This never re-reads `checksums.txt`, so a later
+    /// reseal cannot substitute a different generation between verification
+    /// and identity construction.
+    pub fn inventory_sha256(&self) -> Result<String> {
+        let canonical = self.inventory.to_canonical_string()?;
+        Ok(hex::encode(Sha256::digest(canonical.as_bytes())))
+    }
+
     /// Read bytes from the exact inventory generation that produced this
     /// verification result.
     pub fn read_bytes(&self, relative: &str) -> Result<Vec<u8>> {
@@ -1503,7 +1521,7 @@ fn verify_run_semantics(
     if early_blocked
         && recorded_detection
             .as_ref()
-            .map_or(true, |detection| !detection.supported)
+            .is_none_or(|detection| !detection.supported)
     {
         return Err(EvidenceError::InvalidSemantics {
             field: "detection.json".into(),
@@ -1570,7 +1588,7 @@ fn verify_run_semantics(
         if run
             .sandbox_engine
             .as_deref()
-            .map_or(true, |engine| engine.trim().is_empty())
+            .is_none_or(|engine| engine.trim().is_empty())
         {
             return Err(EvidenceError::InvalidSemantics {
                 field: "run.json.sandbox_engine".into(),
@@ -2925,15 +2943,25 @@ fn validate_inventory_path(path: &str) -> Result<()> {
 }
 
 fn is_windows_reserved_component(component: &str) -> bool {
-    let stem = component
+    let raw_stem = component
         .split_once('.')
-        .map_or(component, |(stem, _)| stem)
-        .to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || stem
-            .strip_prefix("COM")
-            .and_then(|suffix| suffix.parse::<u8>().ok())
-            .is_some_and(|number| (1..=9).contains(&number))
+        .map_or(component, |(stem, _)| stem);
+    if raw_stem
+        .strip_suffix(['\u{00b9}', '\u{00b2}', '\u{00b3}'])
+        .is_some_and(|prefix| {
+            prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT")
+        })
+    {
+        return true;
+    }
+    let stem = raw_stem.to_ascii_uppercase();
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || stem
+        .strip_prefix("COM")
+        .and_then(|suffix| suffix.parse::<u8>().ok())
+        .is_some_and(|number| (1..=9).contains(&number))
         || stem
             .strip_prefix("LPT")
             .and_then(|suffix| suffix.parse::<u8>().ok())
@@ -3163,7 +3191,7 @@ mod tests {
         let started = chrono::Utc::now();
         let run = RunManifest {
             run_id: RunId(run_id.into()),
-            tool_version: "0.1.0".into(),
+            tool_version: env!("CARGO_PKG_VERSION").into(),
             started_at: started,
             finished_at: Some(started + chrono::Duration::seconds(1)),
             repository: repository.clone(),
@@ -3689,6 +3717,30 @@ mod tests {
     }
 
     #[test]
+    fn verified_inventory_digest_remains_bound_across_reseal() {
+        let dir = generic_bundle();
+        let first = verify_bundle(dir.path()).unwrap();
+        let first_digest = first.inventory_sha256().unwrap();
+        assert_eq!(
+            first_digest,
+            sha256_file(&dir.path().join(INVENTORY_FILE_NAME)).unwrap()
+        );
+
+        fs::write(dir.path().join("root.json"), b"later generation").unwrap();
+        seal_bundle(dir.path(), BundleKind::Generic).unwrap();
+        let second = verify_bundle(dir.path()).unwrap();
+        let second_digest = second.inventory_sha256().unwrap();
+        assert_eq!(
+            second_digest,
+            sha256_file(&dir.path().join(INVENTORY_FILE_NAME)).unwrap()
+        );
+
+        assert_ne!(first_digest, second_digest);
+        assert_eq!(first.inventory_sha256().unwrap(), first_digest);
+        assert_eq!(second.inventory_sha256().unwrap(), second_digest);
+    }
+
+    #[test]
     fn evidence_store_refuses_writes_and_reseal_after_finalization() {
         let (_dir, store) = valid_run_bundle("immutable-after-seal");
         let write_error = store
@@ -3923,6 +3975,8 @@ mod tests {
             "CON",
             "aux.json",
             "nested/LPT1/file.json",
+            "COM\u{00b9}",
+            "nested/lpt\u{00b2}.json",
         ] {
             let text = inventory_text(BundleKind::Generic, &[(ZERO_DIGEST, unsafe_path)]);
             assert!(
