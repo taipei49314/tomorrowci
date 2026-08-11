@@ -538,3 +538,7 @@ jobs:
                   yaml.safe_load(config_path.read_text(encoding="utf-8")),
               )
           PY
+      - name: validate release contracts and frozen external identities
+        run: |
+          SCHEMA_VENV="$RUNNER_TEMP/tomorrowci-schema-venv"
+          "$SCHEMA_VENV/bin/python" -m unittest scripts.release.test_release

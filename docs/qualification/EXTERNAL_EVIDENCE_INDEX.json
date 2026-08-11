@@ -38,7 +38,7 @@
       "repository": "https://github.com/tj/commander.js",
       "source_sha": "ba6d13ddb4243e5913367734f8c159089ffe7834",
       "config_path": "docs/qualification/external/node-commander.yml",
-      "config_sha256": "c442071240fb5bbba10155b5bb91ebe31018e9a82a7a79095d8b2b70ea2d7a23",
+      "config_sha256": "0836670fcae0067e47468fafeaf5fbb6f69ba768257ab33e0b98664779715783",
       "status": "NOT_RUN",
       "workflow_url": null,
       "evidence_sha256": null
