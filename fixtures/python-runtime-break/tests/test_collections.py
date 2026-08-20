@@ -8,11 +8,17 @@ This is a real, documented stdlib change — OBSERVED when executed on concrete 
 """
 
 import sys
+import unittest
 
 
-def test_mutable_mapping_from_collections():
-    # Intentionally use the removed import path.
-    from collections import MutableMapping  # noqa: F401
+class CollectionsCompatibilityTest(unittest.TestCase):
+    def test_mutable_mapping_from_collections(self):
+        # Intentionally use the removed import path.
+        from collections import MutableMapping
 
-    assert MutableMapping is not None
-    assert sys.version_info < (3, 10), "should only pass on Python < 3.10"
+        self.assertIsNotNone(MutableMapping)
+        self.assertLess(
+            sys.version_info,
+            (3, 10),
+            "should only pass on Python < 3.10",
+        )
