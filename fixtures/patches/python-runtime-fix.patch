@@ -1,19 +1,28 @@
 diff --git a/tests/test_collections.py b/tests/test_collections.py
 --- a/tests/test_collections.py
 +++ b/tests/test_collections.py
-@@ -8,11 +8,7 @@ This is a real, documented stdlib change — OBSERVED when executed on concrete images.
+@@ -7,18 +7,12 @@ This is a real, documented stdlib change — OBSERVED when executed on concrete images.
+ This is a real, documented stdlib change — OBSERVED when executed on concrete images.
  """
 -
 -import sys
++
+ import unittest
 -
 -
 +
- def test_mutable_mapping_from_collections():
--    # Intentionally use the removed import path.
--    from collections import MutableMapping  # noqa: F401
-+    # Use the supported import path on both the baseline and future runtimes.
-+    from collections.abc import MutableMapping
--
 +
-     assert MutableMapping is not None
--    assert sys.version_info < (3, 10), "should only pass on Python < 3.10"
+ class CollectionsCompatibilityTest(unittest.TestCase):
+     def test_mutable_mapping_from_collections(self):
+-        # Intentionally use the removed import path.
+-        from collections import MutableMapping
+-
++        # Use the supported import path on both the baseline and future runtimes.
++        from collections.abc import MutableMapping
++
+         self.assertIsNotNone(MutableMapping)
+-        self.assertLess(
+-            sys.version_info,
+-            (3, 10),
+-            "should only pass on Python < 3.10",
+-        )
