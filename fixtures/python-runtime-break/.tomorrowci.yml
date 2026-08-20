@@ -1,7 +1,7 @@
 version: 1
 project:
   ecosystem: python
-  test_command: python -m pytest -q
+  test_command: python -m unittest discover -s tests -v
 baseline:
   runtime: "3.9"
   dependencies: locked
