@@ -163,6 +163,10 @@ run to another machine does not guarantee replay: platform/image availability,
 engine version and pip fetch requirements can still block execution. A Docker
 upgrade can therefore leave evidence verifiable while replay is blocked.
 
+This recovery also changes failure fingerprints to preserve concrete exception
+causes and source identity. Use a fresh scan from this checkout before replay;
+old failure fingerprints are not silently treated as equivalent to the new ones.
+
 For a useful first issue or review, retain the complete run directory, the exact
 TomorrowCI source identity, the target source identity, the chosen configuration,
 and the original test output. A naturally failing third-party test plus a passing

@@ -295,7 +295,7 @@ fn normalize_frame_path(raw: &str) -> String {
     }
     for root in ["/work/", "/workspace/"] {
         if let Some(relative) = path.strip_prefix(root) {
-            return relative.to_string();
+            return normalize_relative_scenario_path(relative);
         }
     }
     let parts: Vec<_> = path.split('/').collect();
@@ -307,11 +307,66 @@ fn normalize_frame_path(raw: &str) -> String {
             && (part.starts_with("run-") || part.starts_with("tomorrowci-replay-"))
             && index + 1 < parts.len()
         {
-            return parts[index + 1..].join("/");
+            return normalize_relative_scenario_path(&parts[index + 1..].join("/"));
         }
     }
     // Preserve an uncertain root rather than collapsing equally named modules.
-    path.trim_start_matches("./").to_string()
+    normalize_relative_scenario_path(path.trim_start_matches("./"))
+}
+
+fn is_generated_scenario_id(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+}
+
+fn normalize_relative_scenario_path(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(".tomorrowci/scenarios/") {
+        if let Some((scenario, relative)) = rest.split_once('/') {
+            if is_generated_scenario_id(scenario) && !relative.is_empty() {
+                return format!(".tomorrowci/scenarios/<scenario>/{relative}");
+            }
+        }
+    }
+    path.to_string()
+}
+
+/// Only the adapter-owned scenario directory varies across reduction runs.
+/// Preserve package names, files and every path outside these exact roots.
+fn normalize_generated_scenario_paths(text: &str) -> String {
+    let mut normalized = text.to_string();
+    for prefix in [
+        "/work/.tomorrowci/scenarios/",
+        "/workspace/.tomorrowci/scenarios/",
+    ] {
+        let mut output = String::with_capacity(normalized.len());
+        let mut last = 0;
+        for (start, _) in normalized.match_indices(prefix) {
+            if start > 0
+                && !normalized[..start].chars().next_back().is_some_and(|ch| {
+                    ch.is_whitespace() || matches!(ch, '\'' | '"' | '(' | '[' | '=')
+                })
+            {
+                continue;
+            }
+            let rest = &normalized[start + prefix.len()..];
+            let Some((scenario, relative)) = rest.split_once('/') else {
+                continue;
+            };
+            if !is_generated_scenario_id(scenario) || relative.is_empty() {
+                continue;
+            }
+            output.push_str(&normalized[last..start]);
+            output.push_str(".tomorrowci/scenarios/<scenario>/");
+            last = start + prefix.len() + scenario.len() + 1;
+        }
+        output.push_str(&normalized[last..]);
+        normalized = output;
+    }
+    normalized
 }
 
 fn rust_primary_frame(blob: &str) -> Option<String> {
@@ -395,7 +450,7 @@ fn rust_failure_detail(blob: &str) -> String {
     }
     // Retain all semantic payload, including expected/found types and left/right
     // assertion values. The 200-character display limit never truncates the hash.
-    details.join("\n")
+    normalize_generated_scenario_paths(&details.join("\n"))
 }
 
 #[cfg(test)]
@@ -576,6 +631,34 @@ mod tests {
                 .normalized_hash,
             failure("error[E0425]: missing value\n --> /opt/shipping/src/lib.rs:1:2")
                 .normalized_hash
+        );
+    }
+
+    #[test]
+    fn reduction_scenario_ids_do_not_change_dependency_error_identity() {
+        let diagnostic = |root: &str, scenario: &str, file: &str| {
+            failure(&format!(
+                "error[E0425]: cannot find value `total` in this scope\n --> {root}/.tomorrowci/scenarios/{scenario}/cargo/registry/src/{file}:10:2\n note: dependency source '{root}/.tomorrowci/scenarios/{scenario}/cargo/registry/src/{file}'"
+            ))
+        };
+        let full = diagnostic("/work", "deps-full", "alpha-1.0.0/src/lib.rs");
+        let reduced = diagnostic("/workspace", "ddmin-2", "alpha-1.0.0/src/lib.rs");
+        assert_eq!(full.normalized_hash, reduced.normalized_hash);
+        assert_eq!(
+            full.primary_frame.as_deref(),
+            Some(".tomorrowci/scenarios/<scenario>/cargo/registry/src/alpha-1.0.0/src/lib.rs")
+        );
+        assert_ne!(
+            full.normalized_hash,
+            diagnostic("/work", "ddmin-2", "beta-1.0.0/src/lib.rs").normalized_hash
+        );
+        assert_ne!(
+            full.normalized_hash,
+            diagnostic("/work", "ddmin-2", "alpha-1.0.0/src/other.rs").normalized_hash
+        );
+        assert_ne!(
+            diagnostic("/opt/work", "deps-full", "alpha-1.0.0/src/lib.rs").normalized_hash,
+            diagnostic("/opt/work", "ddmin-2", "alpha-1.0.0/src/lib.rs").normalized_hash
         );
     }
 }

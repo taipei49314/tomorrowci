@@ -24,7 +24,7 @@ returned 404 during the recovery audit; the release links below are historical
 references, not verified current download locations.
 
 The recovery rejects mixed runtime/concrete-dependency experiments instead of
-running a candidate under the baseline image. Node/Rust failure fingerprints
+running a candidate under the baseline image. Python/Node/Rust failure fingerprints
 now distinguish concrete diagnostics; rescan with this checkout before replaying
 old failures whose fingerprints used the previous algorithm. See the trial guide
 for limits, including known candidate coverage and dependency reproducibility.
