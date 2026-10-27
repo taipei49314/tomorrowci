@@ -3,7 +3,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::fs::OpenOptions;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use tomorrowci_core::{
     compare_horizons, evaluate_policy_gate, Config, EvidenceGrade, HorizonDelta, Verdict,
 };
@@ -214,7 +214,7 @@ fn cmd_scan(target: &str, config_path: Option<&Path>, commit: Option<&str>) -> R
     if commit.is_some() {
         bail!("--commit is only valid for an HTTPS GitHub remote target");
     }
-    let root = PathBuf::from(target);
+    let root = local_scan_root(Path::new(target))?;
     if !root.exists() {
         bail!("path does not exist: {}", root.display());
     }
@@ -247,6 +247,22 @@ fn ecosystem_name(ecosystem: tomorrowci_core::Ecosystem) -> &'static str {
         tomorrowci_core::Ecosystem::Rust => "rust",
         tomorrowci_core::Ecosystem::Unknown => "unknown",
     }
+}
+
+fn local_scan_root(target: &Path) -> Result<PathBuf> {
+    // Accept the documented `scan .` / `scan ./project` without resolving
+    // aliases before the evidence layer can reject them. Parent traversal and
+    // drive-relative paths still pass through its strict ancestor checks.
+    let without_dot: PathBuf = target
+        .components()
+        .filter(|component| !matches!(component, Component::CurDir))
+        .collect();
+    let path = if without_dot.as_os_str().is_empty() {
+        std::env::current_dir()?
+    } else {
+        without_dot
+    };
+    Ok(tomorrowci_evidence::validate_existing_ancestors(&path)?)
 }
 
 fn finish_scan(
@@ -1253,5 +1269,35 @@ mod tests {
     fn local_scan_rejects_remote_commit_authority() {
         let error = cmd_scan(".", None, Some(&"a".repeat(40))).unwrap_err();
         assert!(error.to_string().contains("only valid"));
+    }
+
+    #[test]
+    fn scan_dot_is_accepted_without_weakening_ancestor_validation() {
+        assert_eq!(
+            local_scan_root(Path::new(".")).unwrap(),
+            std::env::current_dir().unwrap()
+        );
+        assert_eq!(
+            local_scan_root(Path::new("./.")).unwrap(),
+            std::env::current_dir().unwrap()
+        );
+        assert!(local_scan_root(Path::new("../outside")).is_err());
+        #[cfg(windows)]
+        assert!(local_scan_root(Path::new("C:relative")).is_err());
+    }
+
+    #[test]
+    fn scan_dot_prefix_does_not_resolve_an_alias_before_validation() {
+        let parent = tempfile::tempdir().unwrap();
+        let target = parent.path().join("real");
+        let alias = parent.path().join("alias");
+        std::fs::create_dir(&target).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &alias).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(&target, &alias).is_err() {
+            return; // Capability-dependent; no claim that Windows symlinks were exercised.
+        }
+        assert!(local_scan_root(&parent.path().join(".").join("alias")).is_err());
     }
 }
