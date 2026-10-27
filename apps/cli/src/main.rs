@@ -4,10 +4,6 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
-use tomorrowci_adapter_node::NodeAdapter;
-use tomorrowci_adapter_python::PythonAdapter;
-use tomorrowci_adapter_rust::RustAdapter;
-use tomorrowci_adapters::EcosystemAdapter;
 use tomorrowci_core::{
     compare_horizons, evaluate_policy_gate, Config, EvidenceGrade, HorizonDelta, Verdict,
 };
@@ -224,33 +220,24 @@ fn cmd_scan(target: &str, config_path: Option<&Path>, commit: Option<&str>) -> R
     }
     let cfg = load_config(&root, config_path)?;
 
-    let py = PythonAdapter.detect(&root);
-    let node = NodeAdapter.detect(&root);
-    let rust = RustAdapter.detect(&root);
-    let eco = if py.supported {
-        "python"
-    } else if node.supported {
-        "node"
-    } else if rust.supported {
-        "rust"
-    } else {
-        println!("verdict: UNSUPPORTED");
-        return Ok(());
-    };
-    println!("ecosystem: {eco}");
-    println!("detection: PASS");
+    let result = scan_local(
+        &root,
+        ScanOptions {
+            config: cfg,
+            allow_scripted: false,
+        },
+    );
+    let eco = result
+        .as_ref()
+        .ok()
+        .map(|outcome| ecosystem_name(outcome.manifest.detection.ecosystem))
+        .unwrap_or("local");
+    if eco != "local" {
+        println!("ecosystem: {eco}");
+        println!("detection: PASS");
+    }
 
-    finish_scan(
-        scan_local(
-            &root,
-            ScanOptions {
-                config: cfg,
-                allow_scripted: false,
-            },
-        ),
-        eco,
-        format!("tomorrowci scan {}", root.display()),
-    )
+    finish_scan(result, eco, format!("tomorrowci scan {}", root.display()))
 }
 
 fn ecosystem_name(ecosystem: tomorrowci_core::Ecosystem) -> &'static str {

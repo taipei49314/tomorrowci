@@ -715,6 +715,7 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
+ "tempfile",
  "tomorrowci-adapter-node",
  "tomorrowci-adapter-python",
  "tomorrowci-adapter-rust",
