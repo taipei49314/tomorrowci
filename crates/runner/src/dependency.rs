@@ -833,6 +833,8 @@ mod tests {
         manifest.unchanged.pop();
         manifest.candidate.set_id = "baseline".into();
         assert!(manifest.to_candidate_set("pip").is_err());
+        manifest.candidate.set_id = "dep-0123456789abcdef0123".into();
+        assert!(manifest.to_candidate_set("pip").is_err());
         manifest.candidate.set_id = "after".into();
         manifest.candidate.changes[0].name = "--bad-option".into();
         assert!(manifest.to_candidate_set("pip").is_err());

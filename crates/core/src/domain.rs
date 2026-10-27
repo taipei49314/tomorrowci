@@ -955,6 +955,9 @@ pub fn dependency_fetch_network(scenario: &Scenario) -> &'static str {
 const VALIDATE_WHEEL_INPUTS: &str = r#"import json, re, sys, zipfile
 from email.parser import BytesParser
 expected = json.loads(sys.argv[1])
+actual_runtime = f'{sys.version_info.major}.{sys.version_info.minor}'
+if actual_runtime != sys.argv[2]:
+    raise SystemExit('wheel runtime differs from declared resolution: expected ' + sys.argv[2] + ', observed ' + actual_runtime)
 normalize = lambda name: re.sub(r'[-_.]+', '-', name).lower()
 for name, version, path in expected:
     with zipfile.ZipFile(path) as archive:
@@ -1025,6 +1028,7 @@ pub fn dependency_materialization_commands(
                     "-c".into(),
                     VALIDATE_WHEEL_INPUTS.into(),
                     identity_json.clone(),
+                    scenario.runtime.clone(),
                 ]));
                 let mut install: Vec<String> = [
                     "python",
