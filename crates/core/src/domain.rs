@@ -209,6 +209,8 @@ pub enum DependencySourceKind {
     /// SHA-256 over the canonical `path NUL file-sha256 LF` stream of a
     /// workspace-relative vendored directory, sorted by relative path.
     VendoredTreeSha256V1,
+    /// Original Python wheel bytes, SHA-256 of the complete file.
+    PythonWheelSha256V1,
 }
 
 /// One exact dependency artifact selected by a package-manager resolution.
@@ -236,7 +238,13 @@ impl ResolvedDependency {
                 return Err(format!("resolved dependency {field} must not be empty"));
             }
         }
-        validate_workspace_relative_source(&self.source)
+        validate_workspace_relative_source(&self.source)?;
+        if self.source_kind == DependencySourceKind::PythonWheelSha256V1
+            && !self.source.ends_with(".whl")
+        {
+            return Err("Python wheel source must end in .whl".into());
+        }
+        Ok(())
     }
 }
 
@@ -636,6 +644,17 @@ pub struct DependencyExperimentManifest {
     pub content_hash_algorithm: String,
     pub baseline: DependencySetReference,
     pub candidate: DependencyCandidateDeclaration,
+    /// Complete unchanged closure for wheel experiments. Omitted by legacy v1.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unchanged: Vec<DependencyFixedDeclaration>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DependencyFixedDeclaration {
+    pub id: String,
+    pub name: String,
+    pub artifact: DependencyArtifactDeclaration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -682,13 +701,45 @@ impl DependencyExperimentManifest {
         &self,
         package_manager: &str,
     ) -> std::result::Result<DependencyCandidateSet, String> {
-        if self.schema_version != 1 {
+        if !matches!(self.schema_version, 1 | 2) {
             return Err(format!(
                 "unsupported dependency experiment schema {}",
                 self.schema_version
             ));
         }
-        if self.content_hash_algorithm != "sha256-tree-v1" {
+        let wheel_mode = self.schema_version == 2;
+        if wheel_mode && self.candidate.changes.len() > 64 {
+            return Err("dependency experiment v2 supports at most 64 changes".into());
+        }
+        if wheel_mode
+            && (self.candidate.set_id == "baseline"
+                || self.candidate.set_id.starts_with("dep-")
+                || [&self.baseline.set_id, &self.candidate.set_id]
+                    .iter()
+                    .any(|id| {
+                        id.is_empty()
+                            || id.len() > 64
+                            || !id.bytes().all(|byte| {
+                                byte.is_ascii_lowercase()
+                                    || byte.is_ascii_digit()
+                                    || matches!(byte, b'-' | b'_')
+                            })
+                    }))
+        {
+            return Err("wheel experiment set IDs must be bounded canonical identifiers; candidate must not be baseline".into());
+        }
+        if wheel_mode && self.ecosystem != Ecosystem::Python {
+            return Err("dependency experiment v2 supports Python wheels only".into());
+        }
+        if !wheel_mode && !self.unchanged.is_empty() {
+            return Err("unchanged dependencies require experiment schema v2".into());
+        }
+        let expected_algorithm = if wheel_mode {
+            "sha256-file-v1"
+        } else {
+            "sha256-tree-v1"
+        };
+        if self.content_hash_algorithm != expected_algorithm {
             return Err(format!(
                 "unsupported dependency content hash algorithm {:?}",
                 self.content_hash_algorithm
@@ -710,9 +761,27 @@ impl DependencyExperimentManifest {
         let mut baseline_dependencies = Vec::new();
         let mut candidate_dependencies = Vec::new();
         let mut changes = Vec::new();
+        let source_kind = if wheel_mode {
+            DependencySourceKind::PythonWheelSha256V1
+        } else {
+            DependencySourceKind::VendoredTreeSha256V1
+        };
+        for fixed in &self.unchanged {
+            let dependency = ResolvedDependency {
+                id: fixed.id.clone(),
+                name: fixed.name.clone(),
+                version: fixed.artifact.version.clone(),
+                source: fixed.artifact.source.clone(),
+                source_kind,
+                content_sha256: fixed.artifact.content_sha256.clone(),
+            };
+            dependency.validate()?;
+            baseline_dependencies.push(dependency.clone());
+            candidate_dependencies.push(dependency);
+        }
         for declaration in &self.candidate.changes {
-            let before = declaration.resolved(&declaration.before)?;
-            let after = declaration.resolved(&declaration.after)?;
+            let before = declaration.resolved(&declaration.before, source_kind)?;
+            let after = declaration.resolved(&declaration.after, source_kind)?;
             baseline_dependencies.push(before.clone());
             candidate_dependencies.push(after.clone());
             changes.push(DependencyChange {
@@ -743,6 +812,32 @@ impl DependencyExperimentManifest {
             changes,
         };
         set.validate()?;
+        if wheel_mode {
+            for dependency in set
+                .baseline
+                .dependencies
+                .iter()
+                .chain(set.candidate.dependencies.iter())
+            {
+                let name = dependency.name.as_bytes();
+                if name.is_empty()
+                    || !name[0].is_ascii_alphanumeric()
+                    || !name[name.len() - 1].is_ascii_alphanumeric()
+                    || !name.iter().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-'
+                    })
+                    || dependency.name.contains("--")
+                    || dependency.id != dependency.name
+                    || dependency.version.is_empty()
+                    || !dependency
+                        .version
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b".!+_-".contains(&byte))
+                {
+                    return Err("wheel dependencies require normalized package IDs/names and exact versions".into());
+                }
+            }
+        }
         Ok(set)
     }
 }
@@ -751,13 +846,14 @@ impl DependencyChangeDeclaration {
     fn resolved(
         &self,
         artifact: &DependencyArtifactDeclaration,
+        source_kind: DependencySourceKind,
     ) -> std::result::Result<ResolvedDependency, String> {
         let dependency = ResolvedDependency {
             id: self.id.clone(),
             name: self.name.clone(),
             version: artifact.version.clone(),
             source: artifact.source.clone(),
-            source_kind: DependencySourceKind::VendoredTreeSha256V1,
+            source_kind,
             content_sha256: artifact.content_sha256.clone(),
         };
         dependency.validate()?;
@@ -841,6 +937,45 @@ pub struct CommandSpec {
     pub phase: String,
 }
 
+/// Wheel experiments already contain their entire artifact closure. Neither
+/// installation nor replay may retrieve a missing dependency from the network.
+pub fn dependency_fetch_network(scenario: &Scenario) -> &'static str {
+    if scenario.resolved_dependencies.as_ref().is_some_and(|set| {
+        !set.dependencies.is_empty()
+            && set.dependencies.iter().all(|dependency| {
+                dependency.source_kind == DependencySourceKind::PythonWheelSha256V1
+            })
+    }) {
+        "none"
+    } else {
+        "bridge"
+    }
+}
+
+const VALIDATE_WHEEL_INPUTS: &str = r#"import json, re, sys, zipfile
+from email.parser import BytesParser
+expected = json.loads(sys.argv[1])
+normalize = lambda name: re.sub(r'[-_.]+', '-', name).lower()
+for name, version, path in expected:
+    with zipfile.ZipFile(path) as archive:
+        entries = [item for item in archive.infolist() if len(item.filename.split('/')) == 2 and item.filename.endswith('.dist-info/METADATA')]
+        if len(entries) != 1 or entries[0].file_size > 1048576:
+            raise SystemExit('unsupported wheel metadata: ' + path)
+        metadata = BytesParser().parsebytes(archive.read(entries[0]), headersonly=True)
+        if metadata.get_all('Name', []) != [metadata.get('Name')] or metadata.get_all('Version', []) != [version] or normalize(metadata.get('Name', '')) != name:
+            raise SystemExit('wheel identity differs from declared resolution: ' + path)
+        if any('@' in requirement for requirement in metadata.get_all('Requires-Dist', [])):
+            raise SystemExit('direct-reference wheel dependencies are unsupported: ' + path)
+"#;
+
+const VALIDATE_INSTALLED_WHEELS: &str = r#"import importlib.metadata, json, re, sys
+normalize = lambda name: re.sub(r'[-_.]+', '-', name).lower()
+expected = sorted((name, version) for name, version, path in json.loads(sys.argv[1]))
+actual = sorted((normalize(dist.metadata.get('Name', '')), dist.version) for dist in importlib.metadata.distributions(path=[sys.argv[2]]))
+if actual != expected:
+    raise SystemExit('installed distribution closure differs from declared resolution: ' + repr(actual))
+"#;
+
 /// Deterministically derive the package-manager commands that materialize an
 /// exact dependency resolution. Both the writer and verifier consume this
 /// contract so recorded commands cannot merely self-assert a resolved set.
@@ -862,6 +997,78 @@ pub fn dependency_materialization_commands(
     match set.ecosystem {
         Ecosystem::Python => {
             let deps = format!("{state}/deps");
+            if set
+                .dependencies
+                .iter()
+                .any(|d| d.source_kind == DependencySourceKind::PythonWheelSha256V1)
+            {
+                if !set
+                    .dependencies
+                    .iter()
+                    .all(|d| d.source_kind == DependencySourceKind::PythonWheelSha256V1)
+                {
+                    return Err(crate::TcError::Unsupported(
+                        "mixed wheel/tree dependency sets are unsupported".into(),
+                    ));
+                }
+                commands.push(command(vec!["rm".into(), "-rf".into(), deps.clone()]));
+                commands.push(command(vec!["mkdir".into(), "-p".into(), deps.clone()]));
+                let identities: Vec<_> = set
+                    .dependencies
+                    .iter()
+                    .map(|d| (&d.name, &d.version, format!("/work/{}", d.source)))
+                    .collect();
+                let identity_json = serde_json::to_string(&identities)?;
+                commands.push(command(vec![
+                    "python".into(),
+                    "-I".into(),
+                    "-c".into(),
+                    VALIDATE_WHEEL_INPUTS.into(),
+                    identity_json.clone(),
+                ]));
+                let mut install: Vec<String> = [
+                    "python",
+                    "-I",
+                    "-m",
+                    "pip",
+                    "--isolated",
+                    "install",
+                    "--disable-pip-version-check",
+                    "--no-index",
+                    "--no-cache-dir",
+                    "--ignore-installed",
+                    "--no-compile",
+                    "--target",
+                ]
+                .iter()
+                .map(|value| (*value).into())
+                .collect();
+                install.push(deps.clone());
+                // All selected artifacts are supplied together. Pip validates
+                // Requires-Dist for this runtime; no index or unpinned fallback.
+                install.extend(
+                    set.dependencies
+                        .iter()
+                        .map(|d| format!("/work/{}", d.source)),
+                );
+                // Bind declared names and versions to the wheel metadata too.
+                // A renamed/mislabeled wheel must fail resolution at FETCH.
+                install.extend(
+                    set.dependencies
+                        .iter()
+                        .map(|d| format!("{}=={}", d.name, d.version)),
+                );
+                commands.push(command(install));
+                commands.push(command(vec![
+                    "python".into(),
+                    "-I".into(),
+                    "-c".into(),
+                    VALIDATE_INSTALLED_WHEELS.into(),
+                    identity_json,
+                    deps,
+                ]));
+                return Ok(Some(commands));
+            }
             let sources = format!("{state}/sources");
             commands.push(command(vec![
                 "rm".into(),

@@ -1035,6 +1035,7 @@ mod tests {
         let candidate = dependency_candidate();
         let manifest = DependencyExperimentManifest {
             schema_version: 1,
+            unchanged: Vec::new(),
             ecosystem: Ecosystem::Node,
             runtime: DependencyRuntimeIdentity {
                 version: "20".into(),

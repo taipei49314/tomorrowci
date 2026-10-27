@@ -20,11 +20,11 @@ use tomorrowci_adapter_python::{python_fetch_commands, PythonAdapter};
 use tomorrowci_adapter_rust::RustAdapter;
 use tomorrowci_adapters::EcosystemAdapter;
 use tomorrowci_core::{
-    classify_candidate_attempts, classify_from_reruns, compute_breakage_frontier, plan_scenarios,
-    validate_image_digest, Baseline, CommandSpec, Config, Ecosystem, EnvironmentAxis,
-    EnvironmentSpec, EvidenceGrade, ExecutionPlan, ExecutionResult, FailureSignature,
-    ProjectDetection, RawExecutionResult, RemoteSourceRecord, RepositorySnapshot, Result,
-    RunIdentity, RunManifest, Scenario, TcError, TestAttemptRecord, TestAttemptsSummary,
+    classify_candidate_attempts, classify_from_reruns, compute_breakage_frontier,
+    dependency_fetch_network, plan_scenarios, validate_image_digest, Baseline, CommandSpec, Config,
+    Ecosystem, EnvironmentAxis, EnvironmentSpec, EvidenceGrade, ExecutionPlan, ExecutionResult,
+    FailureSignature, ProjectDetection, RawExecutionResult, RemoteSourceRecord, RepositorySnapshot,
+    Result, RunIdentity, RunManifest, Scenario, TcError, TestAttemptRecord, TestAttemptsSummary,
     TestExecutionStatus, Verdict,
 };
 use tomorrowci_evidence::{
@@ -193,7 +193,7 @@ fn scan_with_adapter(
     // Target source files are not modified; evidence is under .tomorrowci/runs (excluded).
     let mut baseline = adapter.baseline(&work, &config)?;
     let rt_cands = adapter.candidates(&baseline, &config)?;
-    let dependency_experiment =
+    let mut dependency_experiment =
         load_dependency_experiment(&work, detection.ecosystem, &baseline.runtime)?;
     if let Some(experiment) = &dependency_experiment {
         // Schema v1 pins a single runtime image. Applying that image to a
@@ -203,11 +203,16 @@ fn scan_with_adapter(
                 "concrete dependency experiments pin one runtime image; run runtime candidates separately, or set candidates.runtime.max_versions to 0 for this dependency experiment".into(),
             ));
         }
+        if experiment.manifest.schema_version == 2
+            && (config.execution.reruns_on_failure < 3 || config.execution.max_scenarios < 2)
+        {
+            return Err(TcError::Config("adaptive dependency experiments require reruns_on_failure >= 3 and max_scenarios >= 2".into()));
+        }
         baseline.dependencies = experiment.baseline.set_id.clone();
     }
-    let dep_cands = dependency_candidates(&baseline, &config, dependency_experiment.as_ref())?;
+    let mut dep_cands = dependency_candidates(&baseline, &config, dependency_experiment.as_ref())?;
 
-    let (plan, decisions) = plan_scenarios(&baseline, &rt_cands, &dep_cands, &config);
+    let (mut plan, decisions) = plan_scenarios(&baseline, &rt_cands, &dep_cands, &config);
     layout.write_json("plan.json", &plan)?;
     layout.write_json("plan-decisions.json", &decisions)?;
     let all_candidates: Vec<_> = rt_cands.iter().chain(dep_cands.iter()).cloned().collect();
@@ -269,7 +274,32 @@ fn scan_with_adapter(
     let eco = detection.ecosystem;
     let is_scripted = executor.name() == "scripted";
 
-    for scenario in &plan.scenarios {
+    let mut scenario_index = 0usize;
+    loop {
+        if scenario_index == plan.scenarios.len()
+            && baseline_ok
+            && plan.scenarios.len() < config.execution.max_scenarios as usize
+        {
+            if let Some(experiment) = dependency_experiment.as_mut() {
+                if let Some(probe) = experiment.next_probe(&plan, &results)? {
+                    experiment.probes.push(probe);
+                    dep_cands = dependency_candidates(&baseline, &config, Some(experiment))?;
+                    let (next_plan, next_decisions) =
+                        plan_scenarios(&baseline, &rt_cands, &dep_cands, &config);
+                    plan = next_plan;
+                    layout.write_json("plan.json", &plan)?;
+                    layout.write_json("plan-decisions.json", &next_decisions)?;
+                    let candidates: Vec<_> =
+                        rt_cands.iter().chain(dep_cands.iter()).cloned().collect();
+                    layout.write_json("candidates.json", &candidates)?;
+                }
+            }
+        }
+        let Some(current_scenario) = plan.scenarios.get(scenario_index).cloned() else {
+            break;
+        };
+        scenario_index += 1;
+        let scenario = &current_scenario;
         // Every scenario executes against a fresh copy of the immutable recorded
         // workspace. Dependency installers and build tools must never leak state
         // into a later candidate or mutate the replay authority snapshot.
@@ -448,7 +478,7 @@ fn scan_with_adapter(
                 environment: &env,
                 commands: fcmds,
                 timeout: fetch_timeout,
-                network: "bridge",
+                network: dependency_fetch_network(scenario),
             }) {
                 Ok(r) => r,
                 Err(e) => {
@@ -463,7 +493,7 @@ fn scan_with_adapter(
                         None,
                         false,
                         elapsed_ms(fetch_start, fetch_finished),
-                        "bridge",
+                        dependency_fetch_network(scenario),
                         env.tag(),
                         env.image_digest.clone(),
                         fcmds,
@@ -502,7 +532,7 @@ fn scan_with_adapter(
                 fr.exit_code,
                 fr.timed_out,
                 fr.duration_ms,
-                "bridge",
+                dependency_fetch_network(scenario),
                 env.tag(),
                 env.image_digest.clone(),
                 fcmds,
@@ -1852,7 +1882,7 @@ fn persist_scenario_artifacts(
         "cpus": env.cpus,
         "pids_limit": env.pids_limit,
         "read_only_root": env.read_only_root,
-        "fetch_network": "bridge",
+        "fetch_network": dependency_fetch_network(scenario),
         "test_network": "none",
         "fetch_timeout_seconds": env.fetch_timeout_seconds,
         "test_timeout_seconds": env.test_timeout_seconds,
@@ -1867,7 +1897,7 @@ fn persist_scenario_artifacts(
         sc_dir.join("replay.json"),
         serde_json::to_string_pretty(&replay)?,
     )?;
-    write_replay_scripts(sc_dir, env, fetch_cmds, test_cmds, &scenario.id, &engine)?;
+    write_replay_scripts(sc_dir, env, fetch_cmds, test_cmds, scenario, &engine)?;
 
     let mut checksums = Vec::new();
     for name in [
@@ -1908,9 +1938,11 @@ fn write_replay_scripts(
     env: &EnvironmentSpec,
     fetch_cmds: &[CommandSpec],
     test_cmds: &[CommandSpec],
-    scenario_id: &str,
+    scenario: &Scenario,
     engine: &str,
 ) -> Result<()> {
+    let scenario_id = &scenario.id;
+    let fetch_network = dependency_fetch_network(scenario);
     let bin = if engine == "podman" {
         "podman"
     } else {
@@ -1950,7 +1982,7 @@ fn write_replay_scripts(
 set -euo pipefail
 IMG={image:?}
 WORK="${{TOMORROWCI_WORKSPACE:-$PWD}}"
-{bin} run --rm --network bridge --memory {mem}m --cpus {cpus} --pids-limit {pids} \
+{bin} run --rm --network {fetch_network} --memory {mem}m --cpus {cpus} --pids-limit {pids} \
   --security-opt no-new-privileges --cap-drop ALL{user}{ro} \
   -v "$WORK":/work -w /work "$IMG" sh -c {fetch:?}
 {bin} run --rm --network none --memory {mem}m --cpus {cpus} --pids-limit {pids} \
@@ -1963,7 +1995,7 @@ WORK="${{TOMORROWCI_WORKSPACE:-$PWD}}"
         r#"# Replay scenario {scenario_id}
 $Img = {image:?}
 $Work = if ($env:TOMORROWCI_WORKSPACE) {{ $env:TOMORROWCI_WORKSPACE }} else {{ $PWD }}
-{bin} run --rm --network bridge --memory {mem}m --cpus {cpus} --pids-limit {pids} --security-opt no-new-privileges --cap-drop ALL{user}{ro} -v "${{Work}}:/work" -w /work $Img sh -c {fetch:?}
+{bin} run --rm --network {fetch_network} --memory {mem}m --cpus {cpus} --pids-limit {pids} --security-opt no-new-privileges --cap-drop ALL{user}{ro} -v "${{Work}}:/work" -w /work $Img sh -c {fetch:?}
 {bin} run --rm --network none --memory {mem}m --cpus {cpus} --pids-limit {pids} --security-opt no-new-privileges --cap-drop ALL{user}{ro} -v "${{Work}}:/work" -w /work $Img sh -c {test:?}
 "#
     );
@@ -2798,7 +2830,7 @@ fn replay_scenario_with_verified_evidence(
             environment: &env_run,
             commands: &fetch_cmds,
             timeout: fetch_to,
-            network: "bridge",
+            network: dependency_fetch_network(&scenario),
         });
         let fr = match fetch_result {
             Ok(raw) => raw,

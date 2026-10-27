@@ -29,6 +29,14 @@ now distinguish concrete diagnostics; rescan with this checkout before replaying
 old failures whose fingerprints used the previous algorithm. See the trial guide
 for limits, including known candidate coverage and dependency reproducibility.
 
+For Python dependency upgrades, [import two exact pin snapshots](docs/PYTHON_DEPENDENCIES.md).
+The wheel-backed v2 path preserves the full dependency closure, runs installations
+and tests offline, and adaptively reduces 1–64 changed packages within the chosen
+scenario budget. It proves an observed **1-minimal** failing subset when the
+required addition/subtraction checks complete; it does not claim a globally
+smallest set or treat a blocked installation as proof of causality. The original
+vendored-tree v1 protocol remains available for historical fixtures.
+
 ### Historical qualification (not a validation of this checkout)
 
 **TomorrowCI is an experimental pre-alpha architecture. The exact

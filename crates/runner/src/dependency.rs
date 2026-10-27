@@ -3,13 +3,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use tomorrowci_core::{
-    sha256_tree_v1, validate_image_digest, CommandSpec, ContentHash, DependencyAdditionCheck,
-    DependencyArtifactDeclaration, DependencyCandidateSet, DependencyChange,
-    DependencyChangeDeclaration, DependencyChangeKind, DependencyExperimentManifest,
-    DependencyMinimalityCheck, DependencyProbeEvidence, DependencyProbeRecord,
-    DependencyProbeVerdict, DependencyReduction, DependencyReductionStatus, DependencySourceKind,
-    Ecosystem, EvidenceGrade, ExecutionPlan, ExecutionResult, ResolvedDependency,
-    ResolvedDependencySet, Result, Scenario, TcError, Verdict,
+    sha256_file_v1, sha256_tree_v1, validate_image_digest, CommandSpec, ContentHash,
+    DependencyAdditionCheck, DependencyCandidateSet, DependencyChange,
+    DependencyExperimentManifest, DependencyMinimalityCheck, DependencyProbeEvidence,
+    DependencyProbeRecord, DependencyProbeVerdict, DependencyReduction, DependencyReductionStatus,
+    Ecosystem, EvidenceGrade, ExecutionPlan, ExecutionResult, ResolvedDependencySet, Result,
+    Scenario, TcError, Verdict,
 };
 
 pub const DEPENDENCY_EXPERIMENT_FILE: &str = ".tomorrowci-dependencies.json";
@@ -30,6 +29,99 @@ pub struct DependencyExperiment {
 }
 
 impl DependencyExperiment {
+    pub fn probe_for_subset(&self, selected_ids: Vec<String>) -> Result<ConcreteDependencyProbe> {
+        let full = self
+            .manifest
+            .to_candidate_set(package_manager(self.manifest.ecosystem))
+            .map_err(TcError::Config)?;
+        let original_ids: Vec<_> = full
+            .changes
+            .iter()
+            .map(|change| change.id.clone())
+            .collect();
+        let probe_id = if self.manifest.schema_version == 2 {
+            tomorrowci_core::adaptive_dependency_probe_id(
+                &self.manifest.candidate.set_id,
+                &original_ids,
+                &selected_ids,
+            )?
+        } else if selected_ids.len() == full.changes.len() {
+            self.manifest.candidate.set_id.clone()
+        } else {
+            format!("ddmin-{}", selected_ids.join("--"))
+        };
+        let mut selected_changes = Vec::new();
+        for id in &selected_ids {
+            selected_changes.push(
+                full.changes
+                    .iter()
+                    .find(|change| &change.id == id)
+                    .ok_or_else(|| TcError::Config(format!("unknown dependency change {id}")))?
+                    .clone(),
+            );
+        }
+        let mut candidate = full
+            .resolution_for_changes(&selected_changes)
+            .map_err(TcError::Config)?;
+        candidate.set_id = format!("{}--{}", self.manifest.candidate.set_id, probe_id);
+        let dependency_set = DependencyCandidateSet {
+            set_id: candidate.set_id.clone(),
+            baseline: full.baseline,
+            candidate,
+            changes: selected_changes,
+        };
+        dependency_set.validate().map_err(TcError::Config)?;
+        Ok(ConcreteDependencyProbe {
+            id: probe_id,
+            change_ids: selected_ids,
+            dependency_set,
+        })
+    }
+
+    pub fn next_probe(
+        &self,
+        plan: &ExecutionPlan,
+        results: &[ExecutionResult],
+    ) -> Result<Option<ConcreteDependencyProbe>> {
+        if self.manifest.schema_version != 2 {
+            return Ok(None);
+        }
+        let mut observations = Vec::new();
+        for probe in &self.probes {
+            let Some(result) = results.iter().find(|result| result.scenario_id == probe.id) else {
+                return Ok(None);
+            };
+            let authority = plan
+                .scenarios
+                .iter()
+                .find(|scenario| scenario.id == probe.id)
+                .map(|scenario| scenario.grade)
+                .unwrap_or(EvidenceGrade::Inconclusive);
+            observations.push(tomorrowci_core::DependencyScheduleObservation {
+                change_ids: probe.change_ids.clone(),
+                verdict: dependency_probe_verdict(result.verdict),
+                failure_hash: result
+                    .failure
+                    .as_ref()
+                    .map(|failure| ContentHash::try_from(failure.normalized_hash.as_str()))
+                    .transpose()
+                    .map_err(TcError::InvalidState)?,
+                attempts: result.attempt,
+                authority,
+            });
+        }
+        let original_ids: Vec<_> = self
+            .manifest
+            .candidate
+            .changes
+            .iter()
+            .map(|change| change.id.clone())
+            .collect();
+        tomorrowci_core::next_dependency_subset(&original_ids, &observations)?
+            .map(|subset| self.probe_for_subset(subset))
+            .transpose()
+    }
+
     pub fn full_candidate_probe(&self) -> Option<&ConcreteDependencyProbe> {
         let all: BTreeSet<_> = self
             .manifest
@@ -388,74 +480,49 @@ pub fn load_dependency_experiment(
         })?;
     validate_manifest(&manifest, ecosystem, baseline_runtime)?;
 
-    let changes = materialize_changes(workspace, &manifest)?;
-    let baseline = resolved_set(
-        &manifest.baseline.set_id,
-        ecosystem,
-        package_manager(ecosystem),
-        changes.values().map(|change| {
-            change
-                .before
-                .clone()
-                .expect("fixture update always has before")
-        }),
-    )?;
-
-    let mut probes = Vec::new();
-    let change_ids: Vec<_> = changes.keys().cloned().collect();
-    for selected_ids in exhaustive_nonempty_subsets(&change_ids)? {
-        let selected: BTreeSet<_> = selected_ids.iter().cloned().collect();
-        let probe_id = if selected.len() == changes.len() {
-            manifest.candidate.set_id.clone()
+    let full = manifest
+        .to_candidate_set(package_manager(ecosystem))
+        .map_err(TcError::Config)?;
+    for dependency in full
+        .baseline
+        .dependencies
+        .iter()
+        .chain(full.candidate.dependencies.iter())
+    {
+        let source = safe_source(workspace, &dependency.source)?;
+        let actual = if manifest.schema_version == 2 {
+            sha256_file_v1(&source)?
         } else {
-            format!("ddmin-{}", selected_ids.join("--"))
+            sha256_tree_v1(&source)?
         };
-        let candidate_members = changes.values().map(|change| {
-            if selected.contains(&change.id) {
-                change
-                    .after
-                    .clone()
-                    .expect("fixture update always has after")
-            } else {
-                change
-                    .before
-                    .clone()
-                    .expect("fixture update always has before")
-            }
-        });
-        let candidate = resolved_set(
-            &format!("{}--{}", manifest.candidate.set_id, probe_id),
-            ecosystem,
-            package_manager(ecosystem),
-            candidate_members,
-        )?;
-        let selected_changes = selected_ids
-            .iter()
-            .map(|id| {
-                changes.get(id).cloned().ok_or_else(|| {
-                    TcError::Config(format!("probe {probe_id} references unknown change {id}"))
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let dependency_set = DependencyCandidateSet {
-            set_id: candidate.set_id.clone(),
-            baseline: baseline.clone(),
-            candidate,
-            changes: selected_changes,
-        };
-        dependency_set.validate().map_err(TcError::Config)?;
-        probes.push(ConcreteDependencyProbe {
-            id: probe_id,
-            change_ids: selected_ids,
-            dependency_set,
-        });
+        if actual != dependency.content_sha256 {
+            return Err(TcError::Blocked(format!(
+                "dependency artifact {} {} content changed: declared={} actual={}",
+                dependency.name, dependency.version, dependency.content_sha256, actual
+            )));
+        }
     }
-
-    Ok(Some(DependencyExperiment {
+    let mut change_ids: Vec<_> = full
+        .changes
+        .iter()
+        .map(|change| change.id.clone())
+        .collect();
+    change_ids.sort();
+    let subsets = if manifest.schema_version == 2 {
+        tomorrowci_core::next_dependency_subset(&change_ids, &[])?;
+        vec![change_ids]
+    } else {
+        exhaustive_nonempty_subsets(&change_ids)?
+    };
+    let mut experiment = DependencyExperiment {
         manifest,
-        baseline,
-        probes,
-    }))
+        baseline: full.baseline,
+        probes: Vec::new(),
+    };
+    for subset in subsets {
+        experiment.probes.push(experiment.probe_for_subset(subset)?);
+    }
+    Ok(Some(experiment))
 }
 
 /// Build the exact, replayable commands that materialize a scenario's resolved
@@ -483,7 +550,7 @@ fn validate_manifest(
     ecosystem: Ecosystem,
     baseline_runtime: &str,
 ) -> Result<()> {
-    if manifest.schema_version != 1 {
+    if !matches!(manifest.schema_version, 1 | 2) {
         return Err(TcError::Config(format!(
             "unsupported dependency experiment schema {}",
             manifest.schema_version
@@ -495,7 +562,13 @@ fn validate_manifest(
             manifest.ecosystem, ecosystem
         )));
     }
-    if manifest.content_hash_algorithm != "sha256-tree-v1" {
+    if manifest.content_hash_algorithm
+        != if manifest.schema_version == 2 {
+            "sha256-file-v1"
+        } else {
+            "sha256-tree-v1"
+        }
+    {
         return Err(TcError::Config(format!(
             "unsupported dependency content hash algorithm {:?}",
             manifest.content_hash_algorithm
@@ -540,27 +613,6 @@ fn validate_manifest(
     Ok(())
 }
 
-fn materialize_changes(
-    workspace: &Path,
-    manifest: &DependencyExperimentManifest,
-) -> Result<BTreeMap<String, DependencyChange>> {
-    let mut changes = BTreeMap::new();
-    for declaration in &manifest.candidate.changes {
-        let before = resolved_dependency(workspace, declaration, &declaration.before)?;
-        let after = resolved_dependency(workspace, declaration, &declaration.after)?;
-        let change = DependencyChange {
-            id: declaration.id.clone(),
-            name: declaration.name.clone(),
-            kind: DependencyChangeKind::Update,
-            before: Some(before),
-            after: Some(after),
-        };
-        change.validate().map_err(TcError::Config)?;
-        changes.insert(change.id.clone(), change);
-    }
-    Ok(changes)
-}
-
 fn exhaustive_nonempty_subsets(change_ids: &[String]) -> Result<Vec<Vec<String>>> {
     if change_ids.is_empty() || change_ids.len() > 8 {
         return Err(TcError::Config(
@@ -584,57 +636,6 @@ fn exhaustive_nonempty_subsets(change_ids: &[String]) -> Result<Vec<Vec<String>>
     Ok(subsets)
 }
 
-fn resolved_dependency(
-    workspace: &Path,
-    change: &DependencyChangeDeclaration,
-    artifact: &DependencyArtifactDeclaration,
-) -> Result<ResolvedDependency> {
-    if artifact.version.trim().is_empty() {
-        return Err(TcError::Config(format!(
-            "dependency artifact {} has an empty version",
-            change.name
-        )));
-    }
-    let source = safe_source(workspace, &artifact.source)?;
-    let actual = sha256_tree_v1(&source)?;
-    if actual != artifact.content_sha256 {
-        return Err(TcError::Blocked(format!(
-            "dependency artifact {} {} content changed: declared={} actual={}",
-            change.name, artifact.version, artifact.content_sha256, actual
-        )));
-    }
-    Ok(ResolvedDependency {
-        id: change.id.clone(),
-        name: change.name.clone(),
-        version: artifact.version.clone(),
-        source: artifact.source.clone(),
-        source_kind: DependencySourceKind::VendoredTreeSha256V1,
-        content_sha256: actual,
-    })
-}
-
-fn resolved_set(
-    set_id: &str,
-    ecosystem: Ecosystem,
-    package_manager: &str,
-    dependencies: impl IntoIterator<Item = ResolvedDependency>,
-) -> Result<ResolvedDependencySet> {
-    let mut dependencies: Vec<_> = dependencies.into_iter().collect();
-    dependencies.sort_by(|left, right| left.id.cmp(&right.id));
-    let mut set = ResolvedDependencySet {
-        set_id: set_id.to_owned(),
-        ecosystem,
-        package_manager: package_manager.to_owned(),
-        manifest_sha256: ContentHash::of_bytes(&[]),
-        dependencies,
-    };
-    set.manifest_sha256 = set.expected_manifest_sha256().map_err(|error| {
-        TcError::InvalidState(format!("cannot hash resolved dependency set: {error}"))
-    })?;
-    set.validate().map_err(TcError::Config)?;
-    Ok(set)
-}
-
 fn safe_source(workspace: &Path, source: &str) -> Result<PathBuf> {
     if source.is_empty()
         || source.starts_with('/')
@@ -652,6 +653,17 @@ fn safe_source(workspace: &Path, source: &str) -> Result<PathBuf> {
         return Err(TcError::Config(format!(
             "dependency source is not a canonical workspace-relative path: {source:?}"
         )));
+    }
+    let mut current = workspace.to_path_buf();
+    for component in source.split('/') {
+        current.push(component);
+        let metadata = std::fs::symlink_metadata(&current)?;
+        if metadata_is_alias(&metadata) {
+            return Err(TcError::Config(format!(
+                "dependency source contains an alias: {}",
+                current.display()
+            )));
+        }
     }
     let path = workspace.join(source.replace('/', std::path::MAIN_SEPARATOR_STR));
     let canonical_workspace = std::fs::canonicalize(workspace).map_err(|error| {
@@ -737,6 +749,93 @@ mod tests {
         assert!(safe_source(root.path(), "../escape").is_err());
         assert!(safe_source(root.path(), "/absolute").is_err());
         assert!(safe_source(root.path(), "C:/drive").is_err());
+    }
+
+    fn write_wheel_experiment(root: &Path, count: usize) -> serde_json::Value {
+        let artifact = |name: &str, version: &str| {
+            let source = format!("{name}-{version}-py3-none-any.whl");
+            std::fs::write(root.join(&source), format!("artifact {name} {version}")).unwrap();
+            serde_json::json!({"source": source, "version": version,
+                "content_sha256": sha256_file_v1(&root.join(source)).unwrap()})
+        };
+        let changes: Vec<_> = (0..count)
+            .map(|i| {
+                let name = format!("package-{i}");
+                serde_json::json!({"id": name, "name": name,
+                "before": artifact(&name, "1.0"), "after": artifact(&name, "2.0")})
+            })
+            .collect();
+        let manifest = serde_json::json!({
+            "schema_version": 2, "ecosystem": "python",
+            "runtime": {"version": "3.11", "container_image": format!("python@sha256:{}", "a".repeat(64))},
+            "content_hash_algorithm": "sha256-file-v1", "baseline": {"set_id": "before"},
+            "candidate": {"set_id": "after", "changes": changes},
+            "unchanged": [{"id": "fixed", "name": "fixed", "artifact": artifact("fixed", "3.0")}]
+        });
+        std::fs::write(
+            root.join(DEPENDENCY_EXPERIMENT_FILE),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        manifest
+    }
+
+    #[test]
+    fn wheel_experiment_keeps_full_closure_and_seeds_only_one_of_twelve_changes() {
+        let root = tempdir().unwrap();
+        write_wheel_experiment(root.path(), 12);
+        let experiment = load_dependency_experiment(root.path(), Ecosystem::Python, "3.11")
+            .unwrap()
+            .unwrap();
+        assert_eq!(experiment.probes.len(), 1);
+        assert_eq!(experiment.baseline.dependencies.len(), 13);
+        let probe = experiment
+            .probe_for_subset(vec!["package-0".into()])
+            .unwrap();
+        assert_eq!(probe.dependency_set.candidate.dependencies.len(), 13);
+        assert_eq!(
+            probe
+                .dependency_set
+                .candidate
+                .dependencies
+                .iter()
+                .filter(|d| d.version == "2.0")
+                .count(),
+            1
+        );
+        assert!(probe.id.len() < 32);
+        assert!(probe
+            .dependency_set
+            .candidate
+            .dependencies
+            .iter()
+            .any(|d| d.name == "fixed" && d.version == "3.0"));
+    }
+
+    #[test]
+    fn unchanged_wheel_tampering_is_rejected_before_execution() {
+        let root = tempdir().unwrap();
+        write_wheel_experiment(root.path(), 1);
+        std::fs::write(root.path().join("fixed-3.0-py3-none-any.whl"), "tampered").unwrap();
+        let error = load_dependency_experiment(root.path(), Ecosystem::Python, "3.11")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("content changed"), "{error}");
+    }
+
+    #[test]
+    fn wheel_contract_rejects_duplicate_fixed_members_and_unbounded_identifiers() {
+        let root = tempdir().unwrap();
+        let value = write_wheel_experiment(root.path(), 1);
+        let mut manifest: DependencyExperimentManifest = serde_json::from_value(value).unwrap();
+        manifest.unchanged.push(manifest.unchanged[0].clone());
+        assert!(manifest.to_candidate_set("pip").is_err());
+        manifest.unchanged.pop();
+        manifest.candidate.set_id = "baseline".into();
+        assert!(manifest.to_candidate_set("pip").is_err());
+        manifest.candidate.set_id = "after".into();
+        manifest.candidate.changes[0].name = "--bad-option".into();
+        assert!(manifest.to_candidate_set("pip").is_err());
     }
 
     #[test]

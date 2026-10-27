@@ -10,17 +10,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use tomorrowci_core::{
-    canonical_image_digest_value, canonical_json_hash, classify_candidate_attempts,
-    compute_breakage_frontier, dependency_materialization_commands, plan_scenarios, sha256_bytes,
-    sha256_tree_v1, synthetic_git_blob_sha1, synthetic_git_index_v1, validate_image_digest,
-    BreakageFrontier, Candidate, CommandSpec, Config, ContentHash, DependencyAdditionCheck,
-    DependencyCandidateSet, DependencyChange, DependencyExperimentManifest,
-    DependencyMinimalityCheck, DependencyProbeEvidence, DependencyProbeRecord,
-    DependencyProbeVerdict, DependencyReduction, DependencyReductionStatus, Ecosystem,
-    EnvironmentAxis, EnvironmentSpec, EvidenceGrade, ExecutionPlan, ExecutionResult,
-    FailureSignature, PlanDecision, RemoteSourceRecord, RepositorySnapshot, ResolvedDependencySet,
-    Result, RunManifest, Scenario, SyntheticGitIndexEntry, SyntheticGitIndexRecord, TcError,
-    TestAttemptsSummary, TestExecutionStatus, Verdict, SYNTHETIC_GIT_ENV, SYNTHETIC_GIT_INDEX_KIND,
+    adaptive_dependency_probe_id, canonical_image_digest_value, canonical_json_hash,
+    classify_candidate_attempts, compute_breakage_frontier, dependency_fetch_network,
+    dependency_materialization_commands, next_dependency_subset, plan_scenarios, sha256_bytes,
+    sha256_file_v1, sha256_tree_v1, synthetic_git_blob_sha1, synthetic_git_index_v1,
+    validate_image_digest, BreakageFrontier, Candidate, CommandSpec, Config, ContentHash,
+    DependencyAdditionCheck, DependencyCandidateSet, DependencyChange,
+    DependencyExperimentManifest, DependencyMinimalityCheck, DependencyProbeEvidence,
+    DependencyProbeRecord, DependencyProbeVerdict, DependencyReduction, DependencyReductionStatus,
+    DependencyScheduleObservation, Ecosystem, EnvironmentAxis, EnvironmentSpec, EvidenceGrade,
+    ExecutionPlan, ExecutionResult, FailureSignature, PlanDecision, RemoteSourceRecord,
+    RepositorySnapshot, ResolvedDependencySet, Result, RunManifest, Scenario,
+    SyntheticGitIndexEntry, SyntheticGitIndexRecord, TcError, TestAttemptsSummary,
+    TestExecutionStatus, Verdict, SYNTHETIC_GIT_ENV, SYNTHETIC_GIT_INDEX_KIND,
     SYNTHETIC_GIT_INDEX_SOURCE,
 };
 
@@ -1433,7 +1435,7 @@ fn verify_plan_semantics(
         }
     }
 
-    verify_dependency_semantics(run_root, manifest, &candidates, errors)?;
+    verify_dependency_semantics(run_root, manifest, &candidates, config, errors)?;
 
     let runtime_candidates: Vec<_> = candidates
         .iter()
@@ -1537,6 +1539,7 @@ fn verify_dependency_semantics(
     run_root: &Path,
     manifest: &RunManifest,
     candidates: &[Candidate],
+    config: &Config,
     errors: &mut Vec<String>,
 ) -> Result<()> {
     let concrete: Vec<_> = candidates
@@ -1633,15 +1636,40 @@ fn verify_dependency_semantics(
         }
     }
 
-    let expected_probes = expected_dependency_probes(&experiment, &declared_full, errors)?;
+    let expected_probes = if experiment.schema_version == 2 {
+        if candidates
+            .iter()
+            .any(|candidate| candidate.axis != EnvironmentAxis::Dependencies)
+        {
+            errors.push(
+                "adaptive dependency experiments cannot mix runtime or other-axis candidates"
+                    .into(),
+            );
+        }
+        expected_adaptive_dependency_probes(
+            &experiment,
+            &declared_full,
+            &concrete,
+            manifest,
+            config,
+            errors,
+        )?
+    } else {
+        expected_dependency_probes(&experiment, &declared_full, errors)?
+    };
     let expected_ids: Vec<_> = expected_probes.iter().map(|(id, _)| id.as_str()).collect();
     let actual_ids: Vec<_> = concrete
         .iter()
         .map(|candidate| candidate.id.as_str())
         .collect();
     if actual_ids != expected_ids {
+        let strategy = if experiment.schema_version == 2 {
+            "adaptive"
+        } else {
+            "exhaustive"
+        };
         errors.push(format!(
-            "concrete dependency candidates are not the canonical exhaustive probe sequence: expected {expected_ids:?}, got {actual_ids:?}"
+            "concrete dependency candidates are not the canonical {strategy} probe sequence: expected {expected_ids:?}, got {actual_ids:?}"
         ));
     }
 
@@ -1793,39 +1821,216 @@ fn verify_dependency_artifacts(
     experiment: &DependencyExperimentManifest,
     errors: &mut Vec<String>,
 ) -> Result<()> {
-    for declaration in &experiment.candidate.changes {
-        for artifact in [&declaration.before, &declaration.after] {
-            if let Err(error) = validate_manifest_path(&artifact.source) {
+    let artifacts = experiment
+        .candidate
+        .changes
+        .iter()
+        .flat_map(|declaration| {
+            [
+                (&declaration.id, &declaration.name, &declaration.before),
+                (&declaration.id, &declaration.name, &declaration.after),
+            ]
+        })
+        .chain(
+            experiment
+                .unchanged
+                .iter()
+                .map(|fixed| (&fixed.id, &fixed.name, &fixed.artifact)),
+        );
+    for (id, name, artifact) in artifacts {
+        if let Err(error) = validate_manifest_path(&artifact.source) {
+            errors.push(format!(
+                "dependency artifact {} has unsafe source path: {error}",
+                id
+            ));
+            continue;
+        }
+        let source = match safe_join(workspace, &artifact.source) {
+            Ok(source) => source,
+            Err(error) => {
                 errors.push(format!(
-                    "dependency artifact {} has unsafe source path: {error}",
-                    declaration.id
+                    "dependency artifact {} source cannot be resolved: {error}",
+                    id
                 ));
                 continue;
             }
-            let source = match safe_join(workspace, &artifact.source) {
-                Ok(source) => source,
-                Err(error) => {
-                    errors.push(format!(
-                        "dependency artifact {} source cannot be resolved: {error}",
-                        declaration.id
-                    ));
-                    continue;
-                }
-            };
-            match sha256_tree_v1(&source) {
-                Ok(actual) if actual == artifact.content_sha256 => {}
-                Ok(actual) => errors.push(format!(
-                    "dependency artifact {} {} content hash mismatch: declared={}, actual={}",
-                    declaration.name, artifact.version, artifact.content_sha256, actual
-                )),
-                Err(error) => errors.push(format!(
-                    "dependency artifact {} {} cannot be hashed: {error}",
-                    declaration.name, artifact.version
-                )),
+        };
+        let actual = if experiment.schema_version == 2 {
+            // `safe_join` checks every existing ancestor. The metadata
+            // check rejects aliases and non-files before reading bytes;
+            // the core file hasher also checks the leaf without following it.
+            if regular_file_metadata(&source, &format!("dependency wheel {id}"), errors)?.is_none()
+            {
+                continue;
             }
+            sha256_file_v1(&source)
+        } else {
+            sha256_tree_v1(&source)
+        };
+        match actual {
+            Ok(actual) if actual == artifact.content_sha256 => {}
+            Ok(actual) => errors.push(format!(
+                "dependency artifact {} {} content hash mismatch: declared={}, actual={}",
+                name, artifact.version, artifact.content_sha256, actual
+            )),
+            Err(error) => errors.push(format!(
+                "dependency artifact {} {} cannot be hashed: {error}",
+                name, artifact.version
+            )),
         }
     }
     Ok(())
+}
+
+/// Reconstruct every adaptive request from only the observations preceding it.
+/// Validating a final bag of subsets would let a forged bundle choose whichever
+/// evidence makes its claimed reduction look convincing.
+fn expected_adaptive_dependency_probes(
+    experiment: &DependencyExperimentManifest,
+    declared_full: &DependencyCandidateSet,
+    concrete: &[&Candidate],
+    manifest: &RunManifest,
+    config: &Config,
+    errors: &mut Vec<String>,
+) -> Result<Vec<(String, Vec<DependencyChange>)>> {
+    if config.execution.reruns_on_failure < 3 || config.execution.max_scenarios < 2 {
+        errors.push("adaptive dependency experiments require at least three failure attempts and two scenario slots".into());
+    }
+    if manifest.plan.budget_max != config.execution.max_scenarios {
+        errors.push("adaptive dependency plan budget differs from normalized config".into());
+    }
+    let mut changes = declared_full.changes.clone();
+    changes.sort_by(|left, right| left.id.cmp(&right.id));
+    let original_ids: Vec<_> = changes.iter().map(|change| change.id.clone()).collect();
+    let mut observations = Vec::new();
+    let mut expected = Vec::new();
+    let initial = match next_dependency_subset(&original_ids, &observations) {
+        Ok(Some(initial)) => initial,
+        Ok(None) => return Ok(expected),
+        Err(error) => {
+            errors.push(format!("invalid adaptive dependency declaration: {error}"));
+            return Ok(expected);
+        }
+    };
+    let full_id =
+        adaptive_dependency_probe_id(&experiment.candidate.set_id, &original_ids, &initial)?;
+    expected.push((full_id.clone(), changes.clone()));
+    if concrete.first().map(|candidate| candidate.id.as_str()) != Some(full_id.as_str()) {
+        errors.push("adaptive dependency candidates must start with the full candidate".into());
+        return Ok(expected);
+    }
+
+    let baseline = manifest
+        .plan
+        .scenarios
+        .iter()
+        .find(|scenario| scenario.is_baseline);
+    let baseline_result = baseline.and_then(|scenario| {
+        manifest
+            .results
+            .first()
+            .filter(|result| result.scenario_id == scenario.id)
+    });
+    if baseline_result.is_none() {
+        errors.push("adaptive dependency results must start with the baseline result".into());
+    }
+    let baseline_passed = baseline
+        .zip(baseline_result)
+        .is_some_and(|(scenario, result)| {
+            scenario.grade == EvidenceGrade::Observed && result.verdict == Verdict::BaselinePass
+        });
+    if !baseline_passed {
+        if concrete.len() != 1 || manifest.results.len() != 1 {
+            errors.push(
+                "adaptive dependency probing continued without an observed passing baseline".into(),
+            );
+        }
+        return Ok(expected);
+    }
+
+    for (index, candidate) in concrete.iter().enumerate() {
+        if index as u64 + 2 > u64::from(config.execution.max_scenarios) {
+            errors.push(
+                "adaptive dependency candidates exceed the scenario budget including baseline"
+                    .into(),
+            );
+            return Ok(expected);
+        }
+        let next = match next_dependency_subset(&original_ids, &observations) {
+            Ok(Some(next)) => next,
+            Ok(None) => {
+                errors.push(format!(
+                    "adaptive dependency candidate {} appears after scheduling stopped",
+                    candidate.id
+                ));
+                return Ok(expected);
+            }
+            Err(error) => {
+                errors.push(format!(
+                    "adaptive dependency observation prefix is invalid: {error}"
+                ));
+                return Ok(expected);
+            }
+        };
+        let expected_id =
+            adaptive_dependency_probe_id(&experiment.candidate.set_id, &original_ids, &next)?;
+        let selected: Vec<_> = changes
+            .iter()
+            .filter(|change| next.contains(&change.id))
+            .cloned()
+            .collect();
+        if index > 0 {
+            expected.push((expected_id.clone(), selected));
+        }
+        if candidate.id != expected_id {
+            errors.push(format!("adaptive dependency candidate {} is out of order: expected {expected_id} from the preceding observations", candidate.id));
+            return Ok(expected);
+        }
+        let Some(result) = manifest.results.get(index + 1) else {
+            errors.push(format!(
+                "adaptive dependency candidate {expected_id} has no executed result"
+            ));
+            return Ok(expected);
+        };
+        if result.scenario_id != expected_id {
+            errors.push(format!(
+                "adaptive dependency result {} is out of order: expected {expected_id}",
+                result.scenario_id
+            ));
+            return Ok(expected);
+        }
+        let Some(scenario) = manifest
+            .plan
+            .scenarios
+            .get(index + 1)
+            .filter(|scenario| scenario.id == expected_id)
+        else {
+            errors.push(format!(
+                "adaptive dependency candidate {expected_id} is not the next planned scenario"
+            ));
+            return Ok(expected);
+        };
+        observations.push(DependencyScheduleObservation {
+            change_ids: next,
+            verdict: dependency_probe_verdict(result.verdict),
+            failure_hash: dependency_failure_hash(result, &expected_id, errors),
+            attempts: result.attempt,
+            authority: scenario.grade,
+        });
+    }
+    if manifest.results.len() != concrete.len() + 1 {
+        errors.push("adaptive dependency results contain an unselected or extra execution".into());
+    }
+    match next_dependency_subset(&original_ids, &observations) {
+        Ok(Some(_)) if concrete.len() as u64 + 1 < u64::from(config.execution.max_scenarios) => {
+            errors.push("adaptive dependency schedule omits a required next probe before the scenario budget is exhausted".into());
+        }
+        Err(error) => errors.push(format!(
+            "adaptive dependency observation prefix is invalid: {error}"
+        )),
+        _ => {}
+    }
+    Ok(expected)
 }
 
 fn expected_dependency_probes(
@@ -2600,7 +2805,7 @@ fn verify_current_scenario_semantics(
 
     let fetch_phase = verify_fetch_semantics(
         scenario_root,
-        scenario_id,
+        scenario,
         &fetch_commands,
         result,
         manifest,
@@ -2662,7 +2867,7 @@ fn verify_replay_descriptor(
         || replay.cpus != environment.cpus
         || replay.pids_limit != environment.pids_limit
         || replay.read_only_root != environment.read_only_root
-        || replay.fetch_network != "bridge"
+        || replay.fetch_network != dependency_fetch_network(scenario)
         || replay.test_network != "none"
         || replay.fetch_timeout_seconds != environment.fetch_timeout_seconds
         || replay.test_timeout_seconds != environment.test_timeout_seconds
@@ -3010,13 +3215,15 @@ fn verify_dependency_materialization_contract(
 
 fn verify_fetch_semantics(
     scenario_root: &Path,
-    scenario_id: &str,
+    scenario: &Scenario,
     fetch_commands: &[CommandSpec],
     result: &ExecutionResult,
     manifest: &RunManifest,
     image_phase: Option<&PhaseEvidence>,
     errors: &mut Vec<String>,
 ) -> Result<Option<PhaseEvidence>> {
+    let scenario_id = scenario.id.as_str();
+    let expected_network = dependency_fetch_network(scenario);
     let phase_path = safe_join(scenario_root, "fetch-phase.json")?;
     let raw_path = safe_join(scenario_root, "fetch-result.json")?;
     let phase = if phase_path.exists() {
@@ -3049,7 +3256,7 @@ fn verify_fetch_semantics(
             .map(|command| command.argv.clone())
             .collect();
         if phase.phase != "fetch"
-            || phase.network != "bridge"
+            || phase.network != expected_network
             || phase.argv != argv
             || phase.image != result.environment.tag()
             || phase.image_digest != result.environment.image_digest
@@ -3067,7 +3274,7 @@ fn verify_fetch_semantics(
         }
     }
     if let Some(raw) = &raw {
-        if !raw.network_used || raw.finished_at < raw.started_at {
+        if raw.network_used != (expected_network != "none") || raw.finished_at < raw.started_at {
             errors.push(format!(
                 "scenario {scenario_id} fetch-result has invalid network/time semantics"
             ));
@@ -5094,6 +5301,448 @@ mod tests {
         assert!(errors
             .iter()
             .any(|error| error.contains("content hash mismatch")));
+    }
+
+    fn wheel_experiment(workspace: &Path) -> DependencyExperimentManifest {
+        std::fs::create_dir_all(workspace.join("wheels")).unwrap();
+        let artifact = |name: &str, version: &str| {
+            let source = format!("wheels/{name}-{version}.whl");
+            let bytes = format!("wheel bytes for {name} {version}");
+            std::fs::write(workspace.join(&source), bytes).unwrap();
+            serde_json::json!({
+                "version": version,
+                "source": source,
+                "content_sha256": sha256_file_v1(&workspace.join(&source)).unwrap()
+            })
+        };
+        serde_json::from_value(serde_json::json!({
+            "schema_version": 2,
+            "ecosystem": "python",
+            "runtime": { "version": "3.11", "container_image": format!("python@sha256:{}", "a".repeat(64)) },
+            "content_hash_algorithm": "sha256-file-v1",
+            "baseline": { "set_id": "baseline" },
+            "candidate": {
+                "set_id": "candidate",
+                "changes": (["a", "b", "c"].iter().map(|name| serde_json::json!({
+                    "id": name, "name": name,
+                    "before": artifact(name, "1"), "after": artifact(name, "2")
+                })).collect::<Vec<_>>())
+            },
+            "unchanged": [{ "id": "fixed", "name": "fixed", "artifact": artifact("fixed", "1") }]
+        })).unwrap()
+    }
+
+    fn adaptive_schedule_fixture(
+        workspace: &Path,
+        subsets: &[&[&str]],
+    ) -> (
+        DependencyExperimentManifest,
+        DependencyCandidateSet,
+        Vec<Candidate>,
+        RunManifest,
+        Config,
+    ) {
+        let experiment = wheel_experiment(workspace);
+        let declared = experiment.to_candidate_set("pip").unwrap();
+        let original_ids: Vec<_> = declared
+            .changes
+            .iter()
+            .map(|change| change.id.clone())
+            .collect();
+        let candidates: Vec<_> = subsets
+            .iter()
+            .enumerate()
+            .map(|(index, subset)| {
+                let subset_ids: Vec<String> = subset.iter().map(|id| (*id).into()).collect();
+                let id = adaptive_dependency_probe_id(
+                    &experiment.candidate.set_id,
+                    &original_ids,
+                    &subset_ids,
+                )
+                .unwrap();
+                let changes: Vec<_> = declared
+                    .changes
+                    .iter()
+                    .filter(|change| subset_ids.contains(&change.id))
+                    .cloned()
+                    .collect();
+                let readable_id = format!("{}--{id}", experiment.candidate.set_id);
+                let mut resolution = declared.resolution_for_changes(&changes).unwrap();
+                resolution.set_id = readable_id.clone();
+                let set = DependencyCandidateSet {
+                    set_id: readable_id.clone(),
+                    baseline: declared.baseline.clone(),
+                    candidate: resolution,
+                    changes,
+                };
+                set.validate().unwrap();
+                Candidate {
+                    id: id.clone(),
+                    axis: EnvironmentAxis::Dependencies,
+                    label: format!(
+                        "3.11 dependency probe {id} ({})",
+                        set.stable_identity().unwrap()
+                    ),
+                    version: readable_id,
+                    channel: "content-addressed".into(),
+                    grade_if_executed: EvidenceGrade::Observed,
+                    order_key: format!("{index:04}"),
+                    dependency_set: Some(set),
+                }
+            })
+            .collect();
+        let mut config = strict_test_config();
+        config.execution.max_scenarios = 24;
+        config.execution.reruns_on_failure = 3;
+        config.candidates.runtime.max_versions = 0;
+        let mut manifest: RunManifest =
+            serde_json::from_value(minimal_run_json(workspace)).unwrap();
+        manifest.baseline.runtime = "3.11".into();
+        manifest.baseline.dependencies = declared.baseline.set_id.clone();
+        manifest.plan = plan_scenarios(&manifest.baseline, &[], &candidates, &config).0;
+        manifest.results = manifest.plan.scenarios.iter().map(|scenario| {
+            let fails = !scenario.is_baseline && candidates.iter().find(|candidate| candidate.id == scenario.id).unwrap()
+                .dependency_set.as_ref().unwrap().changes.iter().any(|change| change.id == "c");
+            ExecutionResult {
+                scenario_id: scenario.id.clone(), attempt: if fails { 3 } else { 1 },
+                verdict: if scenario.is_baseline { Verdict::BaselinePass } else if fails { Verdict::FutureFail } else { Verdict::FuturePass },
+                exit_code: Some(if fails { 1 } else { 0 }), duration_ms: 1, timed_out: false,
+                failure: fails.then(|| FailureSignature {
+                    kind: "test".into(), summary: "same concrete cause".into(),
+                    normalized_hash: ContentHash::of_bytes(b"same concrete cause").as_str().into(), primary_frame: None,
+                }),
+                environment: serde_json::from_value(serde_json::json!({
+                    "image": "python:3.11", "image_tag": "python:3.11", "image_digest": experiment.runtime.container_image,
+                    "workdir": "/work", "env": {}, "network_mode": "none", "memory_mb": 128,
+                    "cpus": 1.0, "pids_limit": 64, "user": null, "read_only_root": true
+                })).unwrap(),
+                commands: vec![],
+            }
+        }).collect();
+        (experiment, declared, candidates, manifest, config)
+    }
+
+    fn adaptive_errors(
+        experiment: &DependencyExperimentManifest,
+        declared: &DependencyCandidateSet,
+        candidates: &[Candidate],
+        manifest: &RunManifest,
+        config: &Config,
+    ) -> Vec<String> {
+        let mut errors = Vec::new();
+        expected_adaptive_dependency_probes(
+            experiment,
+            declared,
+            &candidates.iter().collect::<Vec<_>>(),
+            manifest,
+            config,
+            &mut errors,
+        )
+        .unwrap();
+        errors
+    }
+
+    #[test]
+    fn adaptive_probe_sequence_is_rederived_from_each_observation_prefix() {
+        let workspace = tempdir().unwrap();
+        let (experiment, declared, candidates, manifest, config) = adaptive_schedule_fixture(
+            workspace.path(),
+            &[&["a", "b", "c"], &["b", "c"], &["c"], &["a", "c"]],
+        );
+        assert!(
+            adaptive_errors(&experiment, &declared, &candidates, &manifest, &config).is_empty()
+        );
+
+        let mut reordered_results = manifest.clone();
+        reordered_results.results.swap(2, 3);
+        assert!(adaptive_errors(
+            &experiment,
+            &declared,
+            &candidates,
+            &reordered_results,
+            &config
+        )
+        .iter()
+        .any(|error| error.contains("out of order")));
+
+        // All these subsets really fail with the same hash, but that does not
+        // authorize choosing them before the scheduler requests them.
+        for forged in [
+            vec![&["a", "b", "c"][..], &["c"], &["a", "c"]],
+            vec![&["a", "b", "c"][..], &["a", "c"], &["c"], &["b", "c"]],
+        ] {
+            let (experiment, declared, candidates, manifest, config) =
+                adaptive_schedule_fixture(workspace.path(), &forged);
+            assert!(
+                adaptive_errors(&experiment, &declared, &candidates, &manifest, &config)
+                    .iter()
+                    .any(|error| error.contains("out of order"))
+            );
+        }
+    }
+
+    #[test]
+    fn adaptive_missing_next_probe_requires_actual_budget_exhaustion() {
+        let workspace = tempdir().unwrap();
+        let (experiment, declared, candidates, mut manifest, mut config) =
+            adaptive_schedule_fixture(workspace.path(), &[&["a", "b", "c"], &["b", "c"], &["c"]]);
+        assert!(
+            adaptive_errors(&experiment, &declared, &candidates, &manifest, &config)
+                .iter()
+                .any(|error| error.contains("omits a required next probe"))
+        );
+        config.execution.max_scenarios = 4;
+        manifest.plan = plan_scenarios(&manifest.baseline, &[], &candidates, &config).0;
+        assert!(
+            adaptive_errors(&experiment, &declared, &candidates, &manifest, &config).is_empty()
+        );
+        config.execution.max_scenarios = 5;
+        assert!(
+            adaptive_errors(&experiment, &declared, &candidates, &manifest, &config)
+                .iter()
+                .any(|error| error.contains("budget differs"))
+        );
+    }
+
+    #[test]
+    fn adaptive_extra_probe_and_missing_execution_are_rejected() {
+        let workspace = tempdir().unwrap();
+        let (experiment, declared, candidates, mut manifest, config) = adaptive_schedule_fixture(
+            workspace.path(),
+            &[&["a", "b", "c"], &["b", "c"], &["c"], &["a", "c"], &["a"]],
+        );
+        assert!(
+            adaptive_errors(&experiment, &declared, &candidates, &manifest, &config)
+                .iter()
+                .any(|error| error.contains("after scheduling stopped"))
+        );
+        manifest.results.truncate(1);
+        assert!(
+            adaptive_errors(&experiment, &declared, &candidates[..1], &manifest, &config)
+                .iter()
+                .any(|error| error.contains("no executed result"))
+        );
+    }
+
+    #[test]
+    fn adaptive_baseline_failure_allows_only_unexecuted_full_seed() {
+        let workspace = tempdir().unwrap();
+        let (experiment, declared, candidates, mut manifest, mut config) =
+            adaptive_schedule_fixture(workspace.path(), &[&["a", "b", "c"]]);
+        manifest.results.truncate(1);
+        manifest.results[0].verdict = Verdict::Blocked;
+        manifest.results[0].attempt = 0;
+        assert!(
+            adaptive_errors(&experiment, &declared, &candidates, &manifest, &config).is_empty()
+        );
+        manifest.results.push(manifest.results[0].clone());
+        manifest.results[1].scenario_id = candidates[0].id.clone();
+        assert!(
+            adaptive_errors(&experiment, &declared, &candidates, &manifest, &config)
+                .iter()
+                .any(|error| error.contains("without an observed passing baseline"))
+        );
+        manifest.results.truncate(1);
+        config.execution.reruns_on_failure = 2;
+        assert!(
+            adaptive_errors(&experiment, &declared, &candidates, &manifest, &config)
+                .iter()
+                .any(|error| error.contains("at least three failure attempts"))
+        );
+    }
+
+    #[test]
+    fn wheel_artifact_tampering_including_unchanged_closure_is_rejected() {
+        for relative in ["wheels/a-2.whl", "wheels/fixed-1.whl"] {
+            let workspace = tempdir().unwrap();
+            let experiment = wheel_experiment(workspace.path());
+            let mut errors = Vec::new();
+            verify_dependency_artifacts(workspace.path(), &experiment, &mut errors).unwrap();
+            assert!(errors.is_empty(), "{errors:?}");
+            std::fs::write(workspace.path().join(relative), "altered wheel bytes").unwrap();
+            verify_dependency_artifacts(workspace.path(), &experiment, &mut errors).unwrap();
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("content hash mismatch")),
+                "{errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fetch_and_replay_network_are_bound_to_the_concrete_dependency_contract() {
+        let workspace = tempdir().unwrap();
+        let (_, _, _, manifest, _) =
+            adaptive_schedule_fixture(workspace.path(), &[&["a", "b", "c"]]);
+        for expected_network in ["none", "bridge"] {
+            let scenario_root = tempdir().unwrap();
+            let mut scenario = manifest.plan.scenarios[0].clone();
+            if expected_network == "bridge" {
+                scenario.resolved_dependencies = None;
+            }
+            let result = &manifest.results[0];
+            let environment = &result.environment;
+            let fetch_commands = dependency_materialization_commands(&scenario)
+                .unwrap()
+                .unwrap_or_default();
+            let argv: Vec<_> = fetch_commands
+                .iter()
+                .map(|command| command.argv.clone())
+                .collect();
+            let mut phase = PhaseEvidence {
+                phase: "fetch".into(),
+                ok: true,
+                exit_code: Some(0),
+                timed_out: false,
+                duration_ms: 1,
+                network: expected_network.into(),
+                image: environment.tag().into(),
+                image_digest: environment.image_digest.clone(),
+                argv: argv.clone(),
+                started_at: manifest.started_at,
+                finished_at: manifest.finished_at.unwrap(),
+                detail: "test".into(),
+            };
+            let mut raw = RawResultSummary {
+                exit_code: Some(0),
+                timed_out: false,
+                duration_ms: 1,
+                network_used: expected_network != "none",
+                started_at: phase.started_at,
+                finished_at: phase.finished_at,
+            };
+            let write_phase_and_raw = |phase: &PhaseEvidence, raw: &RawResultSummary| {
+                std::fs::write(
+                    scenario_root.path().join("fetch-phase.json"),
+                    serde_json::to_vec(phase).unwrap(),
+                )
+                .unwrap();
+                std::fs::write(
+                    scenario_root.path().join("fetch-result.json"),
+                    serde_json::to_vec(raw).unwrap(),
+                )
+                .unwrap();
+            };
+            write_phase_and_raw(&phase, &raw);
+            let mut errors = Vec::new();
+            verify_fetch_semantics(
+                scenario_root.path(),
+                &scenario,
+                &fetch_commands,
+                result,
+                &manifest,
+                None,
+                &mut errors,
+            )
+            .unwrap();
+            assert!(errors.is_empty(), "{errors:?}");
+
+            phase.network = if expected_network == "none" {
+                "bridge"
+            } else {
+                "none"
+            }
+            .into();
+            raw.network_used = !raw.network_used;
+            write_phase_and_raw(&phase, &raw);
+            verify_fetch_semantics(
+                scenario_root.path(),
+                &scenario,
+                &fetch_commands,
+                result,
+                &manifest,
+                None,
+                &mut errors,
+            )
+            .unwrap();
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("fetch phase does not bind")),
+                "{errors:?}"
+            );
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("invalid network/time semantics")),
+                "{errors:?}"
+            );
+
+            let mut replay = ReplayDescriptor {
+                scenario_id: scenario.id.clone(),
+                engine: environment.engine.clone(),
+                engine_version: environment.engine_version.clone(),
+                image: environment.tag().into(),
+                image_digest: environment.image_digest.clone(),
+                workdir: environment.workdir.clone(),
+                user: environment.user.clone(),
+                memory_mb: environment.memory_mb,
+                cpus: environment.cpus,
+                pids_limit: environment.pids_limit,
+                read_only_root: environment.read_only_root,
+                fetch_network: expected_network.into(),
+                test_network: "none".into(),
+                fetch_timeout_seconds: environment.fetch_timeout_seconds,
+                test_timeout_seconds: environment.test_timeout_seconds,
+                fetch_argv: argv,
+                test_argv: vec![],
+                expected_exit_code: result.exit_code,
+                expected_timed_out: result.timed_out,
+                expected_failure_signature: result.failure.clone(),
+                resolved_dependencies: scenario.resolved_dependencies.clone(),
+            };
+            errors.clear();
+            verify_replay_descriptor(
+                &replay,
+                &scenario,
+                environment,
+                result,
+                &fetch_commands,
+                &[],
+                &mut errors,
+            )
+            .unwrap();
+            assert!(errors.is_empty(), "{errors:?}");
+            replay.fetch_network = phase.network;
+            verify_replay_descriptor(
+                &replay,
+                &scenario,
+                environment,
+                result,
+                &fetch_commands,
+                &[],
+                &mut errors,
+            )
+            .unwrap();
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("replay.json does not exactly bind")),
+                "{errors:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wheel_artifact_alias_is_rejected_even_when_target_hash_matches() {
+        let workspace = tempdir().unwrap();
+        let external = tempdir().unwrap();
+        let experiment = wheel_experiment(workspace.path());
+        let wheel = workspace.path().join("wheels/fixed-1.whl");
+        let target = external.path().join("fixed-1.whl");
+        std::fs::rename(&wheel, &target).unwrap();
+        std::os::unix::fs::symlink(&target, &wheel).unwrap();
+        let mut errors = Vec::new();
+        verify_dependency_artifacts(workspace.path(), &experiment, &mut errors).unwrap();
+        assert!(!errors.is_empty());
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("symlink") || error.contains("alias")),
+            "{errors:?}"
+        );
     }
 
     #[test]

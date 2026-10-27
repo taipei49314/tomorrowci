@@ -13,6 +13,30 @@ pub fn sha256_str(s: &str) -> String {
     sha256_bytes(s.as_bytes())
 }
 
+/// Hash a regular artifact without loading the entire wheel into memory.
+/// Callers must additionally reject aliases in the workspace-relative ancestors.
+pub fn sha256_file_v1(path: &Path) -> TcResult<ContentHash> {
+    use std::io::Read;
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata_is_alias(&metadata) || !metadata.is_file() {
+        return Err(TcError::Config(format!(
+            "dependency source must be a plain file: {}",
+            path.display()
+        )));
+    }
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 65536];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    ContentHash::sha256(hex::encode(hasher.finalize())).map_err(TcError::InvalidState)
+}
+
 pub fn canonical_json_hash<T: serde::Serialize>(value: &T) -> Result<String, serde_json::Error> {
     let v = serde_json::to_value(value)?;
     let s = serde_json::to_string(&canonicalize(&v))?;

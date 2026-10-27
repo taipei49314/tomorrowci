@@ -2,6 +2,7 @@
 
 mod compare;
 mod config;
+mod dependency_schedule;
 mod domain;
 mod error;
 mod hash;
@@ -11,6 +12,7 @@ mod verdict;
 
 pub use compare::*;
 pub use config::*;
+pub use dependency_schedule::*;
 pub use domain::*;
 pub use error::*;
 pub use hash::*;
