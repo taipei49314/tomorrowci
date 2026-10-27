@@ -16,10 +16,25 @@ No breakage claim without replayable evidence.
 
 ## Product status (evidence-based)
 
+**Current checkout: local recovery, 2026-10-28.** Start with the bounded
+[Python Docker trial](docs/PYTHON_TRIAL.md): choose the baseline and candidate
+versions explicitly, run your own tests, verify the evidence, then replay.
+This checkout is not a new published release. The historical GitHub repositories
+returned 404 during the recovery audit; the release links below are historical
+references, not verified current download locations.
+
+The recovery rejects mixed runtime/concrete-dependency experiments instead of
+running a candidate under the baseline image. Node/Rust failure fingerprints
+now distinguish concrete diagnostics; rescan with this checkout before replaying
+old failures whose fingerprints used the previous algorithm. See the trial guide
+for limits, including known candidate coverage and dependency reproducibility.
+
+### Historical qualification (not a validation of this checkout)
+
 **TomorrowCI is an experimental pre-alpha architecture. The exact
 [`v0.2.0-alpha.1`](https://github.com/taipei49314/tomorrowci-lab/releases/tag/v0.2.0-alpha.1)
-candidate is now available as an immutable, project-operated prerelease for
-external testing; broader product qualification is still in progress.**
+candidate was distributed as an immutable, project-operated prerelease for
+external testing; broader product qualification was incomplete.**
 
 The prerelease contains the deterministic candidate built from exact source
 `f83d43235c4d03ea9a95fc048d3edbd582e8f438`, plus bounded M2/M3 Linux Docker
@@ -63,25 +78,25 @@ machine-readable in
 | `v0.1.1-alpha.2` | **PUBLISHED MEASURED LAB RELEASE** — Python live path, verify, replay ×2, Action dogfood, and release assets passed; Node/Rust live and the other `NOT_RUN` rows remain unclaimed |
 | `v0.2.0-alpha.1` | **PROJECT-OPERATED EXTERNAL-TESTING PRERELEASE** — exact immutable candidate assets and anonymous public read-back passed; formal independent authorization, platform qualification, and GHCR remain blocked |
 
-Full matrix: [docs/CLAIM_TO_EVIDENCE.md](docs/CLAIM_TO_EVIDENCE.md). GitHub
-currently selects the rejected `v0.1.0-grok-session` as “Latest” because it is
-the newest historical non-prerelease; the title and notes now lead with its
-rejected disposition so this metadata behavior is not an acceptance claim.
+Full historical matrix: [docs/CLAIM_TO_EVIDENCE.md](docs/CLAIM_TO_EVIDENCE.md).
+The historical “Latest” selection of the rejected `v0.1.0-grok-session` was
+metadata behavior, not an acceptance claim.
 
 ## Quick start
 
-**Prerequisites:** Rust toolchain; **Docker or Podman daemon** for live scans.
+**Prerequisites:** Rust toolchain and **Docker daemon** for the current narrow
+trial. Start in the supplied source checkout; see [the trial guide](docs/PYTHON_TRIAL.md)
+to scan your own repository. Historical platform qualifications remain separate.
 
 ```bash
-git clone https://github.com/taipei49314/tomorrowci-lab
-cd tomorrowci-lab
-cargo build -p tomorrowci-cli --release
+cargo build -p tomorrowci-cli --release --locked
 
 ./target/release/tomorrowci doctor
 ./target/release/tomorrowci trust
 ./target/release/tomorrowci scan fixtures/python-runtime-break \
   --config fixtures/python-runtime-break/.tomorrowci.yml
-./target/release/tomorrowci verify <run-id>
+cd fixtures/python-runtime-break
+../../target/release/tomorrowci verify <run-id>
 ```
 
 Without a container daemon, `scan` returns **BLOCKED** (not a silent host run).

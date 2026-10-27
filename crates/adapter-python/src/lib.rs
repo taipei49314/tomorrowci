@@ -4,9 +4,9 @@ use indexmap::IndexMap;
 use std::path::Path;
 use tomorrowci_adapters::{path_exists, DetectionResult, EcosystemAdapter};
 use tomorrowci_core::{
-    Baseline, Candidate, CommandSpec, Config, Ecosystem, EnvironmentAxis, EnvironmentSpec,
-    EvidenceGrade, FailureSignature, ProjectDetection, RawExecutionResult, Result, Scenario,
-    TcError,
+    parse_explicit_python_version, Baseline, Candidate, CommandSpec, Config, Ecosystem,
+    EnvironmentAxis, EnvironmentSpec, EvidenceGrade, FailureSignature, ProjectDetection,
+    RawExecutionResult, Result, Scenario, TcError,
 };
 
 pub struct PythonAdapter;
@@ -75,6 +75,19 @@ impl EcosystemAdapter for PythonAdapter {
     }
 
     fn baseline(&self, repo: &Path, config: &Config) -> Result<Baseline> {
+        if config
+            .candidates
+            .runtime
+            .versions
+            .as_ref()
+            .is_some_and(|versions| !versions.is_empty())
+            && config.baseline.runtime != "auto"
+            && parse_explicit_python_version(&config.baseline.runtime).is_none()
+        {
+            return Err(TcError::Config(
+                "explicit Python runtime candidates require a canonical baseline.runtime such as \"3.13\"; image tags and patch versions are not accepted".into(),
+            ));
+        }
         // Prefer explicit config; never silently invent unrelated projects' baselines.
         let runtime = if config.baseline.runtime == "auto" {
             // Read requires-python from pyproject if present; else fail closed to config requirement.
@@ -116,6 +129,7 @@ impl EcosystemAdapter for PythonAdapter {
     }
 
     fn candidates(&self, baseline: &Baseline, config: &Config) -> Result<Vec<Candidate>> {
+        config.validate()?;
         let max = config.candidates.runtime.max_versions as usize;
         let base = parse_python_version(&baseline.runtime).ok_or_else(|| {
             TcError::Config(format!(
@@ -124,8 +138,32 @@ impl EcosystemAdapter for PythonAdapter {
             ))
         })?;
 
-        // Concrete published CPython tags — never invent versions.
-        let catalog = [(3, 10), (3, 11), (3, 12), (3, 13)];
+        // Omission retains the legacy catalogue. An explicit list is an exact
+        // request, including an empty list; it is never filled in or truncated.
+        let catalog = if let Some(versions) = &config.candidates.runtime.versions {
+            if !versions.is_empty() && parse_explicit_python_version(&baseline.runtime).is_none() {
+                return Err(TcError::Config(
+                    "explicit Python runtime candidates require a canonical baseline.runtime such as \"3.13\"".into(),
+                ));
+            }
+            versions
+                .iter()
+                .map(|version| {
+                    let parsed = parse_explicit_python_version(version).ok_or_else(|| {
+                        TcError::Config(format!("invalid explicit Python runtime '{version}'"))
+                    })?;
+                    if parsed <= base {
+                        return Err(TcError::Config(format!(
+                            "explicit runtime {version} must be strictly later than baseline {}",
+                            baseline.runtime
+                        )));
+                    }
+                    Ok(parsed)
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            vec![(3, 10), (3, 11), (3, 12), (3, 13)]
+        };
         let mut out = Vec::new();
         for (maj, min) in catalog {
             if (maj, min) <= base {
@@ -263,7 +301,8 @@ impl EcosystemAdapter for PythonAdapter {
     }
 }
 
-/// Fetch phase: create scenario-local venv and pip install requirements.
+/// Fetch phase: create a scenario-local venv, installing pip requirements when
+/// the file contains more than blank/comment lines.
 pub fn python_fetch_commands(
     workspace: &Path,
     upgrade: bool,
@@ -276,6 +315,36 @@ pub fn python_fetch_commands(
     }
     let state = format!("/work/.tomorrowci/scenarios/{scenario_id}");
     let venv = format!("{state}/venv");
+    let requirements = std::fs::read_to_string(workspace.join("requirements.txt"))?;
+    let no_dependencies = requirements.lines().all(|line| {
+        let line = line.trim();
+        line.is_empty() || line.starts_with('#')
+    });
+    if no_dependencies {
+        // A stdlib-only project needs an isolated interpreter, not ensurepip or
+        // a package-index connection. Any requirements directive takes the
+        // normal pip path below, including -r, constraints and index options.
+        return Ok(vec![
+            CommandSpec {
+                argv: vec!["rm".into(), "-rf".into(), venv.clone()],
+                cwd: Some("/work".into()),
+                network: false,
+                phase: "fetch".into(),
+            },
+            CommandSpec {
+                argv: vec![
+                    "python".into(),
+                    "-m".into(),
+                    "venv".into(),
+                    "--without-pip".into(),
+                    venv,
+                ],
+                cwd: Some("/work".into()),
+                network: false,
+                phase: "fetch".into(),
+            },
+        ]);
+    }
     let cache = format!("{state}/cache/pip");
     let py = format!("{venv}/bin/python");
     let mut install = vec![
@@ -381,6 +450,72 @@ mod tests {
     }
 
     #[test]
+    fn empty_or_comment_only_requirements_need_no_pip_or_package_network() {
+        let dir = tempdir().unwrap();
+        for contents in [
+            "",
+            " \n\t\r\n",
+            "# Standard library only\n  # no dependencies\r\n\n",
+        ] {
+            std::fs::write(dir.path().join("requirements.txt"), contents).unwrap();
+            for upgrade in [false, true] {
+                let commands = python_fetch_commands(dir.path(), upgrade, "baseline").unwrap();
+                assert!(commands.iter().all(|command| !command.network));
+                assert!(commands
+                    .iter()
+                    .all(|command| !command.argv.iter().any(|arg| arg == "pip")));
+                let venv = commands
+                    .iter()
+                    .find(|command| command.argv.iter().any(|arg| arg == "venv"))
+                    .unwrap();
+                assert!(venv.argv.iter().any(|arg| arg == "--without-pip"));
+                assert_eq!(
+                    venv.argv.last().unwrap(),
+                    "/work/.tomorrowci/scenarios/baseline/venv"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn actual_requirements_and_directives_preserve_pip_install() {
+        let dir = tempdir().unwrap();
+        for contents in [
+            "pytest==8.0.0\n",
+            "# tests\npytest==8.0.0 # pinned\n",
+            "-r requirements-test.txt\n",
+            "--find-links ./wheels\n",
+            "-c constraints.txt\n",
+        ] {
+            std::fs::write(dir.path().join("requirements.txt"), contents).unwrap();
+            for upgrade in [false, true] {
+                let commands = python_fetch_commands(dir.path(), upgrade, "py314-locked").unwrap();
+                assert!(commands
+                    .iter()
+                    .all(|command| !command.argv.iter().any(|arg| arg == "--without-pip")));
+                let install = commands
+                    .iter()
+                    .find(|command| command.argv.iter().any(|arg| arg == "pip"))
+                    .unwrap();
+                assert!(install.network);
+                assert!(install
+                    .argv
+                    .windows(2)
+                    .any(|args| args == ["-r", "requirements.txt"]));
+                assert_eq!(install.argv.iter().any(|arg| arg == "--upgrade"), upgrade);
+            }
+        }
+    }
+
+    #[test]
+    fn unreadable_requirements_are_not_treated_as_dependency_free() {
+        let dir = tempdir().unwrap();
+        assert!(python_fetch_commands(dir.path(), false, "baseline").is_err());
+        std::fs::write(dir.path().join("requirements.txt"), [0xff, 0xfe]).unwrap();
+        assert!(python_fetch_commands(dir.path(), false, "baseline").is_err());
+    }
+
+    #[test]
     fn candidates_strictly_later_semantic() {
         let d = tempdir().unwrap();
         std::fs::write(d.path().join("requirements.txt"), "pytest\n").unwrap();
@@ -407,5 +542,102 @@ mod tests {
         let mut cfg = Config::default();
         cfg.baseline.runtime = "auto".into();
         assert!(PythonAdapter.baseline(d.path(), &cfg).is_err());
+    }
+
+    fn explicit_config(versions: &[&str]) -> Config {
+        let mut config = Config::default();
+        config.project.ecosystem = "python".into();
+        config.baseline.runtime = "3.13".into();
+        config.candidates.runtime.versions = Some(versions.iter().map(|v| (*v).into()).collect());
+        config.candidates.dependencies.latest_allowed = false;
+        config.candidates.dependencies.prerelease = false;
+        config
+    }
+
+    #[test]
+    fn explicit_versions_extend_beyond_catalogue_without_guessing() {
+        let dir = tempdir().unwrap();
+        let config = explicit_config(&["3.14", "3.15"]);
+        let baseline = PythonAdapter.baseline(dir.path(), &config).unwrap();
+        let candidates = PythonAdapter.candidates(&baseline, &config).unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|c| c.version.as_str())
+                .collect::<Vec<_>>(),
+            ["3.14", "3.15"]
+        );
+        assert_eq!(candidates[0].id, "py314-locked");
+        let (plan, _) = tomorrowci_core::plan_scenarios(&baseline, &candidates, &[], &config);
+        assert_eq!(plan.scenarios.len(), 3);
+        let env = PythonAdapter
+            .materialize(&plan.scenarios[1], dir.path())
+            .unwrap();
+        assert_eq!(env.image_tag, "python:3.14-slim");
+        // This unit test validates selection and image naming, not tag availability.
+    }
+
+    #[test]
+    fn no_candidates_has_no_catalogue_or_latest_fallback() {
+        let dir = tempdir().unwrap();
+        let mut config = explicit_config(&[]);
+        config.baseline.runtime = "3.11".into();
+        let baseline = PythonAdapter.baseline(dir.path(), &config).unwrap();
+        assert!(PythonAdapter
+            .candidates(&baseline, &config)
+            .unwrap()
+            .is_empty());
+        config.candidates.runtime.versions = None;
+        config.baseline.runtime = "3.13".into();
+        let baseline = PythonAdapter.baseline(dir.path(), &config).unwrap();
+        assert!(PythonAdapter
+            .candidates(&baseline, &config)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn explicit_versions_reject_same_or_earlier_runtime() {
+        let dir = tempdir().unwrap();
+        for versions in [vec!["3.13"], vec!["3.12", "3.14"]] {
+            let config = explicit_config(&versions);
+            let baseline = PythonAdapter.baseline(dir.path(), &config).unwrap();
+            let error = PythonAdapter
+                .candidates(&baseline, &config)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("strictly later"), "{error}");
+        }
+    }
+
+    #[test]
+    fn explicit_selection_rejects_ambiguous_baseline_and_direct_invalid_config() {
+        let dir = tempdir().unwrap();
+        for runtime in ["3.13.1", "python:3.13", "3.13-slim", "3.013", "3.13;id"] {
+            let mut config = explicit_config(&["3.14"]);
+            config.baseline.runtime = runtime.into();
+            assert!(
+                PythonAdapter.baseline(dir.path(), &config).is_err(),
+                "accepted {runtime}"
+            );
+        }
+        let valid = explicit_config(&["3.14"]);
+        let baseline = PythonAdapter.baseline(dir.path(), &valid).unwrap();
+        for versions in [
+            vec!["3.15", "3.14"],
+            vec!["3.14", "3.14"],
+            vec!["3.14;id"],
+            vec!["3.14/evil"],
+            vec!["3.14\n"],
+        ] {
+            let config = explicit_config(&versions);
+            assert!(PythonAdapter.candidates(&baseline, &config).is_err());
+        }
+        let mut config = valid;
+        config.candidates.runtime.max_versions = 0;
+        assert!(PythonAdapter.candidates(&baseline, &config).is_err());
+        config.candidates.runtime.max_versions = 1;
+        config.execution.max_scenarios = 1;
+        assert!(PythonAdapter.candidates(&baseline, &config).is_err());
     }
 }

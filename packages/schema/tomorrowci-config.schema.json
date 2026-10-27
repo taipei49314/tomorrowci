@@ -42,6 +42,7 @@
       "properties": {
         "ecosystem": {
           "type": "string",
+          "enum": ["auto", "python", "node", "rust"],
           "default": "auto"
         },
         "test_command": {
@@ -50,6 +51,8 @@
         },
         "build_command": {
           "type": "string",
+          "const": "auto",
+          "description": "Custom build commands are not implemented; include required checks in test_command.",
           "default": "auto"
         }
       }
@@ -96,6 +99,15 @@
           "minimum": 0,
           "maximum": 4294967295,
           "default": 5
+        },
+        "versions": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "Optional explicit CPython minor versions, each later than the baseline and in strictly increasing semantic order. Python only. Nonempty lists require the stable channel. The list must fit max_versions and, with the baseline, execution.max_scenarios; runtime validation enforces these cross-field constraints. An empty list disables runtime candidates; omission preserves the legacy catalogue. Image availability is checked during execution, not inferred from this list.",
+          "items": {
+            "type": "string",
+            "pattern": "^3\\.(0|[1-9][0-9]{0,2})$(?![\\s\\S])"
+          }
         }
       }
     },

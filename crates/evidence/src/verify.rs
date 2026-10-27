@@ -1440,6 +1440,13 @@ fn verify_plan_semantics(
         .filter(|candidate| candidate.axis == EnvironmentAxis::Runtime)
         .cloned()
         .collect();
+    verify_explicit_runtime_candidates(
+        &manifest.baseline,
+        manifest.detection.ecosystem,
+        config,
+        &runtime_candidates,
+        errors,
+    );
     let concrete_dependency_candidates: Vec<_> = candidates
         .iter()
         .filter(|candidate| candidate.axis == EnvironmentAxis::Dependencies)
@@ -1476,6 +1483,54 @@ fn verify_plan_semantics(
         );
     }
     Ok(())
+}
+
+fn verify_explicit_runtime_candidates(
+    baseline: &tomorrowci_core::Baseline,
+    ecosystem: Ecosystem,
+    config: &Config,
+    candidates: &[Candidate],
+    errors: &mut Vec<String>,
+) {
+    let Some(versions) = &config.candidates.runtime.versions else {
+        return;
+    };
+    if ecosystem != Ecosystem::Python {
+        errors.push("explicit runtime versions require the Python ecosystem".into());
+        return;
+    }
+    if versions.len() != candidates.len() {
+        errors.push("runtime candidate count differs from explicit configured versions".into());
+    }
+    let base = tomorrowci_core::parse_explicit_python_version(&baseline.runtime);
+    for (version, candidate) in versions.iter().zip(candidates) {
+        let Some((major, minor)) = tomorrowci_core::parse_explicit_python_version(version) else {
+            errors.push("invalid explicit runtime version in normalized config".into());
+            continue;
+        };
+        if match base {
+            Some(value) => (major, minor) <= value,
+            None => true,
+        } {
+            errors.push(format!(
+                "explicit runtime {version} is not later than canonical baseline"
+            ));
+        }
+        if candidate.id != format!("py{major}{minor}-locked")
+            || candidate.version != *version
+            || candidate.label != format!("Python {version} + locked dependencies")
+            || candidate.order_key != format!("{major:03}.{minor:03}")
+            || candidate.channel != "stable"
+            || candidate.axis != EnvironmentAxis::Runtime
+            || candidate.grade_if_executed != EvidenceGrade::Observed
+            || candidate.dependency_set.is_some()
+        {
+            errors.push(format!(
+                "runtime candidate {} differs from explicit configured version {version}",
+                candidate.id
+            ));
+        }
+    }
 }
 
 fn verify_dependency_semantics(
@@ -1670,6 +1725,7 @@ fn verify_dependency_semantics(
             }
         }
         if scenario.resolved_dependencies.is_some() {
+            verify_dependency_runtime(scenario, &experiment.runtime.version, errors);
             if let Some(result) = manifest
                 .results
                 .iter()
@@ -1719,6 +1775,17 @@ fn verify_dependency_semantics(
         }
     }
     Ok(())
+}
+
+/// Schema-v1 dependency artifacts bind one runtime. Historical mixed-axis
+/// bundles may be internally checksummed yet describe an unexecuted runtime.
+fn verify_dependency_runtime(scenario: &Scenario, pinned_runtime: &str, errors: &mut Vec<String>) {
+    if scenario.runtime != pinned_runtime {
+        errors.push(format!(
+            "dependency scenario {} declares runtime {} but the experiment pins {}; mixed-runtime dependency evidence is unsupported",
+            scenario.id, scenario.runtime, pinned_runtime
+        ));
+    }
 }
 
 fn verify_dependency_artifacts(
@@ -4888,6 +4955,85 @@ mod tests {
             .errors
             .iter()
             .any(|error| error.contains("symlink/reparse")));
+    }
+
+    #[test]
+    fn explicit_runtime_intent_cannot_be_replaced_by_consistent_candidate_metadata() {
+        let baseline = tomorrowci_core::Baseline {
+            runtime: "3.13".into(),
+            dependencies: "locked".into(),
+            declared_by: "config".into(),
+        };
+        let mut config = Config::default();
+        config.candidates.runtime.versions = Some(vec!["3.14".into()]);
+        let mut candidate = Candidate {
+            id: "py314-locked".into(),
+            axis: EnvironmentAxis::Runtime,
+            label: "Python 3.14 + locked dependencies".into(),
+            version: "3.14".into(),
+            channel: "stable".into(),
+            grade_if_executed: EvidenceGrade::Observed,
+            order_key: "003.014".into(),
+            dependency_set: None,
+        };
+        let mut errors = Vec::new();
+        verify_explicit_runtime_candidates(
+            &baseline,
+            Ecosystem::Python,
+            &config,
+            &[candidate.clone()],
+            &mut errors,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        // Even an internally consistent replacement must not satisfy the user's request.
+        candidate.id = "py312-locked".into();
+        candidate.version = "3.12".into();
+        candidate.label = "Python 3.12 + locked dependencies".into();
+        candidate.order_key = "003.012".into();
+        verify_explicit_runtime_candidates(
+            &baseline,
+            Ecosystem::Python,
+            &config,
+            &[candidate.clone()],
+            &mut errors,
+        );
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("differs from explicit configured version")));
+        errors.clear();
+        config.candidates.runtime.versions = Some(vec![]);
+        verify_explicit_runtime_candidates(
+            &baseline,
+            Ecosystem::Python,
+            &config,
+            &[candidate],
+            &mut errors,
+        );
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("candidate count differs")));
+    }
+
+    #[test]
+    fn dependency_runtime_mismatch_is_rejected_even_with_a_pinned_image() {
+        let mut scenario = Scenario {
+            id: "py312-locked".into(),
+            is_baseline: false,
+            runtime: "3.12".into(),
+            dependencies: "baseline".into(),
+            axes_changed: vec![EnvironmentAxis::Runtime],
+            candidates: vec!["py312-locked".into()],
+            grade: EvidenceGrade::Observed,
+            resolved_dependencies: None,
+        };
+        let mut errors = Vec::new();
+        verify_dependency_runtime(&scenario, "3.11", &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("mixed-runtime dependency evidence is unsupported"));
+        scenario.runtime = "3.11".into();
+        errors.clear();
+        verify_dependency_runtime(&scenario, "3.11", &mut errors);
+        assert!(errors.is_empty());
     }
 
     #[test]

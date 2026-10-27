@@ -45,13 +45,14 @@ runs:
       run: |
         set -euo pipefail
         ACTION_ROOT="$(cd "${{ github.action_path }}/.." && pwd)"
-        TARGET_DIR="${RUNNER_TEMP:-/tmp}/tomorrowci-target"
+        # Isolate source directories and always let Cargo validate freshness.
+        # A pre-existing executable is not evidence that it matches this action.
+        SOURCE_KEY="$(printf '%s' "$ACTION_ROOT" | sha256sum | cut -c1-24)"
+        TARGET_DIR="${RUNNER_TEMP:-/tmp}/tomorrowci-target-$SOURCE_KEY"
         mkdir -p "$TARGET_DIR"
         BIN="$TARGET_DIR/release/tomorrowci"
-        if [[ ! -x "$BIN" ]]; then
-          echo "Building tomorrowci-cli from action root: $ACTION_ROOT"
-          cargo build -p tomorrowci-cli --release --manifest-path "$ACTION_ROOT/Cargo.toml" --target-dir "$TARGET_DIR"
-        fi
+        echo "Building tomorrowci-cli from action root: $ACTION_ROOT"
+        cargo build -p tomorrowci-cli --release --locked --manifest-path "$ACTION_ROOT/Cargo.toml" --target-dir "$TARGET_DIR"
         test -x "$BIN"
         echo "bin=$BIN" >> "$GITHUB_OUTPUT"
         echo "action_root=$ACTION_ROOT" >> "$GITHUB_OUTPUT"

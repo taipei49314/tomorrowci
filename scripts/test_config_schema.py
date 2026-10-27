@@ -96,6 +96,9 @@ def validate_fixture(
         raise SchemaContractError(f"{path}: expected constant {schema['const']!r}")
     if "enum" in schema and value not in schema["enum"]:
         raise SchemaContractError(f"{path}: {value!r} is not in {schema['enum']!r}")
+    if isinstance(value, str) and "pattern" in schema:
+        if re.search(schema["pattern"], value) is None:
+            raise SchemaContractError(f"{path}: does not match {schema['pattern']!r}")
 
     if (
         isinstance(value, (int, float))
@@ -112,6 +115,10 @@ def validate_fixture(
             raise SchemaContractError(f"{path}: above maximum {schema['maximum']}")
 
     if isinstance(value, list) and "items" in schema:
+        if schema.get("uniqueItems") and any(
+            item in value[:index] for index, item in enumerate(value)
+        ):
+            raise SchemaContractError(f"{path}: duplicate array items")
         for index, item in enumerate(value):
             validate_fixture(item, schema["items"], root, f"{path}[{index}]")
 
@@ -219,6 +226,7 @@ class ConfigSchemaTests(unittest.TestCase):
                     "runtime": {
                         "channels": ["stable", "preview"],
                         "max_versions": 5,
+                        "versions": ["3.12", "3.14"],
                     },
                     "dependencies": {
                         "latest_allowed": True,
@@ -262,6 +270,8 @@ class ConfigSchemaTests(unittest.TestCase):
             {"version": 2},
             {"version": 1, "unknown": True},
             {"version": 1, "project": {"ecosytem": "python"}},
+            {"version": 1, "project": {"ecosystem": "pyhton"}},
+            {"version": 1, "project": {"build_command": "make build"}},
             {"version": 1, "baseline": {"runtime": 311}},
             {"version": 1, "candidates": {"runtime": {"channels": ["stable", 3]}}},
             {"version": 1, "candidates": {"dependencies": {"latest": True}}},
@@ -302,6 +312,19 @@ class ConfigSchemaTests(unittest.TestCase):
         for fixture in fixtures:
             with self.subTest(fixture=fixture):
                 self.assert_invalid(copy.deepcopy(fixture))
+
+    def test_explicit_runtime_versions_shape(self) -> None:
+        for versions in ([], ["3.14"], ["3.9", "3.10"], ["3.999"]):
+            self.assert_valid({"version": 1, "candidates": {"runtime": {"versions": versions}}})
+        for versions in (
+            None, "3.14", [3.14], [True], ["3.14", "3.14"], ["3.014"],
+            ["3.14.0"], ["python:3.14"], ["3.14-slim"], ["3.14;id"],
+            ["3.14/evil"], ["3.14 "], ["3.14\n"], ["4.0"], ["3.1000"],
+        ):
+            with self.subTest(versions=versions):
+                self.assert_invalid({"version": 1, "candidates": {"runtime": {"versions": versions}}})
+        # Semantic order, baseline comparison and cross-field budgets are checked
+        # by Config/PythonAdapter tests, not by this structural JSON schema.
 
 
 if __name__ == "__main__":

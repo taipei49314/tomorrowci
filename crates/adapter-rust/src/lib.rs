@@ -204,8 +204,10 @@ impl EcosystemAdapter for RustAdapter {
     }
 
     fn normalize_failure(&self, result: &RawExecutionResult) -> FailureSignature {
-        let blob = format!("{}\n{}", result.stdout, result.stderr);
-        let kind = if blob.contains("package.rust-version")
+        let blob = strip_diagnostic_ansi(&format!("{}\n{}", result.stdout, result.stderr));
+        let kind = if result.timed_out {
+            "Timeout"
+        } else if blob.contains("package.rust-version")
             || blob.contains("rust-version")
             || (blob.contains("requires rustc")
                 && (blob.contains("cannot be built") || blob.contains("is not supported")))
@@ -216,19 +218,184 @@ impl EcosystemAdapter for RustAdapter {
         } else {
             "TestFailure"
         };
+        let detail = if result.timed_out {
+            "execution timed out".to_string()
+        } else {
+            rust_failure_detail(&blob)
+        };
+        let primary_frame = (!result.timed_out)
+            .then(|| rust_primary_frame(&blob))
+            .flatten();
         FailureSignature {
             kind: kind.into(),
-            summary: blob
-                .lines()
-                .find(|l| l.contains("error"))
-                .unwrap_or(kind)
-                .chars()
-                .take(200)
-                .collect(),
-            normalized_hash: tomorrowci_core::sha256_str(kind),
-            primary_frame: None,
+            summary: detail.chars().take(200).collect(),
+            // Compiler codes, messages and assertion values must agree, not just
+            // the broad CompileError/TestFailure category. Version the contract
+            // so historical coarse hashes cannot silently authorize a replay.
+            normalized_hash: tomorrowci_core::sha256_str(&format!(
+                "rust-failure-v2\n{kind}\n{}\n{detail}",
+                primary_frame.as_deref().unwrap_or("")
+            )),
+            primary_frame,
         }
     }
+}
+
+fn strip_diagnostic_ansi(text: &str) -> String {
+    let mut chars = text.chars().peekable();
+    let mut out = String::new();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for control in chars.by_ref() {
+                    if ('@'..='~').contains(&control) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                while let Some(control) = chars.next() {
+                    if control == '\u{7}' {
+                        break;
+                    }
+                    if control == '\u{1b}' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            Some(other) => {
+                out.push('\u{1b}');
+                out.push(other);
+            }
+            None => out.push('\u{1b}'),
+        }
+    }
+    out
+}
+
+fn rust_error_header(line: &str) -> bool {
+    line.starts_with("error:")
+        || line.starts_with("error[")
+        || (line.starts_with("thread '") && line.contains("panicked at"))
+}
+
+fn normalize_frame_path(raw: &str) -> String {
+    let mut path = raw.trim().trim_start_matches("file://").replace('\\', "/");
+    for _ in 0..2 {
+        if let Some((file, number)) = path.rsplit_once(':') {
+            if !number.is_empty() && number.chars().all(|ch| ch.is_ascii_digit()) {
+                path = file.to_string();
+            }
+        }
+    }
+    for root in ["/work/", "/workspace/"] {
+        if let Some(relative) = path.strip_prefix(root) {
+            return relative.to_string();
+        }
+    }
+    let parts: Vec<_> = path.split('/').collect();
+    for (index, part) in parts.iter().enumerate().skip(1) {
+        let parent = parts[index - 1];
+        let temporary_parent =
+            parent.eq_ignore_ascii_case("tmp") || parent.eq_ignore_ascii_case("temp");
+        if temporary_parent
+            && (part.starts_with("run-") || part.starts_with("tomorrowci-replay-"))
+            && index + 1 < parts.len()
+        {
+            return parts[index + 1..].join("/");
+        }
+    }
+    // Preserve an uncertain root rather than collapsing equally named modules.
+    path.trim_start_matches("./").to_string()
+}
+
+fn rust_primary_frame(blob: &str) -> Option<String> {
+    let lines: Vec<_> = blob.lines().map(str::trim).collect();
+    let start = lines
+        .iter()
+        .position(|line| rust_error_header(line))
+        .unwrap_or(0);
+    for &line in &lines[start..] {
+        if let Some(location) = line.strip_prefix("-->") {
+            return Some(normalize_frame_path(location));
+        }
+        if line.starts_with("thread '") && line.ends_with(':') {
+            if let Some((_, location)) = line.split_once("panicked at ") {
+                return Some(normalize_frame_path(location.trim_end_matches(':')));
+            }
+        }
+    }
+    None
+}
+
+fn rust_failure_detail(blob: &str) -> String {
+    let lines: Vec<_> = blob.lines().map(str::trim).collect();
+    let start = lines
+        .iter()
+        .position(|line| rust_error_header(line))
+        .unwrap_or(0);
+    let mut details = Vec::new();
+    let mut backtrace = false;
+    for &line in &lines[start..] {
+        if rust_error_header(line) {
+            backtrace = false;
+        }
+        if line == "stack backtrace:" {
+            backtrace = true;
+            continue;
+        }
+        if backtrace
+            || line.is_empty()
+            || line.starts_with(":::")
+            || line.starts_with("Compiling ")
+            || line.starts_with("Checking ")
+            || line.starts_with("Finished ")
+            || line.starts_with("Running ")
+            || line.starts_with("test result:")
+            || line.starts_with("For more information about this error")
+            || line.starts_with("note: run with `RUST_BACKTRACE")
+        {
+            continue;
+        }
+        if let Some(location) = line.strip_prefix("-->") {
+            // Keep every diagnostic's module, not just its message. Line/column
+            // and known disposable roots are noise; the relative file is not.
+            details.push(format!("source: {}", normalize_frame_path(location)));
+            continue;
+        }
+        if let Some(thread) = line.strip_prefix("thread '") {
+            if let Some((name, rest)) = thread.split_once('\'') {
+                if rest.contains("panicked at") && rest.ends_with(':') {
+                    // PID and source location vary; thread/test identity does not.
+                    details.push(format!("thread '{name}' panicked"));
+                    continue;
+                }
+            }
+        }
+        let line = if let Some((gutter, content)) = line.split_once('|') {
+            if !gutter.is_empty() && gutter.trim().chars().all(|c| c.is_ascii_digit()) {
+                continue; // numbered source excerpt, not the compiler diagnostic
+            }
+            if gutter.trim().is_empty() {
+                content.trim_start_matches([' ', '^'])
+            } else {
+                line
+            }
+        } else {
+            line
+        };
+        if !line.is_empty() {
+            details.push(line.to_string());
+        }
+    }
+    // Retain all semantic payload, including expected/found types and left/right
+    // assertion values. The 200-character display limit never truncates the hash.
+    details.join("\n")
 }
 
 #[cfg(test)]
@@ -324,7 +491,91 @@ mod tests {
         assert_eq!(signature.kind, "MsrvError");
         assert_eq!(
             signature.normalized_hash,
-            tomorrowci_core::sha256_str("MsrvError")
+            tomorrowci_core::sha256_str(&format!("rust-failure-v2\nMsrvError\n\n{}", raw.stderr))
+        );
+    }
+
+    fn failure(stderr: &str) -> FailureSignature {
+        RustAdapter.normalize_failure(&RawExecutionResult {
+            exit_code: Some(101),
+            signal: None,
+            duration_ms: 10,
+            timed_out: false,
+            stdout: String::new(),
+            stderr: stderr.into(),
+            network_used: false,
+        })
+    }
+
+    #[test]
+    fn compiler_error_codes_and_messages_are_distinct() {
+        let types = failure("error[E0308]: mismatched types");
+        let missing = failure("error[E0425]: cannot find value `total` in this scope");
+        assert_eq!(types.kind, missing.kind);
+        assert_ne!(types.normalized_hash, missing.normalized_hash);
+        assert_ne!(
+            failure("error[E0425]: cannot find value `total` in this scope").normalized_hash,
+            failure("error[E0425]: cannot find value `customer` in this scope").normalized_hash
+        );
+    }
+
+    #[test]
+    fn expected_and_found_types_are_part_of_the_failure() {
+        let integer = failure("error[E0308]: mismatched types\n  --> /tmp/a/main.rs:10:2\n   |\n10 | let value: i32 = input;\n   |                  ^^^^^ expected `i32`, found `&str`");
+        let boolean = failure("error[E0308]: mismatched types\n  --> /tmp/a/main.rs:10:2\n   |\n10 | let value: bool = input;\n   |                   ^^^^^ expected `bool`, found `&str`");
+        assert_ne!(integer.normalized_hash, boolean.normalized_hash);
+    }
+
+    #[test]
+    fn compiler_locations_ansi_and_build_timing_are_not_failure_identity() {
+        let first = failure("\u{1b}[31merror[E0308]: mismatched types\u{1b}[0m\n  --> /tmp/run-123/src/main.rs:10:2\n   |\n10 | let value: i32 = input;\n   |                  ^^^^^ expected `i32`, found `&str`\nFinished test profile in 0.12s");
+        let second = failure("error[E0308]: mismatched types\n  --> C:\\temp\\run-456\\src\\main.rs:99:4\n   |\n99 | let value: i32 = input;\n   |                   ^^^^^ expected `i32`, found `&str`\nFinished test profile in 9.87s");
+        assert_eq!(first.normalized_hash, second.normalized_hash);
+    }
+
+    #[test]
+    fn panic_assertion_values_survive_pid_and_backtrace_normalization() {
+        let first = failure("thread 'balance_test' (123) panicked at /tmp/run-123/src/lib.rs:10:2:\nassertion `left == right` failed\n  left: 1\n right: 2\nstack backtrace:\n0: /tmp/run-123/src/lib.rs:10\n1: test::run");
+        let same = failure("thread 'balance_test' (456) panicked at C:\\temp\\run-456\\src\\lib.rs:99:4:\nassertion `left == right` failed\n  left: 1\n right: 2\nstack backtrace:\n0: C:\\temp\\run-456\\src\\lib.rs:99\n1: test::run");
+        let different = failure("thread 'balance_test' (123) panicked at /tmp/run-123/src/lib.rs:10:2:\nassertion `left == right` failed\n  left: 3\n right: 2");
+        assert_eq!(first.normalized_hash, same.normalized_hash);
+        assert_ne!(first.normalized_hash, different.normalized_hash);
+    }
+
+    #[test]
+    fn legacy_inline_panic_messages_are_not_discarded() {
+        assert_ne!(
+            failure("thread 'main' panicked at 'alpha', src/main.rs:1:1").normalized_hash,
+            failure("thread 'main' panicked at 'beta', src/main.rs:1:1").normalized_hash
+        );
+    }
+
+    #[test]
+    fn display_truncation_does_not_truncate_failure_identity() {
+        let prefix = format!("error[E0001]: {}", "x".repeat(220));
+        let first = failure(&format!("{prefix}alpha"));
+        let second = failure(&format!("{prefix}beta"));
+        assert_eq!(first.summary, second.summary);
+        assert_ne!(first.normalized_hash, second.normalized_hash);
+    }
+
+    #[test]
+    fn the_same_diagnostic_in_another_module_is_a_different_failure() {
+        let billing = failure(
+            "error[E0425]: cannot find value `total` in this scope\n --> /work/src/billing.rs:10:2",
+        );
+        let shipping = failure("error[E0425]: cannot find value `total` in this scope\n --> /work/src/shipping.rs:10:2");
+        assert_eq!(billing.primary_frame.as_deref(), Some("src/billing.rs"));
+        assert_ne!(billing.normalized_hash, shipping.normalized_hash);
+    }
+
+    #[test]
+    fn unknown_absolute_roots_are_not_silently_merged() {
+        assert_ne!(
+            failure("error[E0425]: missing value\n --> /opt/billing/src/lib.rs:1:2")
+                .normalized_hash,
+            failure("error[E0425]: missing value\n --> /opt/shipping/src/lib.rs:1:2")
+                .normalized_hash
         );
     }
 }

@@ -100,6 +100,81 @@ pub struct RuntimeCandidates {
     pub channels: Vec<String>,
     #[serde(default = "default_max_versions")]
     pub max_versions: u32,
+    /// Exact CPython minor versions, in ascending order. None retains the
+    /// legacy catalogue; Some([]) deliberately disables runtime candidates.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_runtime_versions",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub versions: Option<Vec<String>>,
+}
+
+fn deserialize_runtime_versions<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Do not coerce YAML numbers (3.10 can become 3.1) or null to a version list.
+    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    values
+        .into_iter()
+        .map(|value| match value {
+            serde_json::Value::String(version) => Ok(version),
+            _ => Err(serde::de::Error::custom(
+                "runtime versions must be quoted strings",
+            )),
+        })
+        .collect::<std::result::Result<Vec<_>, D::Error>>()
+        .map(Some)
+}
+
+/// Parse the explicit CPython minor-version syntax used to construct image tags.
+/// Tags, suffixes, patch versions, whitespace and noncanonical numbers are rejected.
+pub fn parse_explicit_python_version(version: &str) -> Option<(u32, u32)> {
+    let minor = version.strip_prefix("3.")?;
+    if minor.is_empty()
+        || minor.len() > 3
+        || !minor.bytes().all(|b| b.is_ascii_digit())
+        || (minor.len() > 1 && minor.starts_with('0'))
+    {
+        return None;
+    }
+    Some((3, minor.parse().ok()?))
+}
+
+impl RuntimeCandidates {
+    pub fn validate_explicit_versions(&self) -> Result<()> {
+        let Some(versions) = &self.versions else {
+            return Ok(());
+        };
+        if versions.len() > self.max_versions as usize {
+            return Err(TcError::Config(
+                "candidates.runtime.versions exceeds max_versions; explicit versions are never truncated".into(),
+            ));
+        }
+        if !versions.is_empty() && !self.channels.iter().any(|channel| channel == "stable") {
+            return Err(TcError::Config(
+                "explicit Python runtime versions require the stable channel".into(),
+            ));
+        }
+        let mut previous = None;
+        for version in versions {
+            let parsed = parse_explicit_python_version(version).ok_or_else(|| {
+                TcError::Config(format!(
+                    "invalid explicit Python runtime '{version}'; use a quoted canonical minor version such as \"3.14\" (3.0 through 3.999), without image prefixes or suffixes"
+                ))
+            })?;
+            if previous.is_some_and(|value| parsed <= value) {
+                return Err(TcError::Config(
+                    "candidates.runtime.versions must be unique and in strictly increasing version order".into(),
+                ));
+            }
+            previous = Some(parsed);
+        }
+        Ok(())
+    }
 }
 
 fn default_channels() -> Vec<String> {
@@ -115,6 +190,7 @@ impl Default for RuntimeCandidates {
         Self {
             channels: default_channels(),
             max_versions: default_max_versions(),
+            versions: None,
         }
     }
 }
@@ -315,6 +391,32 @@ impl Config {
                 self.version
             )));
         }
+        if !matches!(
+            self.project.ecosystem.as_str(),
+            "auto" | "python" | "node" | "rust"
+        ) {
+            return Err(TcError::Config(
+                "project.ecosystem must be auto|python|node|rust".into(),
+            ));
+        }
+        if self.project.build_command != "auto" {
+            return Err(TcError::Config(
+                "project.build_command is not implemented; leave it as auto and put required checks in project.test_command".into(),
+            ));
+        }
+        self.candidates.runtime.validate_explicit_versions()?;
+        if let Some(versions) = &self.candidates.runtime.versions {
+            if !matches!(self.project.ecosystem.as_str(), "auto" | "python") {
+                return Err(TcError::Config(
+                    "candidates.runtime.versions is currently supported only for Python".into(),
+                ));
+            }
+            if versions.len() as u64 + 1 > u64::from(self.execution.max_scenarios) {
+                return Err(TcError::Config(
+                    "execution.max_scenarios must fit the baseline plus every explicit runtime version; explicit versions are never truncated".into(),
+                ));
+            }
+        }
         if self.execution.max_scenarios == 0 {
             return Err(TcError::Config(
                 "execution.max_scenarios must be >= 1".into(),
@@ -478,5 +580,100 @@ x-experimental:
   foo: 1
 "#;
         Config::load_str(raw).unwrap();
+    }
+
+    #[test]
+    fn omitted_runtime_versions_preserve_legacy_serialization() {
+        let config = Config::load_str("version: 1\n").unwrap();
+        assert!(config.candidates.runtime.versions.is_none());
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            value["candidates"]["runtime"],
+            serde_json::json!({
+                "channels": ["stable", "preview"], "max_versions": 5
+            })
+        );
+        let mut disabled = config.clone();
+        disabled.candidates.runtime.versions = Some(vec![]);
+        disabled.validate().unwrap();
+        assert_eq!(
+            serde_json::to_value(&disabled).unwrap()["candidates"]["runtime"]["versions"],
+            serde_json::json!([])
+        );
+        assert_ne!(
+            config.content_hash().unwrap(),
+            disabled.content_hash().unwrap()
+        );
+    }
+
+    #[test]
+    fn explicit_versions_are_quoted_and_canonical() {
+        let raw = "version: 1\ncandidates:\n  runtime:\n    versions: [\"3.14\", \"3.15\"]\n";
+        let config = Config::load_str(raw).unwrap();
+        assert_eq!(
+            config.candidates.runtime.versions.unwrap(),
+            ["3.14", "3.15"]
+        );
+        for invalid in [
+            "null",
+            "3.14",
+            "[3.14]",
+            "[true]",
+            "[\"3.014\"]",
+            "[\"3.14-slim\"]",
+            "[\"3.14.0\"]",
+            "[\"3.14;id\"]",
+            "[\"python:3.14\"]",
+            "[\"3.14\\n\"]",
+            "[\"4.0\"]",
+            "[\"3.1000\"]",
+        ] {
+            let raw = format!("version: 1\ncandidates:\n  runtime:\n    versions: {invalid}\n");
+            assert!(Config::load_str(&raw).is_err(), "accepted {invalid}");
+        }
+    }
+
+    #[test]
+    fn explicit_versions_reject_duplicates_reverse_order_and_insufficient_budgets() {
+        let mut config = Config::default();
+        for versions in [
+            vec!["3.14", "3.14"],
+            vec!["3.15", "3.14"],
+            vec!["3.10", "3.9"],
+        ] {
+            config.candidates.runtime.versions =
+                Some(versions.into_iter().map(str::to_owned).collect());
+            assert!(config.validate().is_err());
+        }
+        config.candidates.runtime.versions = Some(vec!["3.14".into(), "3.15".into()]);
+        config.candidates.runtime.max_versions = 1;
+        assert!(config.validate().is_err());
+        config.candidates.runtime.max_versions = 2;
+        config.execution.max_scenarios = 2;
+        assert!(config.validate().is_err());
+        config.execution.max_scenarios = 3;
+        config.validate().unwrap();
+        config.candidates.runtime.channels = vec!["preview".into()];
+        assert!(config.validate().is_err());
+        config.candidates.runtime.versions = Some(vec![]);
+        config.candidates.runtime.max_versions = 0;
+        config.execution.max_scenarios = 1;
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn explicit_versions_reject_non_python_ecosystems_and_unused_build_commands() {
+        let mut config = Config::default();
+        config.project.ecosystem = "pyhton".into();
+        assert!(config.validate().is_err());
+        config.candidates.runtime.versions = Some(vec!["3.14".into()]);
+        for ecosystem in ["node", "rust"] {
+            config.project.ecosystem = ecosystem.into();
+            assert!(config.validate().is_err());
+        }
+        config.project.ecosystem = "python".into();
+        config.validate().unwrap();
+        config.project.build_command = "make build".into();
+        assert!(config.validate().is_err());
     }
 }

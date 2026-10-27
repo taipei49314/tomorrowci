@@ -210,8 +210,10 @@ impl EcosystemAdapter for NodeAdapter {
     }
 
     fn normalize_failure(&self, result: &RawExecutionResult) -> FailureSignature {
-        let blob = format!("{}\n{}", result.stdout, result.stderr);
-        let kind = if blob.contains("createCipher is not a function") {
+        let blob = strip_diagnostic_ansi(&format!("{}\n{}", result.stdout, result.stderr));
+        let kind = if result.timed_out {
+            "Timeout"
+        } else if blob.contains("createCipher is not a function") {
             "RemovedRuntimeApi"
         } else if blob.contains("ERR_OSSL_EVP_UNSUPPORTED") {
             "OpenSslUnsupported"
@@ -224,24 +226,169 @@ impl EcosystemAdapter for NodeAdapter {
         } else {
             "TestFailure"
         };
+        let detail = if result.timed_out {
+            "execution timed out".to_string()
+        } else {
+            node_failure_detail(&blob)
+        };
+        let primary_frame = (!result.timed_out)
+            .then(|| node_primary_frame(&blob))
+            .flatten();
         FailureSignature {
             kind: kind.into(),
-            summary: blob
-                .lines()
-                .find(|line| line.contains("createCipher is not a function"))
-                .or_else(|| {
-                    blob.lines()
-                        .find(|line| line.contains("TypeError") || line.contains("Error:"))
-                })
-                .or_else(|| blob.lines().rev().find(|line| !line.trim().is_empty()))
-                .unwrap_or(kind)
-                .chars()
-                .take(200)
-                .collect(),
-            normalized_hash: tomorrowci_core::sha256_str(kind),
-            primary_frame: None,
+            summary: detail.chars().take(200).collect(),
+            // Hash the complete diagnostic, not its display prefix or error class.
+            // Old class-only fingerprints deliberately cannot authorize new replays.
+            normalized_hash: tomorrowci_core::sha256_str(&format!(
+                "node-failure-v2\n{kind}\n{}\n{detail}",
+                primary_frame.as_deref().unwrap_or("")
+            )),
+            primary_frame,
         }
     }
+}
+
+/// Remove terminal decoration, preserving Unicode and the actual error text.
+fn strip_diagnostic_ansi(text: &str) -> String {
+    let mut chars = text.chars().peekable();
+    let mut out = String::new();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for control in chars.by_ref() {
+                    if ('@'..='~').contains(&control) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                while let Some(control) = chars.next() {
+                    if control == '\u{7}' {
+                        break;
+                    }
+                    if control == '\u{1b}' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            Some(other) => {
+                // Unknown escapes are not grounds for discarding diagnostic bytes.
+                out.push('\u{1b}');
+                out.push(other);
+            }
+            None => out.push('\u{1b}'),
+        }
+    }
+    out
+}
+
+fn node_error_header(line: &str) -> bool {
+    let Some((prefix, _)) = line.split_once(':') else {
+        return false;
+    };
+    prefix.ends_with("Error")
+        || prefix
+            .split_once(" [")
+            .is_some_and(|(name, _)| name.ends_with("Error"))
+        || prefix == "error" // node:test TAP diagnostic block
+}
+
+/// Strip only known execution roots and numeric line/column suffixes. An unknown
+/// absolute root stays in the fingerprint: uncertain relocation must diverge,
+/// rather than merging equally named files from different directories.
+fn normalize_frame_path(raw: &str) -> String {
+    let mut path = raw.trim().trim_start_matches("file://").replace('\\', "/");
+    for _ in 0..2 {
+        if let Some((file, number)) = path.rsplit_once(':') {
+            if !number.is_empty() && number.chars().all(|ch| ch.is_ascii_digit()) {
+                path = file.to_string();
+            }
+        }
+    }
+    for root in ["/work/", "/workspace/"] {
+        if let Some(relative) = path.strip_prefix(root) {
+            return relative.to_string();
+        }
+    }
+    let parts: Vec<_> = path.split('/').collect();
+    for (index, part) in parts.iter().enumerate().skip(1) {
+        let parent = parts[index - 1];
+        let temporary_parent =
+            parent.eq_ignore_ascii_case("tmp") || parent.eq_ignore_ascii_case("temp");
+        if temporary_parent
+            && (part.starts_with("run-") || part.starts_with("tomorrowci-replay-"))
+            && index + 1 < parts.len()
+        {
+            return parts[index + 1..].join("/");
+        }
+    }
+    path.trim_start_matches("./").to_string()
+}
+
+fn node_primary_frame(blob: &str) -> Option<String> {
+    let mut internal_frame = None;
+    let lines: Vec<_> = blob.lines().map(str::trim).collect();
+    // Select the same diagnostic as node_failure_detail. An earlier debug trace
+    // must not supply the frame for an unrelated exception emitted afterwards.
+    let start = lines
+        .iter()
+        .position(|line| node_error_header(line))
+        .unwrap_or(0);
+    for &line in &lines[start..] {
+        let Some(frame) = line.strip_prefix("at ") else {
+            continue;
+        };
+        let (function, location) = match frame.split_once(" (") {
+            Some((function, location)) if location.ends_with(')') => {
+                (Some(function), location.trim_end_matches(')'))
+            }
+            _ => (None, frame),
+        };
+        let location = normalize_frame_path(location);
+        let normalized = function.map_or_else(
+            || location.clone(),
+            |function| format!("{function} ({location})"),
+        );
+        if location.starts_with("node:") || location == "native" {
+            internal_frame.get_or_insert(normalized);
+        } else {
+            return Some(normalized);
+        }
+    }
+    internal_frame
+}
+
+fn node_failure_detail(blob: &str) -> String {
+    let lines: Vec<_> = blob.lines().map(str::trim).collect();
+    // Prefer the error over npm banners and the source excerpt above an exception.
+    // If there is no recognized diagnostic, retain the output rather than reduce
+    // every unfamiliar failure to a shared "TestFailure" fingerprint.
+    let start = lines
+        .iter()
+        .position(|line| node_error_header(line))
+        .unwrap_or(0);
+    let details: Vec<_> = lines[start..]
+        .iter()
+        .copied()
+        .filter(|line| {
+            !line.is_empty()
+                && !line.starts_with("at ")
+                && !line.starts_with("Node.js v")
+                && !line.starts_with("duration_ms:")
+                && !line.starts_with("# duration_ms ")
+                && !line.starts_with("npm ERR! A complete log")
+                && !line.starts_with("npm error A complete log")
+        })
+        .collect();
+    // Numbers, actual/expected values, module paths and error codes remain part
+    // of the identity. The primary frame is separately hashed; only the remainder
+    // of the stack and explicit timing metadata vanish here.
+    details.join("\n")
 }
 
 pub fn check_manager(manager: &str) -> Result<()> {
@@ -334,7 +481,104 @@ mod tests {
         assert!(signature.summary.contains("createCipher is not a function"));
         assert_eq!(
             signature.normalized_hash,
-            tomorrowci_core::sha256_str("RemovedRuntimeApi")
+            tomorrowci_core::sha256_str(
+                "node-failure-v2\nRemovedRuntimeApi\n\nTypeError: crypto.createCipher is not a function"
+            )
         );
+    }
+
+    fn failure(stderr: &str) -> FailureSignature {
+        NodeAdapter.normalize_failure(&RawExecutionResult {
+            exit_code: Some(1),
+            signal: None,
+            duration_ms: 10,
+            timed_out: false,
+            stdout: String::new(),
+            stderr: stderr.into(),
+            network_used: false,
+        })
+    }
+
+    #[test]
+    fn different_errors_with_the_same_exit_and_class_are_not_the_same_failure() {
+        let missing_name = failure("TypeError: customer.name is undefined");
+        let missing_total = failure("TypeError: invoice.total is undefined");
+        assert_eq!(missing_name.kind, missing_total.kind);
+        assert_ne!(missing_name.normalized_hash, missing_total.normalized_hash);
+        assert_ne!(
+            failure("Error: Cannot find module 'alpha'").normalized_hash,
+            failure("Error: Cannot find module 'beta'").normalized_hash
+        );
+    }
+
+    #[test]
+    fn assertion_values_and_the_full_message_are_part_of_the_identity() {
+        let first = failure("AssertionError [ERR_ASSERTION]: Expected values to be equal\nactual: 1\nexpected: 2\noperator: strictEqual");
+        let second = failure("AssertionError [ERR_ASSERTION]: Expected values to be equal\nactual: 3\nexpected: 2\noperator: strictEqual");
+        assert_ne!(first.normalized_hash, second.normalized_hash);
+        let prefix = format!("Error: {}", "x".repeat(220));
+        let first = failure(&format!("{prefix}alpha"));
+        let second = failure(&format!("{prefix}beta"));
+        assert_eq!(first.summary, second.summary);
+        assert_ne!(first.normalized_hash, second.normalized_hash);
+    }
+
+    #[test]
+    fn ansi_stack_paths_and_timing_do_not_change_the_failure() {
+        let first = failure("npm test banner\n\u{1b}[31mTypeError: customer.name is undefined\u{1b}[0m\n    at run (/tmp/run-123/test.js:10:2)\nduration_ms: 13.1\nNode.js v22.1.0");
+        let second = failure("another banner\nTypeError: customer.name is undefined\n    at run (C:\\temp\\run-456\\test.js:99:4)\nduration_ms: 74.9\nNode.js v22.1.0");
+        assert_eq!(first.normalized_hash, second.normalized_hash);
+    }
+
+    #[test]
+    fn unfamiliar_failure_output_is_not_discarded() {
+        assert_ne!(
+            failure("check failed: balance 10 != 20").normalized_hash,
+            failure("check failed: balance 30 != 20").normalized_hash
+        );
+    }
+
+    #[test]
+    fn the_same_error_in_another_file_or_function_is_a_different_failure() {
+        let billing =
+            failure("AssertionError: total differs\n at checkTotal (/work/src/billing.js:10:2)");
+        let shipping =
+            failure("AssertionError: total differs\n at checkTotal (/work/src/shipping.js:10:2)");
+        let other_function =
+            failure("AssertionError: total differs\n at checkTax (/work/src/billing.js:10:2)");
+        assert_eq!(
+            billing.primary_frame.as_deref(),
+            Some("checkTotal (src/billing.js)")
+        );
+        assert_ne!(billing.normalized_hash, shipping.normalized_hash);
+        assert_ne!(billing.normalized_hash, other_function.normalized_hash);
+    }
+
+    #[test]
+    fn unknown_absolute_roots_are_not_silently_merged() {
+        assert_ne!(
+            failure("Error: failed\n at check (/opt/billing/index.js:1:2)").normalized_hash,
+            failure("Error: failed\n at check (/opt/shipping/index.js:1:2)").normalized_hash
+        );
+    }
+
+    #[test]
+    fn an_earlier_debug_trace_does_not_replace_the_actual_error_frame() {
+        let normalize = |file: &str| {
+            NodeAdapter.normalize_failure(&RawExecutionResult {
+                exit_code: Some(1),
+                signal: None,
+                duration_ms: 10,
+                timed_out: false,
+                stdout: "Trace: debug\n at trace (/work/helper.js:1:1)".into(),
+                stderr: format!("Error: failed\n at check (/work/src/{file}.js:10:2)"),
+                network_used: false,
+            })
+        };
+        let first = normalize("a");
+        let second = normalize("b");
+        assert_eq!(first.primary_frame.as_deref(), Some("check (src/a.js)"));
+        assert_eq!(second.primary_frame.as_deref(), Some("check (src/b.js)"));
+        assert_ne!(first.normalized_hash, second.normalized_hash);
     }
 }

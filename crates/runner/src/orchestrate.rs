@@ -85,8 +85,10 @@ pub(crate) fn scan_local_into(
     opts: ScanOptions,
     synthesize_git_index: bool,
 ) -> Result<ScanOutcome> {
+    opts.config.validate()?;
+    let requested = opts.config.project.ecosystem.as_str();
     let py = PythonAdapter.detect(repo);
-    if py.supported {
+    if py.supported && matches!(requested, "auto" | "python") {
         return scan_with_adapter(
             repo,
             evidence_repo,
@@ -98,7 +100,7 @@ pub(crate) fn scan_local_into(
         );
     }
     let node = NodeAdapter.detect(repo);
-    if node.supported {
+    if node.supported && matches!(requested, "auto" | "node") {
         return scan_with_adapter(
             repo,
             evidence_repo,
@@ -110,7 +112,7 @@ pub(crate) fn scan_local_into(
         );
     }
     let rust = RustAdapter.detect(repo);
-    if rust.supported {
+    if rust.supported && matches!(requested, "auto" | "rust") {
         return scan_with_adapter(
             repo,
             evidence_repo,
@@ -121,9 +123,9 @@ pub(crate) fn scan_local_into(
             None,
         );
     }
-    Err(TcError::Unsupported(
-        "no supported ecosystem detected (need Python, Node/npm, or Rust/cargo manifests)".into(),
-    ))
+    Err(TcError::Unsupported(format!(
+        "no supported {requested} ecosystem detected (need matching Python, Node/npm, or Rust/cargo manifests)"
+    )))
 }
 
 fn scan_with_adapter(
@@ -137,6 +139,11 @@ fn scan_with_adapter(
 ) -> Result<ScanOutcome> {
     let config = opts.config;
     config.validate()?;
+    if config.candidates.runtime.versions.is_some() && detection.ecosystem != Ecosystem::Python {
+        return Err(TcError::Unsupported(
+            "candidates.runtime.versions is currently supported only for Python; the selected adapter cannot ignore an explicit candidate list".into(),
+        ));
+    }
     let detected = adapter.detect(repo);
     if !detected.supported
         || serde_json::to_value(&detected.detection)? != serde_json::to_value(&detection)?
@@ -189,6 +196,13 @@ fn scan_with_adapter(
     let dependency_experiment =
         load_dependency_experiment(&work, detection.ecosystem, &baseline.runtime)?;
     if let Some(experiment) = &dependency_experiment {
+        // Schema v1 pins a single runtime image. Applying that image to a
+        // different runtime would report an experiment we never executed.
+        if !rt_cands.is_empty() {
+            return Err(TcError::Unsupported(
+                "concrete dependency experiments pin one runtime image; run runtime candidates separately, or set candidates.runtime.max_versions to 0 for this dependency experiment".into(),
+            ));
+        }
         baseline.dependencies = experiment.baseline.set_id.clone();
     }
     let dep_cands = dependency_candidates(&baseline, &config, dependency_experiment.as_ref())?;
@@ -1991,6 +2005,25 @@ pub fn render_terminal_summary(m: &RunManifest) -> String {
         }
     }
     out.push('\n');
+    let planned_candidates = m.plan.scenarios.iter().filter(|s| !s.is_baseline).count();
+    let tested_candidates = m
+        .results
+        .iter()
+        .filter(|r| {
+            r.attempt > 0
+                && m.plan
+                    .scenarios
+                    .iter()
+                    .any(|s| s.id == r.scenario_id && !s.is_baseline)
+        })
+        .count();
+    out.push_str(&format!(
+        "Candidate coverage: {tested_candidates} tested / {planned_candidates} planned.\n"
+    ));
+    if planned_candidates == 0 {
+        out.push_str("NO_CANDIDATES: no candidate scenarios were planned; future compatibility was not evaluated.\n");
+    }
+    out.push_str("Scope: observed results for these candidates only; passing does not establish compatibility with untested versions.\n");
     if m.frontier.observed {
         out.push_str(&format!(
             "Observed breakage horizon: {}\n",
