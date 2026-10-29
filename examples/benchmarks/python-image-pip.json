@@ -1,0 +1,347 @@
+{
+  "schema_version": 1,
+  "kind": "PROJECT_OPERATED_BOUNDED_OBSERVATION_NOT_INDEPENDENT_ADOPTION",
+  "observed_at": "2026-10-29T18:07:00.526159+00:00",
+  "host": "LAPTOP-01AGNPJU",
+  "execution_label": "HUMAN_AUTHORIZED_LOCAL_PJU_NOT_EC_POOL",
+  "scope": "Windows host, Docker Linux amd64 containers. Fixed Pydub eight-test PCM fixture and separately registered packaging version/specifier subset.",
+  "performance": {
+    "legacy": {
+      "run_id": "0471865e7f99",
+      "tool_source_sha": "723e682f9515ab3b23bf9f48b854f924e424eb2a",
+      "binary_sha256": "001f557b9ac1bc85b180045dc446b77615768612ad370a3090fccaccbc725b89",
+      "target_source_sha": "fc368baa597b7401c26af5cc68b9f0a7996a70de",
+      "requirements_sha256": "44bf2f11f6f598f3451c5af76edecca9636d56f6c34bfc47ca33e82a1747e84e",
+      "wrapper_sha256": "88d72040fe3ee54758c65c7c79257dbab9a0cbc6238e0adb95a7f179c31df72a",
+      "baseline": "3.11",
+      "candidate": "3.14",
+      "images": {
+        "3.11": {
+          "digest": "python@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60",
+          "image_id": "sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60",
+          "os": "linux",
+          "architecture": "amd64"
+        },
+        "3.14": {
+          "digest": "python@sha256:82abc9f53600280b0757126f83c5a7d47088592d2acb6b4c0b9e97f76865508c",
+          "image_id": "sha256:82abc9f53600280b0757126f83c5a7d47088592d2acb6b4c0b9e97f76865508c",
+          "os": "linux",
+          "architecture": "amd64"
+        }
+      },
+      "tests_per_scenario": 8,
+      "test_ids_sha256": "90c648a739ab2f949afde1b973d3ff3aab41e7aabd328ee5ec3b3962e0fd7e32",
+      "skipped_per_attempt": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "replays": 3,
+      "verify_exit_codes": [
+        0,
+        0
+      ],
+      "wall_seconds": {
+        "scan": 124.034,
+        "replay-baseline-1": 91.865,
+        "replay-py314-locked-1": 52.582,
+        "replay-py314-locked-2": 50.634
+      },
+      "scan_and_three_replays_seconds": 319.115,
+      "scan_phases": {
+        "baseline": {
+          "verdict": "BASELINE_PASS",
+          "fetch_ms": 45381,
+          "prepared_copy_ms": 28117,
+          "test_container_ms": 762
+        },
+        "py314-locked": {
+          "verdict": "FUTURE_PASS",
+          "fetch_ms": 27527,
+          "prepared_copy_ms": 16104,
+          "test_container_ms": 1014
+        }
+      },
+      "manifest_sha256": "a45c70feaae0aec4ef128252f093174ad82a8197fa2d9fb174464c060be2f2ca"
+    },
+    "initial_image_pip": {
+      "run_id": "e70b696c57f7",
+      "tool_source_sha": "723e682f9515ab3b23bf9f48b854f924e424eb2a",
+      "binary_sha256": "001f557b9ac1bc85b180045dc446b77615768612ad370a3090fccaccbc725b89",
+      "target_source_sha": "fc368baa597b7401c26af5cc68b9f0a7996a70de",
+      "requirements_sha256": "44bf2f11f6f598f3451c5af76edecca9636d56f6c34bfc47ca33e82a1747e84e",
+      "wrapper_sha256": "88d72040fe3ee54758c65c7c79257dbab9a0cbc6238e0adb95a7f179c31df72a",
+      "baseline": "3.11",
+      "candidate": "3.14",
+      "images": {
+        "3.11": {
+          "digest": "python@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60",
+          "image_id": "sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60",
+          "os": "linux",
+          "architecture": "amd64"
+        },
+        "3.14": {
+          "digest": "python@sha256:82abc9f53600280b0757126f83c5a7d47088592d2acb6b4c0b9e97f76865508c",
+          "image_id": "sha256:82abc9f53600280b0757126f83c5a7d47088592d2acb6b4c0b9e97f76865508c",
+          "os": "linux",
+          "architecture": "amd64"
+        }
+      },
+      "tests_per_scenario": 8,
+      "test_ids_sha256": "90c648a739ab2f949afde1b973d3ff3aab41e7aabd328ee5ec3b3962e0fd7e32",
+      "skipped_per_attempt": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "replays": 3,
+      "verify_exit_codes": [
+        0,
+        0
+      ],
+      "wall_seconds": {
+        "scan": 14.252,
+        "replay-baseline-1": 8.127,
+        "replay-py314-locked-1": 10.055,
+        "replay-py314-locked-2": 9.943
+      },
+      "scan_and_three_replays_seconds": 42.377,
+      "scan_phases": {
+        "baseline": {
+          "verdict": "BASELINE_PASS",
+          "fetch_ms": 2269,
+          "prepared_copy_ms": 1313,
+          "test_container_ms": 714
+        },
+        "py314-locked": {
+          "verdict": "FUTURE_PASS",
+          "fetch_ms": 3578,
+          "prepared_copy_ms": 1718,
+          "test_container_ms": 967
+        }
+      },
+      "manifest_sha256": "8d4d51b76c928c6fdec74502fa8b18383d81197ad1d51aca3a4c14427471ed2c"
+    },
+    "final_isolated_image_pip": {
+      "run_id": "ff4bd826de8e",
+      "tool_source_sha": "54485765d8eadca266ee46d3a6ffce4eb25bf2de",
+      "binary_sha256": "eb9e55aa6d6efa8e6bae9e49de3d7a8cbf7cfc461846810e6474f71e279e6408",
+      "target_source_sha": "fc368baa597b7401c26af5cc68b9f0a7996a70de",
+      "requirements_sha256": "44bf2f11f6f598f3451c5af76edecca9636d56f6c34bfc47ca33e82a1747e84e",
+      "wrapper_sha256": "88d72040fe3ee54758c65c7c79257dbab9a0cbc6238e0adb95a7f179c31df72a",
+      "baseline": "3.11",
+      "candidate": "3.14",
+      "images": {
+        "3.11": {
+          "digest": "python@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60",
+          "image_id": "sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60",
+          "os": "linux",
+          "architecture": "amd64"
+        },
+        "3.14": {
+          "digest": "python@sha256:82abc9f53600280b0757126f83c5a7d47088592d2acb6b4c0b9e97f76865508c",
+          "image_id": "sha256:82abc9f53600280b0757126f83c5a7d47088592d2acb6b4c0b9e97f76865508c",
+          "os": "linux",
+          "architecture": "amd64"
+        }
+      },
+      "tests_per_scenario": 8,
+      "test_ids_sha256": "90c648a739ab2f949afde1b973d3ff3aab41e7aabd328ee5ec3b3962e0fd7e32",
+      "skipped_per_attempt": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "replays": 3,
+      "verify_exit_codes": [
+        0,
+        0
+      ],
+      "wall_seconds": {
+        "scan": 14.182,
+        "replay-baseline-1": 8.462,
+        "replay-py314-locked-1": 10.015,
+        "replay-py314-locked-2": 10.205
+      },
+      "scan_and_three_replays_seconds": 42.864,
+      "scan_phases": {
+        "baseline": {
+          "verdict": "BASELINE_PASS",
+          "fetch_ms": 2217,
+          "prepared_copy_ms": 1362,
+          "test_container_ms": 711
+        },
+        "py314-locked": {
+          "verdict": "FUTURE_PASS",
+          "fetch_ms": 3425,
+          "prepared_copy_ms": 1765,
+          "test_container_ms": 963
+        }
+      },
+      "manifest_sha256": "55795df700a0e6a9f296a1c58f1e13bfa475baa99bd9f4e87b56ba5081a74405"
+    },
+    "scan_reduction_percent": 88.57,
+    "scan_and_replay_reduction_percent": 86.57,
+    "method": "Initial paired modes used the same binary sequentially. The improved mode was repeated after isolated module-loading hardening. Legacy implementation was unchanged. Each scan has one baseline replay and two candidate replays; no concurrent target runs. Timings include container/CLI overhead; image pulls are excluded because both images were already local.",
+    "environment_difference": "The opt-in venv omits implicit pip/setuptools bootstrap packages; declared project/test requirements and test assertions are identical. This mode requires declaring installer packages if tests need them."
+  },
+  "packaging": {
+    "run_id": "3d9f5b222ebc",
+    "tool_source_sha": "723e682f9515ab3b23bf9f48b854f924e424eb2a",
+    "binary_sha256": "001f557b9ac1bc85b180045dc446b77615768612ad370a3090fccaccbc725b89",
+    "target_source_sha": "b635dc5e60d6fb8020416c6bab9421964bfa342a",
+    "requirements_sha256": "111ce205669b034cc8eb7fa34e29866f05d7edb02db32ca9de151f88e35bb93f",
+    "wrapper_sha256": "88d72040fe3ee54758c65c7c79257dbab9a0cbc6238e0adb95a7f179c31df72a",
+    "baseline": "3.13",
+    "candidate": "3.14",
+    "images": {
+      "3.13": {
+        "digest": "python@sha256:b3575dcf816cdacc5292df77a6e3e59b8941631078373a045efa2ac1e9c5c3b2",
+        "image_id": "sha256:b3575dcf816cdacc5292df77a6e3e59b8941631078373a045efa2ac1e9c5c3b2",
+        "os": "linux",
+        "architecture": "amd64"
+      },
+      "3.14": {
+        "digest": "python@sha256:82abc9f53600280b0757126f83c5a7d47088592d2acb6b4c0b9e97f76865508c",
+        "image_id": "sha256:82abc9f53600280b0757126f83c5a7d47088592d2acb6b4c0b9e97f76865508c",
+        "os": "linux",
+        "architecture": "amd64"
+      }
+    },
+    "tests_per_scenario": 53615,
+    "test_ids_sha256": "7aaecb68b300ee79578e49162b17a55acb7156d5b8f3566d59dc5d0ce3c581e9",
+    "skipped_per_attempt": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "replays": 3,
+    "verify_exit_codes": [
+      0,
+      0
+    ],
+    "wall_seconds": {
+      "scan": 214.035,
+      "replay-baseline-1": 111.782,
+      "replay-py314-locked-1": 114.76,
+      "replay-py314-locked-2": 113.906
+    },
+    "scan_and_three_replays_seconds": 554.483,
+    "scan_phases": {
+      "baseline": {
+        "verdict": "BASELINE_PASS",
+        "fetch_ms": 26461,
+        "prepared_copy_ms": 13236,
+        "test_container_ms": 66154
+      },
+      "py314-locked": {
+        "verdict": "FUTURE_PASS",
+        "fetch_ms": 26259,
+        "prepared_copy_ms": 12029,
+        "test_container_ms": 64291
+      }
+    },
+    "manifest_sha256": "9206f73b65c6890b200d2ab20c7b5220e535e9acbc563680cd02049db6e003e5"
+  },
+  "preserved_prior_packaging_observation": {
+    "run_id": "da0da4ecf357",
+    "baseline": "3.11",
+    "passed": 53613,
+    "skipped": 2,
+    "candidate": "3.14",
+    "candidate_executed": false,
+    "status": "COVERAGE_INCOMPLETE"
+  },
+  "installer_shadowing": {
+    "before": {
+      "source_sha": "723e682f9515ab3b23bf9f48b854f924e424eb2a",
+      "run_id": "db809f13099d",
+      "status": "FAILURE_REPRODUCED",
+      "verdicts": [
+        "BLOCKED"
+      ]
+    },
+    "after": {
+      "source_sha": "54485765d8eadca266ee46d3a6ffce4eb25bf2de",
+      "run_id": "7ba2b7bed587",
+      "status": "FIX_VERIFIED",
+      "verdicts": [
+        "BASELINE_PASS",
+        "FUTURE_PASS"
+      ]
+    },
+    "fixture": "Project-root pip.py and venv.py raise if imported by the installer; after fix a real audioop import and PCM assertion pass on both runtimes."
+  },
+  "invalid_hash_control": {
+    "source_sha": "54485765d8eadca266ee46d3a6ffce4eb25bf2de",
+    "run_id": "abbee42b070c",
+    "status": "PASS_NEGATIVE_CONTROL",
+    "verdicts": [
+      "BASELINE_PASS",
+      "BLOCKED"
+    ],
+    "candidate_tests_executed": false,
+    "verify_exit": 0
+  },
+  "workflow_initialization": {
+    "existing_exit": 1,
+    "source_sha": "0897fb6c5d68d6517f235ad4519fa10f2bfe7fef",
+    "existing_bytes_unchanged": true,
+    "new_exit": 0,
+    "binary_sha256": "0e374fabc4196395a85357452bcca0c434fa5d947f391c0740a57a3c314a6d2c"
+  },
+  "validation": {
+    "rust_tests_passed": 210,
+    "preparer_tests_passed": 16,
+    "schema_tests_passed": 7,
+    "historical_regression_tests_passed": 5,
+    "clippy": "PASS",
+    "fmt": "PASS",
+    "prior_receipts": [
+      {
+        "name": "historical-fixed",
+        "run_id": "7db39d9e1d9e",
+        "exit_code": 0,
+        "log_sha256": "00f1dc348670d7a0e32b8a61299055705c1307b3dabd77c5b47f5f4548a1a913"
+      },
+      {
+        "name": "legacy-mode",
+        "run_id": "0471865e7f99",
+        "exit_code": 0,
+        "log_sha256": "55ce5a6ca622ded6bd86619e45248f008b7a43fc361755b09a33b248c065416e"
+      },
+      {
+        "name": "pre-hardening-mode",
+        "run_id": "e70b696c57f7",
+        "exit_code": 0,
+        "log_sha256": "435c13de8b38db488a8d28e97f5f9eee1c4b20beeba54f9dee533be69a76ff0f"
+      },
+      {
+        "name": "packaging",
+        "run_id": "3d9f5b222ebc",
+        "exit_code": 0,
+        "log_sha256": "35fb0096a110015d429a7e8d97c25bf646a1db4027c262c477e9c81e184d0939"
+      }
+    ]
+  },
+  "external_feedback": {
+    "invitation": "https://github.com/jiaaro/pydub/issues/839#issuecomment-6503826951",
+    "status": "INVITATION_POSTED_NOT_INDEPENDENT_ADOPTION"
+  },
+  "limitations": [
+    "Single-host measurements, not a general speed guarantee or full platform qualification.",
+    "Pydub fixture is eight focused PCM tests, not its full suite, codecs or devices.",
+    "Packaging observation covers only test_version.py and test_specifiers.py, not its full repository suite.",
+    "The 3.13-to-3.14 packaging run does not rewrite or qualify the earlier incomplete 3.11 observation.",
+    "Full raw receipts are retained in the local delivery archive; this JSON is a summary, not a replacement for tomorrowci verify.",
+    "No product release or independent user adoption is claimed."
+  ]
+}

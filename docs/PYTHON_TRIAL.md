@@ -252,6 +252,15 @@ commands plus the config hash record the choice. Every test attempt still gets
 a fresh prepared copy, with the seed absent from the target container and network
 disabled. Replay uses its recorded fetch commands, including for older runs.
 
+On one Windows Docker host with Linux amd64 containers, the fixed eight-test
+Pydub fixture's scan took 124.0 seconds with the original environment and 14.2
+seconds with the isolated image installer. Scan plus three replays took 319.1
+and 42.9 seconds respectively, with matching test IDs and results. A separate
+packaging 3.13-to-3.14 trial passed all 53,615 selected version/specifier tests
+and three replays. [Exact source, images, timings and limits](../examples/benchmarks/python-image-pip.json)
+are recorded as project-operated observations; these measurements are specific
+to the recorded host, fixtures and environment choice.
+
 ## Known upstream regression: Pydub and audioop
 
 `examples/real-regressions/pydub-audioop/` contains a source-pinned reproduction
