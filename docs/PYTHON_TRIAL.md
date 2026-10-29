@@ -6,6 +6,36 @@ with one baseline and one candidate, using Docker and pip. A completed scan is
 an observation of those tests and environments; it does not certify future
 compatibility or prove that a failure was caused by CPython itself.
 
+## Prepare a trial with one command
+
+The preparation helper creates a new isolated Git checkout at your clean source
+HEAD, copies the strict coverage adapter, and writes the runtime configuration.
+It does not import target code, install dependencies, or execute tests on the
+host. Choose the real baseline and candidate versions and an existing test scope:
+
+```sh
+python scripts/prepare_python_trial.py /path/to/clean/repo --output /path/to/new/trial --baseline 3.12 --candidate 3.14 --framework unittest --source-package example --stdlib-only -- discover -s tests -v
+```
+
+For pytest, replace `--stdlib-only` with `--requirements /path/to/test-requirements.txt`
+and `--framework unittest` with `--framework pytest`; put pytest arguments after
+`--`. For a src layout, add `--source-root src`. Repeat `--source-package` for
+each module the chosen tests should actually load. Without an explicit dependency
+option, the helper uses an existing root `requirements.txt` or fails; it never
+infers dependencies from imports. Include project dependencies and pytest where
+needed. Requirements are copied verbatim, not resolved or locked; keep any local
+paths checkout-relative and include their tracked inputs in the source.
+
+The result is `PREPARED_NOT_EXECUTED`, with the source SHA and overlay hashes in
+`.tomorrowci-trial-profile.json`. Run the returned scan command from the output
+directory with your TomorrowCI executable, then inspect counts, verify and replay
+as described below. Existing output directories, dirty sources, symlinks,
+submodules, pre-existing TomorrowCI configurations and whitespace inside test
+arguments are rejected. A preparation failure retains its output for diagnosis;
+choose a fresh output path after correcting the cause. The original repo is
+unchanged. Image availability and target test outcomes remain unverified until
+the actual container scan.
+
 ## Prepare the source checkout and target
 
 Use the supplied TomorrowCI source checkout. A public release download is not a

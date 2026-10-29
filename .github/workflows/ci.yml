@@ -32,6 +32,7 @@ jobs:
           python3 scripts/test_container_contract.py
           python3 scripts/test_import_python_dependencies.py
           python3 scripts/test_python_trial_runner.py
+          python3 scripts/test_prepare_python_trial.py
           python3 scripts/test_oci_candidate.py
           python3 scripts/test_historical_regressions.py
           python3 scripts/test_config_schema.py
