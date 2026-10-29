@@ -229,3 +229,30 @@ For a useful first issue or review, retain the complete run directory, the exact
 TomorrowCI source identity, the target source identity, the chosen configuration,
 and the original test output. A naturally failing third-party test plus a passing
 fix/replay is stronger evidence than a purpose-built demonstration fixture.
+
+## Known upstream regression: Pydub and audioop
+
+`examples/real-regressions/pydub-audioop/` contains a source-pinned reproduction
+of [Pydub issue #839](https://github.com/jiaaro/pydub/issues/839), an existing
+reported problem, not a newly discovered vulnerability or an upstreamed fix.
+Python removed `audioop` in 3.13. The local patch declares `audioop-lts` for
+Python 3.13 and later; the trial locks its Linux x86_64 Python 3.14 wheel and hash.
+
+Check out Pydub commit `103e339d3bc7a9a58a9f1de65f7d8074659b5f5a`, then prepare
+separate before/fixed directories from the TomorrowCI checkout:
+
+```sh
+python examples/real-regressions/pydub-audioop/prepare.py /path/to/pydub /new/before --mode before
+python examples/real-regressions/pydub-audioop/prepare.py /path/to/pydub /new/fixed --mode fixed
+```
+
+Run the scan/verify/replay commands above inside each output's `trial/`
+directory. Preparation adds the same eight PCM assertions in both cases and
+explicitly removes the unused `test/pydub` directory link from the disposable
+source overlay. Upstream library files and existing assertions are unchanged;
+the fixed case additionally patches `setup.py` and supplies the locked dependency.
+The original checkout stays unchanged. Profile metadata records upstream and
+overlay identities. These focused tests cover import, RMS, gain, clipping,
+channels, reversal, WAV round trips, resampling and sample width. They do not
+claim the complete upstream suite, ffmpeg codecs, devices, or an exact first
+failing Python version between the tested 3.11 and 3.14 endpoints.

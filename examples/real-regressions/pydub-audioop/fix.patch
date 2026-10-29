@@ -1,0 +1,12 @@
+diff --git a/setup.py b/setup.py
+index 7a2fc15..4525af1 100644
+--- a/setup.py
++++ b/setup.py
+@@ -16,6 +16,7 @@ setup(
+     keywords='audio sound high-level',
+     url='http://pydub.com',
+     packages=['pydub'],
++    install_requires=["audioop-lts>=0.2.1; python_version >= '3.13'"],
+     long_description=__doc__,
+     classifiers=[
+         'Development Status :: 5 - Production/Stable',

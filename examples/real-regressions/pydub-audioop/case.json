@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "kind": "KNOWN_UPSTREAM_REGRESSION_REPRODUCTION_NOT_NOVEL_DISCOVERY",
+  "repository": "jiaaro/pydub",
+  "upstream_sha": "103e339d3bc7a9a58a9f1de65f7d8074659b5f5a",
+  "issue": "https://github.com/jiaaro/pydub/issues/839",
+  "python_removal_reference": "https://docs.python.org/3.14/library/audioop.html",
+  "replacement_reference": "https://github.com/AbstractUmbra/audioop",
+  "scope": "Eight focused PCM regression tests; upstream library code unchanged. Not full upstream, codec, or device qualification.",
+  "source_transformations": [
+    "Added the identical regression test module in before/fixed overlays.",
+    "Removed unused directory symlink test/pydub -> ../pydub/ from both overlays.",
+    "Fixed overlay additionally patches setup.py and supplies the locked dependency."
+  ],
+  "fix": "Declare audioop-lts>=0.2.1 for python_version >= '3.13'; test lock uses 0.2.2 cp313-abi3 Linux x86_64 wheel.",
+  "target_test_ids_sha256": "90c648a739ab2f949afde1b973d3ff3aab41e7aabd328ee5ec3b3962e0fd7e32",
+  "before": {
+    "run_id": "e7a2edabb6b2",
+    "tool_source_sha": "212eff932fe426179fd0ad0eaaf7d4f53f9ca845",
+    "overlay_sha": "9e8fab7669d39317c4afedef3dc30fe6a965fe70",
+    "baseline": "3.11: eight passed",
+    "candidate": "3.14: eight import errors",
+    "signature": "ModuleNotFoundError: No module named 'pyaudioop'",
+    "candidate_attempts": 3,
+    "candidate_replays": 2
+  },
+  "fixed": {
+    "run_id": "7db39d9e1d9e",
+    "tool_source_sha": "212eff932fe426179fd0ad0eaaf7d4f53f9ca845",
+    "overlay_sha": "fc368baa597b7401c26af5cc68b9f0a7996a70de",
+    "baseline": "3.11: eight passed",
+    "candidate": "3.14: eight passed",
+    "replays": 3,
+    "coverage_valid": true
+  },
+  "rejected_intermediate": {
+    "run_id": "806f01660678",
+    "status": "BLOCKED",
+    "reason": "Incorrect cp314t wheel hash in first lock; candidate tests did not run."
+  },
+  "images": {
+    "3.11": {
+      "digest": "python@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60",
+      "image_id": "sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60",
+      "os": "linux",
+      "architecture": "amd64"
+    },
+    "3.14": {
+      "digest": "python@sha256:82abc9f53600280b0757126f83c5a7d47088592d2acb6b4c0b9e97f76865508c",
+      "image_id": "sha256:82abc9f53600280b0757126f83c5a7d47088592d2acb6b4c0b9e97f76865508c",
+      "os": "linux",
+      "architecture": "amd64"
+    }
+  },
+  "host": "LAPTOP-01AGNPJU",
+  "execution_label": "HUMAN_AUTHORIZED_LOCAL_PJU_NOT_EC_POOL",
+  "file_sha256": {
+    "test_audioop_compat.py": "b472ee6fb8ea45757753b02f199127a266be0960f62ea0ce350ff7360934b83e",
+    "fix.patch": "90ebe3a48d5778b81d436c41f2f3e017afef24406d61d3cf72e43e7e960e8d0f",
+    "requirements.fixed.txt": "ae99c5ebfbd5925fbf83111b1c1316916a1278b2aae2e2cfc6c8500379afccff",
+    "prepare.py": "cb7d6a530054f65b744a105497f3256112d753d4e96a4528030616372d0f0ba8"
+  },
+  "limitations": [
+    "Known reported issue, not a first discovery or merged upstream fix.",
+    "Only Python 3.11/3.14 Linux containers tested; the exact first failing version was not measured.",
+    "These local observations do not establish independent user adoption or public release qualification.",
+    "The lock intentionally covers ordinary CPython Linux x86_64; other ABIs/platforms need separately frozen hashes."
+  ]
+}
