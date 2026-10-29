@@ -220,6 +220,7 @@ class ConfigSchemaTests(unittest.TestCase):
                     "ecosystem": "python",
                     "test_command": "python -m pytest -q",
                     "build_command": "auto",
+                    "python_image_pip": True,
                 },
                 "baseline": {"runtime": "3.11", "dependencies": "locked"},
                 "candidates": {
@@ -272,6 +273,7 @@ class ConfigSchemaTests(unittest.TestCase):
             {"version": 1, "project": {"ecosytem": "python"}},
             {"version": 1, "project": {"ecosystem": "pyhton"}},
             {"version": 1, "project": {"build_command": "make build"}},
+            {"version": 1, "project": {"python_image_pip": "true"}},
             {"version": 1, "baseline": {"runtime": 311}},
             {"version": 1, "candidates": {"runtime": {"channels": ["stable", 3]}}},
             {"version": 1, "candidates": {"dependencies": {"latest": True}}},

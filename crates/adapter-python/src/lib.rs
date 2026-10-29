@@ -668,6 +668,22 @@ pub fn python_fetch_commands_with_image_pip(
         let line = line.trim();
         line.is_empty() || line.starts_with('#')
     });
+    // The image installer must not import a target's pip.py or venv.py from
+    // /work. Isolated Python loading still leaves pip requirement flags intact.
+    let mut create = if image_pip {
+        vec![
+            "/usr/local/bin/python".into(),
+            "-I".into(),
+            "-m".into(),
+            "venv".into(),
+        ]
+    } else {
+        vec!["python".into(), "-m".into(), "venv".into()]
+    };
+    if no_dependencies || image_pip {
+        create.push("--without-pip".into());
+    }
+    create.push(venv.clone());
     if no_dependencies {
         // A stdlib-only project needs an isolated interpreter, not ensurepip or
         // a package-index connection. Any requirements directive takes the
@@ -680,13 +696,7 @@ pub fn python_fetch_commands_with_image_pip(
                 phase: "fetch".into(),
             },
             CommandSpec {
-                argv: vec![
-                    "python".into(),
-                    "-m".into(),
-                    "venv".into(),
-                    "--without-pip".into(),
-                    venv,
-                ],
+                argv: create,
                 cwd: Some("/work".into()),
                 network: false,
                 phase: "fetch".into(),
@@ -700,6 +710,7 @@ pub fn python_fetch_commands_with_image_pip(
         // the official Python image's interpreter explicitly for the installer.
         vec![
             "/usr/local/bin/python".into(),
+            "-I".into(),
             "-m".into(),
             "pip".into(),
             "--python".into(),
@@ -719,11 +730,6 @@ pub fn python_fetch_commands_with_image_pip(
     if upgrade {
         install.push("--upgrade".into());
     }
-    let mut create = vec!["python".into(), "-m".into(), "venv".into()];
-    if image_pip {
-        create.push("--without-pip".into());
-    }
-    create.push(venv.clone());
     Ok(vec![
         CommandSpec {
             argv: vec!["rm".into(), "-rf".into(), venv.clone()],
@@ -1132,9 +1138,10 @@ FAILED (errors=1)
                     .unwrap();
             assert!(commands[2].argv.iter().any(|arg| arg == "--without-pip"));
             assert_eq!(
-                &commands[3].argv[..5],
+                &commands[3].argv[..6],
                 [
                     "/usr/local/bin/python",
+                    "-I",
                     "-m",
                     "pip",
                     "--python",
@@ -1162,6 +1169,10 @@ FAILED (errors=1)
         let commands =
             python_fetch_commands_with_image_pip(dir.path(), false, "baseline", true).unwrap();
         assert!(commands.iter().all(|c| !c.network));
+        assert_eq!(
+            &commands[1].argv[..4],
+            ["/usr/local/bin/python", "-I", "-m", "venv"]
+        );
     }
 
     #[test]

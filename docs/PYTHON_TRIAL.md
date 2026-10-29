@@ -235,11 +235,13 @@ fix/replay is stronger evidence than a purpose-built demonstration fixture.
 Pass `--image-pip` to `scripts/prepare_python_trial.py`, or set
 `project.python_image_pip: true` with `project.ecosystem: python`, to create
 the test venv without bootstrapping pip. The pinned official Python image's
-`/usr/local/bin/python -m pip --python <venv>/bin/python` installs the same
+`/usr/local/bin/python -I -m pip --python <venv>/bin/python` installs the same
 requirements into that venv. This reduces installer files copied on every
 attempt, particularly on Docker Desktop bind mounts. It requires image pip
 22.3 or newer; an unavailable installer blocks preparation instead of silently
-changing modes. See [pip's interpreter option](https://pip.pypa.io/en/stable/topics/python-option/).
+changing modes. The installer and venv bootstrap use isolated Python loading,
+so a project's `pip.py` or `venv.py` cannot replace those image modules.
+See [pip's interpreter option](https://pip.pypa.io/en/stable/topics/python-option/).
 
 This is an explicit environment choice: pip, setuptools and wheel are not
 implicitly installed into the test venv. Declare them in the locked requirements

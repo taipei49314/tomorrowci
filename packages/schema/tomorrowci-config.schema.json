@@ -54,6 +54,11 @@
           "const": "auto",
           "description": "Custom build commands are not implemented; include required checks in test_command.",
           "default": "auto"
+        },
+        "python_image_pip": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opt in to a pip-free test venv installed with pip >=22.3 from the pinned official Python image. Requires ecosystem: python (enforced at runtime). Declare pip/setuptools/wheel in requirements if tests need them; concrete dependency snapshots do not support this option."
         }
       }
     },
