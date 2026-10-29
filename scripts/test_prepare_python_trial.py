@@ -63,6 +63,12 @@ class PrepareTrialTests(unittest.TestCase):
             trial.prepare(**self.options)
         self.assertEqual(sentinel.read_text(), "keep")
 
+    def test_subdirectory_source_is_rejected_before_creating_output(self):
+        self.options["source"] = self.source / "tests"
+        with self.assertRaisesRegex(ValueError, "checkout root"):
+            trial.prepare(**self.options)
+        self.assertFalse(self.options["output"].exists())
+
     def test_dirty_or_untracked_source_is_rejected(self):
         for path in (self.source / "untracked.txt", self.source / "subject.py"):
             original = path.read_bytes() if path.exists() else None

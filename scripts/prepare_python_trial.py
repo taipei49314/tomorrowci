@@ -76,6 +76,8 @@ def prepare(*, source: Path, output: Path, baseline: str, candidate: str,
         raise ValueError("Timeout must be between 1 and 3600 seconds")
     if stdlib_only and (requirements is not None or framework != "unittest"):
         raise ValueError("stdlib-only requires unittest and no requirements argument")
+    if git(source, "rev-parse", "--show-prefix"):
+        raise ValueError("Source must be the Git checkout root; use --source-root to select a package directory")
     head = git(source, "rev-parse", "HEAD")
     entries = git(source, "ls-tree", "-r", "HEAD").splitlines()
     if any(line.startswith(("120000 ", "160000 ")) for line in entries):

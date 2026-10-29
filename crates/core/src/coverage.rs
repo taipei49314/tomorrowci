@@ -87,6 +87,7 @@ pub fn python_coverage_failure(raw: &RawExecutionResult) -> Option<FailureSignat
     // Require a concrete gap as well as the adapter's error description.
     let has_gap = summary.collected == 0
         || summary.tests_run != summary.collected
+        || summary.test_ids_sha256 != summary.executed_test_ids_sha256
         || summary.skipped > 0
         || summary.expected_failures > 0
         || summary.doctest_skip_directives > 0
@@ -172,6 +173,15 @@ mod tests {
         pytest["framework"] = json!("pytest");
         pytest["session_finished"] = json!(true);
         assert!(python_coverage_failure(&raw(&pytest)).is_some());
+    }
+
+    #[test]
+    fn different_execution_ids_with_equal_counts_are_incomplete() {
+        let mut input = summary();
+        input["skipped"] = json!(0);
+        input["executed_test_ids_sha256"] = json!("b".repeat(64));
+        input["gate_errors"] = json!(["executed test IDs differ from selected test IDs"]);
+        assert!(python_coverage_failure(&raw(&input)).is_some());
     }
 
     #[test]

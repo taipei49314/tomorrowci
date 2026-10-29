@@ -36,6 +36,24 @@ class TrialControls(unittest.TestCase):
         self.assertEqual(s["observed_source_origins"], {"subject": "subject.py"})
         self.assertTrue(s["coverage_valid"])
 
+    def test_suite_replacement_cannot_pass_with_equal_counts(self):
+        body = """class Tests(unittest.TestCase):
+ def test_selected(self): pass
+ def test_replacement(self): pass
+class ReplacingSuite(unittest.TestSuite):
+ def run(self, result, debug=False):
+  self._tests = [Tests('test_replacement')]
+  return super().run(result, debug)
+def load_tests(loader, tests, pattern):
+ return ReplacingSuite([Tests('test_selected')])
+"""
+        code, summary = self.execute(body)
+        self.assertEqual(summary["framework_exit_code"], 0)
+        self.assertEqual(summary["collected"], summary["tests_run"])
+        self.assertEqual(code, 6)
+        self.assertFalse(summary["coverage_valid"])
+        self.assertIn("executed test IDs differ from selected test IDs", summary["gate_errors"])
+
     def test_zero_tests_cannot_pass(self):
         code, s = self.execute("# no tests\n")
         self.assertEqual(code, 6)
@@ -134,6 +152,21 @@ class PytestReportControls(unittest.TestCase):
         summary = plugin.summary(0)
         self.assertEqual(summary["unexpected_successes"], 1)
         self.assertIn("unexpected_successes=1", runner.coverage_errors(summary))
+
+    def test_equal_counts_cannot_hide_different_executed_test_ids(self):
+        plugin = self.plugin()
+        plugin.pytest_runtest_logreport(SimpleNamespace(nodeid="test.py::replacement", when="call",
+            passed=True, failed=False, skipped=False))
+        summary = plugin.summary(0)
+        self.assertEqual(summary["tests_run"], summary["collected"])
+        self.assertNotEqual(summary["test_ids_sha256"], summary["executed_test_ids_sha256"])
+        self.assertIn("executed test IDs differ from selected test IDs", runner.coverage_errors(summary))
+
+    def test_matching_execution_ids_remain_valid(self):
+        plugin = self.plugin()
+        plugin.pytest_runtest_logreport(SimpleNamespace(nodeid="test.py::case", when="call",
+            passed=True, failed=False, skipped=False))
+        self.assertEqual(runner.coverage_errors(plugin.summary(0)), [])
 
     def test_collection_skip_is_not_invisible(self):
         plugin = self.plugin()

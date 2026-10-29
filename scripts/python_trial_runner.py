@@ -199,6 +199,8 @@ def coverage_errors(summary: dict) -> list[str]:
         errors.append("test session did not finish")
     if summary["tests_run"] != summary["collected"]:
         errors.append("not every selected test executed")
+    if summary["test_ids_sha256"] != summary["executed_test_ids_sha256"]:
+        errors.append("executed test IDs differ from selected test IDs")
     return errors
 
 
