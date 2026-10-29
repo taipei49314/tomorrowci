@@ -268,6 +268,9 @@ impl EcosystemAdapter for PythonAdapter {
     }
 
     fn normalize_failure(&self, result: &RawExecutionResult) -> FailureSignature {
+        if let Some(failure) = tomorrowci_core::python_coverage_failure(result) {
+            return failure;
+        }
         let blob = strip_python_ansi(&format!("{}\n{}", result.stdout, result.stderr));
         let (kind, summary, primary_frame, detail) = if result.timed_out {
             (

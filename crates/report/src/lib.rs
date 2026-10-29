@@ -411,6 +411,7 @@ fn verdict_badge(v: Verdict) -> (&'static str, &'static str) {
         Verdict::Blocked => ("BLOCKED", "blocked"),
         Verdict::Unsupported => ("UNSUPPORTED", "other"),
         Verdict::Inconclusive => ("INCONCLUSIVE", "other"),
+        Verdict::CoverageIncomplete => ("COVERAGE_INCOMPLETE", "other"),
     }
 }
 

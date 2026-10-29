@@ -739,7 +739,9 @@ fn scan_with_adapter(
             ))?,
         )?;
 
-        let verdict = if scenario.is_baseline {
+        let verdict = if !attempt_records.is_empty() && attempt_records.iter().all(tomorrowci_core::is_coverage_attempt) {
+            Verdict::CoverageIncomplete
+        } else if scenario.is_baseline {
             if attempt_pass.iter().any(|p| *p) {
                 baseline_ok = true;
                 Verdict::BaselinePass
@@ -805,7 +807,7 @@ fn scan_with_adapter(
             confirmed_first_fail = attempt_pass.iter().all(|p| !*p) && attempt_pass.len() >= 2;
         }
 
-        if matches!(verdict, Verdict::BaselineInvalid) {
+        if scenario.is_baseline && verdict != Verdict::BaselinePass {
             break;
         }
     }
@@ -1497,7 +1499,7 @@ pub fn scan_with_executor(
         }
         ordered.push((scenario.clone(), exec.clone()));
         results.push(exec);
-        if matches!(verdict, Verdict::BaselineInvalid) {
+        if scenario.is_baseline && verdict != Verdict::BaselinePass {
             break;
         }
     }
@@ -2079,8 +2081,14 @@ pub fn render_terminal_summary(m: &RunManifest) -> String {
             Verdict::Blocked => "BLOCKED",
             Verdict::Unsupported => "UNSUPPORTED",
             Verdict::Inconclusive => "INCONCLUSIVE",
+            Verdict::CoverageIncomplete => "COVERAGE_INCOMPLETE",
         };
         out.push_str(&format!("{label:-50} {v}\n"));
+        if r.verdict == Verdict::CoverageIncomplete {
+            if let Some(failure) = &r.failure {
+                out.push_str(&format!("  {}\n", failure.summary));
+            }
+        }
         if let Some(ref d) = r.environment.image_digest {
             out.push_str(&format!("  digest: {d}\n"));
         }
@@ -3797,6 +3805,85 @@ mod hardening_tests {
     }
 
     struct PassingReplayExecutor;
+
+    struct CoverageExecutor { baseline_passes: bool, assertion_failure: bool }
+
+    impl ScenarioExecutor for CoverageExecutor {
+        fn name(&self) -> &str { "docker" }
+        fn ensure_image(&self, _: &str) -> Result<String> { Ok(TEST_DIGEST.into()) }
+        fn engine_version(&self) -> Option<String> { Some("test-engine-v1".into()) }
+        fn execute(&self, context: &ExecutionContext<'_>) -> Result<RawExecutionResult> {
+            if context.network == "bridge" || (context.scenario.is_baseline && self.baseline_passes) {
+                let mut raw = raw_result(0, "ok", "");
+                raw.network_used = context.network != "none";
+                return Ok(raw);
+            }
+            let code = if self.assertion_failure { 1 } else { 6 };
+            let summary = serde_json::json!({"schema_version":1,"framework":"unittest",
+                "exit_code":code,"framework_exit_code":if self.assertion_failure {1} else {0},
+                "coverage_valid":false,"gate_errors":["skipped=1"],"collected":2,"tests_run":2,
+                "failed":if self.assertion_failure {1} else {0},"errors":0,"skipped":1,
+                "expected_failures":0,"unexpected_successes":0,"collection_errors":0,
+                "test_ids_sha256":"a".repeat(64),"executed_test_ids_sha256":"a".repeat(64),
+                "source_origins":{"app":"app.py"},"observed_source_origins":{"app":"app.py"}});
+            Ok(raw_result(code, &format!("TOMORROWCI_TRIAL_SUMMARY={summary}\n"),
+                if self.assertion_failure {"AssertionError: broken behavior"} else {"OK (skipped=1)"}))
+        }
+    }
+
+    #[test]
+    fn coverage_classification_survives_reporting_verification_and_log_tampering() {
+        for baseline_passes in [false, true] {
+            let repo = tempdir().unwrap();
+            write_python_fixture(repo.path());
+            let mut config = Config::default();
+            config.baseline.runtime = "3.11".into();
+            config.candidates.runtime.versions = Some(vec!["3.14".into()]);
+            config.candidates.dependencies.latest_allowed = false;
+            config.candidates.dependencies.prerelease = false;
+            let outcome = scan_local_with_executor_into(repo.path(), repo.path(), config,
+                &CoverageExecutor { baseline_passes, assertion_failure: false }).unwrap();
+            assert_eq!(outcome.manifest.results.len(), if baseline_passes {2} else {1});
+            let result = outcome.manifest.results.last().unwrap();
+            assert_eq!(result.verdict, Verdict::CoverageIncomplete);
+            assert!(!outcome.manifest.frontier.observed);
+            assert_eq!(outcome.metrics.scenarios_fail, 0);
+            assert_eq!(outcome.metrics.scenarios_inconclusive, 1);
+            assert!(outcome.terminal_summary.contains("COVERAGE_INCOMPLETE"));
+            assert!(outcome.terminal_summary.contains("skipped=1"));
+            let html = std::fs::read_to_string(outcome.evidence_root.join("report.html")).unwrap();
+            assert!(html.contains("COVERAGE_INCOMPLETE"));
+            let sarif_path = repo.path().join("coverage.sarif");
+            tomorrowci_report::write_sarif_stub(&outcome.manifest, &sarif_path).unwrap();
+            let sarif: serde_json::Value = serde_json::from_slice(&std::fs::read(sarif_path).unwrap()).unwrap();
+            assert!(sarif["runs"][0]["results"].as_array().unwrap().is_empty());
+            let verification = tomorrowci_evidence::verify_run_root(&outcome.evidence_root).unwrap();
+            assert!(verification.ok, "{:?}", verification.errors);
+            let sc_root = outcome.evidence_root.join("scenarios").join(&result.scenario_id);
+            let log_path = sc_root.join("stdout.attempt1.log");
+            let log = std::fs::read_to_string(&log_path).unwrap().replace("\"failed\":0", "\"failed\":1");
+            std::fs::write(&log_path, log).unwrap();
+            tomorrowci_evidence::finalize_run_checksums(&outcome.evidence_root).unwrap();
+            let verification = tomorrowci_evidence::verify_run_root(&outcome.evidence_root).unwrap();
+            assert!(!verification.ok);
+            assert!(verification.errors.iter().any(|error| error.contains("coverage classification contradicts raw logs")), "{:?}", verification.errors);
+        }
+    }
+
+    #[test]
+    fn assertion_failure_with_skips_still_reports_functional_failure() {
+        let repo = tempdir().unwrap();
+        write_python_fixture(repo.path());
+        let mut config = Config::default();
+        config.baseline.runtime = "3.11".into();
+        config.candidates.runtime.versions = Some(vec!["3.14".into()]);
+        config.candidates.dependencies.latest_allowed = false;
+        config.candidates.dependencies.prerelease = false;
+        let outcome = scan_local_with_executor_into(repo.path(), repo.path(), config,
+            &CoverageExecutor { baseline_passes: true, assertion_failure: true }).unwrap();
+        assert_eq!(outcome.manifest.results[1].verdict, Verdict::FutureFail);
+        assert!(outcome.manifest.frontier.observed);
+    }
 
     impl ScenarioExecutor for PassingReplayExecutor {
         fn name(&self) -> &str {

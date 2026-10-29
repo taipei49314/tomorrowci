@@ -2420,7 +2420,7 @@ fn dependency_probe_verdict(verdict: Verdict) -> DependencyProbeVerdict {
         Verdict::BaselineInvalid | Verdict::FutureFail => DependencyProbeVerdict::Fail,
         Verdict::Flaky => DependencyProbeVerdict::Flaky,
         Verdict::Blocked | Verdict::Unsupported => DependencyProbeVerdict::Blocked,
-        Verdict::Inconclusive => DependencyProbeVerdict::Inconclusive,
+        Verdict::Inconclusive | Verdict::CoverageIncomplete => DependencyProbeVerdict::Inconclusive,
     }
 }
 
@@ -2588,7 +2588,7 @@ fn verify_metrics_semantics(
             Verdict::Flaky => flaky += 1,
             Verdict::Blocked => blocked += 1,
             Verdict::Unsupported => unsupported += 1,
-            Verdict::Inconclusive => inconclusive += 1,
+            Verdict::Inconclusive | Verdict::CoverageIncomplete => inconclusive += 1,
         }
     }
     let mismatch = metrics.run_id != manifest.run_id
@@ -2633,6 +2633,7 @@ fn verify_claim_semantics(
                 Verdict::Blocked
                     | Verdict::Unsupported
                     | Verdict::Inconclusive
+                    | Verdict::CoverageIncomplete
                     | Verdict::BaselineInvalid
                     | Verdict::Flaky
             )
@@ -3002,6 +3003,34 @@ fn verify_test_attempts(
                 errors,
             )?;
         }
+        if attempt.failure.as_ref().is_some_and(|failure| {
+            failure.kind == tomorrowci_core::COVERAGE_FAILURE_KIND
+        }) {
+            let log = |prefix| -> Result<String> {
+                Ok(std::fs::read_to_string(safe_join(
+                    scenario_root, &format!("{prefix}.attempt{}.log", attempt.attempt),
+                )?)?)
+            };
+            let raw = tomorrowci_core::RawExecutionResult {
+                workspace_preparation: None,
+                exit_code: attempt.exit_code,
+                signal: None,
+                duration_ms: attempt.duration_ms,
+                timed_out: attempt.timed_out,
+                stdout: log("stdout")?,
+                stderr: log("stderr")?,
+                network_used: false,
+            };
+            let diagnostic = tomorrowci_core::python_coverage_failure(&raw);
+            if manifest.detection.ecosystem != Ecosystem::Python
+                || diagnostic.is_none()
+                || !json_equivalent(&diagnostic, &attempt.failure)?
+            {
+                errors.push(format!(
+                    "scenario {scenario_id} attempt {expected} coverage classification contradicts raw logs"
+                ));
+            }
+        }
     }
 
     match summary.status {
@@ -3040,7 +3069,9 @@ fn verify_test_attempts(
                     ));
                 }
             }
-            let expected_verdict = if scenario.is_baseline {
+            let expected_verdict = if summary.attempts.iter().all(tomorrowci_core::is_coverage_attempt) {
+                Verdict::CoverageIncomplete
+            } else if scenario.is_baseline {
                 if passes.iter().any(|passed| *passed) {
                     Verdict::BaselinePass
                 } else {

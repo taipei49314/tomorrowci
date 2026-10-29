@@ -447,7 +447,7 @@ fn dependency_probe_verdict(verdict: Verdict) -> DependencyProbeVerdict {
         Verdict::BaselineInvalid | Verdict::FutureFail => DependencyProbeVerdict::Fail,
         Verdict::Flaky => DependencyProbeVerdict::Flaky,
         Verdict::Blocked | Verdict::Unsupported => DependencyProbeVerdict::Blocked,
-        Verdict::Inconclusive => DependencyProbeVerdict::Inconclusive,
+        Verdict::Inconclusive | Verdict::CoverageIncomplete => DependencyProbeVerdict::Inconclusive,
     }
 }
 

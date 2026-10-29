@@ -5,6 +5,17 @@ An exit code of zero is insufficient for a useful compatibility observation.
 skip a feature when its dependency is missing. The optional strict trial adapter
 records framework callbacks and rejects empty or skipped coverage.
 
+Current scans classify a valid adapter summary with framework exit 0, process
+exit 6 and a concrete coverage gap as `COVERAGE_INCOMPLETE`. CLI and HTML show
+the gate reason. It counts under inconclusive metrics, returns CLI exit 2,
+cannot authorize a breakage horizon or dependency minimality, and produces no
+SARIF functional-regression finding. A coverage-invalid baseline stops the
+candidate scan. A failed assertion remains a functional failure even with skips.
+Missing, malformed, duplicate or contradictory summaries do not authorize this
+classification. The cooperative summary is not independent test attestation.
+Historical receipts retain their original verdict and remain verifiable;
+rerun to obtain the new classification, without rewriting old evidence.
+
 Copy `scripts/python_trial_runner.py` into the **disposable target checkout** as
 `.tomorrowci-trial.py`. Record the copied file's SHA-256 with the trial profile.
 Run it through TomorrowCI's container test command, not directly on the host for

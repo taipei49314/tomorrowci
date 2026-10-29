@@ -40,6 +40,7 @@ pub enum Verdict {
     BaselineInvalid,
     FuturePass,
     FutureFail,
+    CoverageIncomplete,
     Flaky,
     Blocked,
     Unsupported,
@@ -58,6 +59,7 @@ impl Verdict {
             Self::Blocked
                 | Self::Unsupported
                 | Self::Inconclusive
+                | Self::CoverageIncomplete
                 | Self::BaselineInvalid
                 | Self::Flaky
         )

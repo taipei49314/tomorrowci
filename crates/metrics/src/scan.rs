@@ -53,7 +53,7 @@ impl ScanMetrics {
                 Verdict::Flaky => flaky += 1,
                 Verdict::Blocked => blocked += 1,
                 Verdict::Unsupported => unsupported += 1,
-                Verdict::Inconclusive => inconclusive += 1,
+                Verdict::Inconclusive | Verdict::CoverageIncomplete => inconclusive += 1,
             }
         }
         let n = m.results.len() as u32;
@@ -92,13 +92,14 @@ impl ScanMetrics {
 
     pub fn summary_line(&self) -> String {
         format!(
-            "metrics: eco={} total={} pass={} fail={} flaky={} blocked={} frontier={} mean_ms={:.1}",
+            "metrics: eco={} total={} pass={} fail={} flaky={} blocked={} inconclusive={} frontier={} mean_ms={:.1}",
             self.ecosystem,
             self.scenarios_total,
             self.scenarios_pass,
             self.scenarios_fail,
             self.scenarios_flaky,
             self.scenarios_blocked,
+            self.scenarios_inconclusive,
             self.frontier_observed,
             self.mean_duration_ms
         )

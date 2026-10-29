@@ -3,6 +3,12 @@ import { parseReportModel } from "../src/model";
 import { sampleModel } from "./sample-model";
 
 describe("versioned report model", () => {
+  it("preserves incomplete coverage as a distinct non-failure verdict", () => {
+    const input = structuredClone(sampleModel);
+    input.scenarios[1].verdict = "COVERAGE_INCOMPLETE";
+    input.scenarios[1].tone = "other";
+    expect(parseReportModel(input).scenarios[1].verdict).toBe("COVERAGE_INCOMPLETE");
+  });
   it("accepts the exact v1 shape", () => {
     const parsed = parseReportModel(structuredClone(sampleModel));
     expect(parsed.schemaVersion).toBe("tomorrowci.report/v1");

@@ -198,7 +198,7 @@ pub fn build_report_model(
             "FLAKY" => denominator.flaky += 1,
             "BLOCKED" => denominator.blocked += 1,
             "UNSUPPORTED" => denominator.unsupported += 1,
-            "INCONCLUSIVE" => denominator.inconclusive += 1,
+            "INCONCLUSIVE" | "COVERAGE_INCOMPLETE" => denominator.inconclusive += 1,
             "NOT_RUN" => denominator.not_run += 1,
             _ => unreachable!("report verdict mapping is exhaustive"),
         }
@@ -392,6 +392,7 @@ fn verdict_label(verdict: Verdict) -> &'static str {
         Verdict::Blocked => "BLOCKED",
         Verdict::Unsupported => "UNSUPPORTED",
         Verdict::Inconclusive => "INCONCLUSIVE",
+            Verdict::CoverageIncomplete => "COVERAGE_INCOMPLETE",
     }
 }
 
@@ -401,7 +402,7 @@ fn verdict_tone(verdict: Verdict) -> &'static str {
         Verdict::BaselineInvalid | Verdict::FutureFail => "fail",
         Verdict::Flaky => "flaky",
         Verdict::Blocked => "blocked",
-        Verdict::Unsupported | Verdict::Inconclusive => "other",
+        Verdict::Unsupported | Verdict::Inconclusive | Verdict::CoverageIncomplete => "other",
     }
 }
 

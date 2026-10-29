@@ -61,7 +61,7 @@ pub fn compute_breakage_frontier(
                     ],
                 };
             }
-            Verdict::Flaky | Verdict::Blocked | Verdict::Unsupported | Verdict::Inconclusive => {
+            Verdict::Flaky | Verdict::Blocked | Verdict::Unsupported | Verdict::Inconclusive | Verdict::CoverageIncomplete => {
                 // skip for horizon search
             }
             Verdict::BaselineInvalid => {}
@@ -136,6 +136,12 @@ pub fn classify_from_reruns(outcomes: &[bool]) -> Verdict {
 /// signature; signature drift remains inconclusive.
 pub fn classify_candidate_attempts(attempts: &[TestAttemptRecord]) -> Verdict {
     if attempts.is_empty() {
+        return Verdict::Inconclusive;
+    }
+    if attempts.iter().all(crate::is_coverage_attempt) {
+        return Verdict::CoverageIncomplete;
+    }
+    if attempts.iter().any(crate::is_coverage_attempt) {
         return Verdict::Inconclusive;
     }
     let passes: Vec<_> = attempts
@@ -250,6 +256,26 @@ mod tests {
                 primary_frame: None,
             }),
         }
+    }
+
+    #[test]
+    fn coverage_attempts_cannot_authorize_functional_failure_or_pass() {
+        let mut coverage = failed_attempt("coverage");
+        coverage.exit_code = Some(6);
+        coverage.failure.as_mut().unwrap().kind = crate::COVERAGE_FAILURE_KIND.into();
+        assert_eq!(classify_candidate_attempts(&[coverage.clone()]), Verdict::CoverageIncomplete);
+        assert_eq!(classify_candidate_attempts(&[coverage.clone(), coverage.clone()]), Verdict::CoverageIncomplete);
+        assert_eq!(classify_candidate_attempts(&[coverage.clone(), failed_attempt("failure")]), Verdict::Inconclusive);
+        let mut pass = coverage.clone();
+        pass.exit_code = Some(0);
+        pass.failure = None;
+        assert_eq!(classify_candidate_attempts(&[coverage, pass]), Verdict::Inconclusive);
+        assert!(Verdict::CoverageIncomplete.may_not_be_promoted_to_pass());
+        let ordered = vec![
+            (scenario("b", true, "3.11"), result("b", Verdict::BaselinePass)),
+            (scenario("c", false, "3.14"), result("c", Verdict::CoverageIncomplete)),
+        ];
+        assert!(!compute_breakage_frontier(true, &ordered, true, None).observed);
     }
 
     #[test]

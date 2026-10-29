@@ -5,6 +5,20 @@ import { App } from "../src/App";
 import { sampleModel } from "./sample-model";
 
 describe("interactive report", () => {
+  it("keeps incomplete coverage visible in the attention view", async () => {
+    const user = userEvent.setup();
+    const model = structuredClone(sampleModel);
+    model.scenarios[1].verdict = "COVERAGE_INCOMPLETE";
+    model.scenarios[1].tone = "other";
+    model.scenarios[1].failureSummary = "Test coverage incomplete: skipped=1";
+    model.denominator.fail = 0;
+    model.denominator.inconclusive = 1;
+    render(<App model={model} />);
+    await user.click(screen.getByRole("button", { name: "Needs attention" }));
+    expect(screen.getByLabelText("verdict COVERAGE_INCOMPLETE")).toBeTruthy();
+    expect(screen.getByText("Test coverage incomplete: skipped=1")).toBeTruthy();
+    expect(screen.queryByLabelText("verdict FAIL")).toBeNull();
+  });
   it("filters without changing recorded verdicts or order", async () => {
     const user = userEvent.setup();
     render(<App model={sampleModel} />);

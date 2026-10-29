@@ -7,6 +7,7 @@ export type ReportVerdict =
   | "BLOCKED"
   | "UNSUPPORTED"
   | "INCONCLUSIVE"
+  | "COVERAGE_INCOMPLETE"
   | "NOT_RUN";
 
 export type ReportTone = "pass" | "fail" | "flaky" | "blocked" | "other";
@@ -174,6 +175,7 @@ function reportVerdict(value: unknown, label: string): ReportVerdict {
     "BLOCKED",
     "UNSUPPORTED",
     "INCONCLUSIVE",
+    "COVERAGE_INCOMPLETE",
     "NOT_RUN",
   ];
   if (!allowed.includes(verdict as ReportVerdict)) throw new Error(`${label} is not a known verdict`);
