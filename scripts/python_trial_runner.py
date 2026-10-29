@@ -40,6 +40,26 @@ def verify_sources(root: Path, packages: list[str]) -> dict[str, str]:
     return origins
 
 
+def observed_sources(root: Path, checkout: Path, expected: dict[str, str]) -> dict[str, str]:
+    origins = {}
+    for package, expected_origin in expected.items():
+        module = sys.modules.get(package)
+        if module is None:
+            raise ValueError(f"source package was not loaded by the tests: {package}")
+        spec_origin = getattr(getattr(module, "__spec__", None), "origin", None)
+        file_origin = getattr(module, "__file__", None)
+        if spec_origin in (None, "built-in", "frozen") or file_origin is None:
+            raise ValueError(f"loaded source has no concrete origin: {package}")
+        origin = Path(spec_origin).resolve(strict=True)
+        if not origin.is_relative_to(root) or origin != Path(file_origin).resolve(strict=True):
+            raise ValueError(f"loaded source package resolves outside checkout or has conflicting origins: {package}")
+        relative = origin.relative_to(checkout).as_posix()
+        if relative != expected_origin:
+            raise ValueError(f"loaded source differs from preflight: {package}")
+        origins[package] = relative
+    return origins
+
+
 class TrialResult(unittest.TextTestResult):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -54,16 +74,29 @@ class TrialRunner(unittest.TextTestRunner):
     resultclass = TrialResult
 
 
+def selected_ids(test) -> list[str]:
+    if isinstance(test, unittest.TestSuite):
+        return [name for item in test for name in selected_ids(item)]
+    name = test.id()
+    return [] if name.startswith("unittest.loader._FailedTest.") else [name]
+
+
+class TrialProgram(unittest.TestProgram):
+    def runTests(self):
+        self.selected_ids = selected_ids(self.test)
+        super().runTests()
+
+
 def run_unittest(arguments: list[str]) -> dict:
-    program = unittest.TestProgram(module=None, argv=["unittest", *arguments],
-                                   testRunner=TrialRunner, exit=False)
+    program = TrialProgram(module=None, argv=["unittest", *arguments],
+                           testRunner=TrialRunner, exit=False)
     result = program.result
     # unittest creates a synthetic _FailedTest for an import/discovery error.
     # Its execution is not execution of the requested project's tests.
     actual_ids = [name for name in result.test_ids
                   if not name.startswith("unittest.loader._FailedTest.")]
     return {
-        "collected": len(actual_ids),
+        "collected": len(program.selected_ids),
         "tests_run": len(actual_ids),
         "failed": len(result.failures),
         "errors": len(result.errors),
@@ -71,7 +104,8 @@ def run_unittest(arguments: list[str]) -> dict:
         "expected_failures": len(result.expectedFailures),
         "unexpected_successes": len(result.unexpectedSuccesses),
         "collection_errors": len(program.testLoader.errors),
-        "test_ids_sha256": ids_hash(actual_ids),
+        "test_ids_sha256": ids_hash(program.selected_ids),
+        "executed_test_ids_sha256": ids_hash(actual_ids),
         "framework_exit_code": 0 if result.wasSuccessful() else 1,
     }
 
@@ -121,6 +155,7 @@ class PytestEvidence:
             "unexpected_successes": len(self.xpassed),
             "collection_errors": len(self.collection_errors),
             "test_ids_sha256": ids_hash(self.items),
+            "executed_test_ids_sha256": ids_hash(list(self.calls)),
             "framework_exit_code": exit_code,
             "session_finished": self.finished,
         }
@@ -142,8 +177,7 @@ def coverage_errors(summary: dict) -> list[str]:
             errors.append(f"{field}={summary[field]}")
     if summary.get("session_finished", True) is not True:
         errors.append("test session did not finish")
-    if (summary["framework_exit_code"] == 0
-            and summary["tests_run"] != summary["collected"]):
+    if summary["tests_run"] != summary["collected"]:
         errors.append("not every selected test executed")
     return errors
 
@@ -158,9 +192,15 @@ def main(argv: list[str] | None = None) -> int:
     test_args = args.test_args[1:] if args.test_args[:1] == ["--"] else args.test_args
     summary = {"schema_version": 1, "framework": args.framework}
     try:
-        summary["source_origins"] = verify_sources(Path(args.source_root), args.source_package)
+        checkout = Path.cwd().resolve()
+        source_root = (checkout / args.source_root).resolve(strict=True)
+        summary["source_origins"] = verify_sources(source_root, args.source_package)
         summary.update((run_pytest if args.framework == "pytest" else run_unittest)(test_args))
         summary["gate_errors"] = coverage_errors(summary)
+        try:
+            summary["observed_source_origins"] = observed_sources(source_root, checkout, summary["source_origins"])
+        except Exception as error:
+            summary["gate_errors"].append(f"{type(error).__name__}: {error}")
         summary["coverage_valid"] = not summary["gate_errors"]
         code = summary["framework_exit_code"] or (6 if summary["gate_errors"] else 0)
     except (Exception, SystemExit) as error:

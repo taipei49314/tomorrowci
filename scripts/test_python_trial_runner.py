@@ -15,11 +15,12 @@ spec.loader.exec_module(runner)
 
 
 class TrialControls(unittest.TestCase):
-    def execute(self, body, arguments=None, package="subject"):
+    def execute(self, body, arguments=None, package="subject", import_subject=True):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "subject.py").write_text("VALUE = 42\n", encoding="utf-8")
-            (root / "test_example.py").write_text("import unittest\n" + body, encoding="utf-8")
+            prefix = "import unittest\n" + ("import subject\n" if import_subject else "")
+            (root / "test_example.py").write_text(prefix + body, encoding="utf-8")
             result = subprocess.run([sys.executable, str(SCRIPT), "--framework", "unittest",
                 "--source-package", package, "--", *(arguments or ["test_example", "-v"])],
                 cwd=root, text=True, capture_output=True)
@@ -32,6 +33,7 @@ class TrialControls(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(s["tests_run"], 1)
         self.assertEqual(s["source_origins"], {"subject": "subject.py"})
+        self.assertEqual(s["observed_source_origins"], {"subject": "subject.py"})
         self.assertTrue(s["coverage_valid"])
 
     def test_zero_tests_cannot_pass(self):
@@ -70,6 +72,24 @@ class TrialControls(unittest.TestCase):
     def test_invalid_test_arguments_emit_incomplete_receipt(self):
         code, s = self.execute("", arguments=["--does-not-exist"])
         self.assertEqual(code, 7)
+        self.assertFalse(s["coverage_valid"])
+
+    def test_unused_subject_is_not_actual_source_evidence(self):
+        code, s = self.execute("class Tests(unittest.TestCase):\n def test_ok(self): pass\n", import_subject=False)
+        self.assertEqual(code, 6)
+        self.assertIn("not loaded", s["gate_errors"][0])
+
+    def test_changed_source_after_preflight_is_rejected(self):
+        code, s = self.execute("import sys, json\nsys.modules['subject'] = json\nclass Tests(unittest.TestCase):\n def test_ok(self): pass\n")
+        self.assertEqual(code, 6)
+        self.assertIn("outside checkout", s["gate_errors"][0])
+
+    def test_failfast_preserves_full_selection_and_original_exit(self):
+        code, s = self.execute("class Tests(unittest.TestCase):\n def test_a(self): self.fail('first')\n def test_b(self): pass\n", arguments=["-f", "test_example"])
+        self.assertEqual(code, 1)
+        self.assertEqual(s["collected"], 2)
+        self.assertEqual(s["tests_run"], 1)
+        self.assertNotEqual(s["test_ids_sha256"], s["executed_test_ids_sha256"])
         self.assertFalse(s["coverage_valid"])
 
 

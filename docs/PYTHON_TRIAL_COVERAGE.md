@@ -29,20 +29,23 @@ project:
 Include pytest and all selected test dependencies in the frozen dependency set.
 `--source-root` adds the selected checkout directory to the import path before
 test discovery. Repeat `--source-package` to check additional source modules.
-Every named module must resolve to a concrete file inside that source root;
-an installed same-named distribution is rejected. This check does not certify
+Every named module must resolve to a concrete file inside that source root.
+After the framework finishes, it must also have been loaded by the tests with
+the same origin: `source_origins` records preflight resolution and
+`observed_source_origins` records the loaded modules. An unused source package
+or an installed same-named replacement is rejected. This check does not certify
 all transitive imports or package installation/entry-point behavior.
 
 The adapter emits exactly one line starting with
 `TOMORROWCI_TRIAL_SUMMARY=` followed by JSON. It records selected/executed counts,
-skip and failure counts, a hash of the selected test IDs, relative source origins,
+skip and failure counts, hashes of selected and executed test IDs, relative source origins,
 the framework exit code, and the coverage gate outcome. Unittest's synthetic
 `_FailedTest` on an import error is not counted as an executed project test.
 Pytest collection skips/errors and empty-reason XPASS are recorded too.
 
 The strict policy rejects zero executed tests, skips, expected failures,
-unexpected successes, collection errors, and a success exit without execution of
-every selected pytest test. This deliberately narrow policy is suitable for
+unexpected successes, collection errors, and incomplete execution of the selected
+tests (including failfast). This deliberately narrow policy is suitable for
 explicit trial subsets that are expected to execute fully. It has no option to
 silently permit missing dependencies or skips. Declare a different scope openly
 if a project's ordinary suite requires platform-conditional skips.

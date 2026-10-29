@@ -41,6 +41,10 @@ CONTROLS = [
      {"coverage_valid": False, "tests_run": 0, "collection_errors": 1}),
     ("wrong-source-origin", "def test_unreached(): assert False\n", "pytest", 7,
      {"coverage_valid": False}),
+    ("source-never-imported", "def test_ok(): assert True\n", "trial_subject", 6,
+     {"coverage_valid": False, "tests_run": 1, "framework_exit_code": 0}),
+    ("source-shadowed-after-preflight", "import sys\nfrom pathlib import Path\ndel sys.modules['trial_subject']\nsys.path.insert(0, str(Path.cwd().parent / 'outside'))\nimport trial_subject\ndef test_shadow(): assert trial_subject.VALUE == 2\n", "trial_subject", 6,
+     {"coverage_valid": False, "tests_run": 1, "framework_exit_code": 0}),
 ]
 
 CONTAINER_RUNNER = r'''
@@ -57,6 +61,8 @@ install += [w['name']+'=='+w['version'] for w in manifest['wheels']]
 code=subprocess.call(install)
 if code: raise SystemExit(code)
 target=work/'case'; shutil.copytree(inputs/'cases'/name,target)
+outside=work/'outside'/'trial_subject'; outside.mkdir(parents=True)
+(outside/'__init__.py').write_text('VALUE = 2\n')
 env=dict(os.environ, PYTHONPATH='/work/deps', PYTEST_DISABLE_PLUGIN_AUTOLOAD='1', PYTHONDONTWRITEBYTECODE='1')
 command=[sys.executable,str(inputs/'python_trial_runner.py'),'--framework','pytest','--source-package',case['source_package'],'--','-q','tests']
 raise SystemExit(subprocess.call(command,cwd=target,env=env))
@@ -151,7 +157,10 @@ def main() -> int:
         (target / "trial_subject" / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
         (target / "tests").mkdir()
         test = target / "tests" / "test_control.py"
-        test.write_text(text, encoding="utf-8")
+        # All normal controls actually import the declared checkout package.
+        # The non-import control deliberately demonstrates that lookup alone
+        # cannot prove the tests exercised that source.
+        test.write_text(('' if name == 'source-never-imported' else 'import trial_subject\n') + text, encoding="utf-8")
         manifest["controls"].append(dict(name=name, source_package=package, expected_exit=exit_code,
                                           expected_summary=expected, test_sha256=digest(test)))
     write_json(inputs / "manifest.json", manifest)
@@ -212,6 +221,8 @@ def main() -> int:
                         errors.append("unexpected " + key)
                 if name != "wrong-source-origin" and summary.get("source_origins") != {"trial_subject": "trial_subject/__init__.py"}:
                     errors.append("wrong source origin")
+                if name not in ("wrong-source-origin", "source-never-imported", "source-shadowed-after-preflight") and summary.get("observed_source_origins") != {"trial_subject": "trial_subject/__init__.py"}:
+                    errors.append("wrong observed source origin")
             except (ValueError, TypeError):
                 errors.append("invalid summary JSON")
         case["errors"] = errors
