@@ -20,7 +20,7 @@ jobs:
         with:
           toolchain: 1.97.1
       - name: Run pinned TomorrowCI composite Action
-        uses: taipei49314/tomorrowci/action@92ffbd24b1709d40cdffb32dbefbd7519c8c119e
+        uses: taipei49314/tomorrowci/action@9c3f048339a276279b0fb304732fcbe1e9113f33
         with:
           path: .
           advisory: "true"
