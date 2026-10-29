@@ -8,6 +8,7 @@ Original unittest/pytest assertions and their nonzero outcomes are preserved.
 from __future__ import annotations
 
 import argparse
+import doctest
 import hashlib
 import importlib.util
 import json
@@ -81,9 +82,25 @@ def selected_ids(test) -> list[str]:
     return [] if name.startswith("unittest.loader._FailedTest.") else [name]
 
 
+def doctest_skip_directives(test) -> int:
+    """Count selected SKIP directives even when old unittest reports no skip.
+
+    These are declarations, not an independent count of executed examples.
+    Preserve the framework's separate test-case skip count unchanged.
+    """
+    if isinstance(test, unittest.TestSuite):
+        return sum(doctest_skip_directives(item) for item in test)
+    if isinstance(test, doctest.DocTestCase):
+        default_skip = bool(test._dt_optionflags & doctest.SKIP)
+        return sum(bool(example.options.get(doctest.SKIP, default_skip))
+                   for example in test._dt_test.examples)
+    return 0
+
+
 class TrialProgram(unittest.TestProgram):
     def runTests(self):
         self.selected_ids = selected_ids(self.test)
+        self.doctest_skip_directives = doctest_skip_directives(self.test)
         super().runTests()
 
 
@@ -101,6 +118,7 @@ def run_unittest(arguments: list[str]) -> dict:
         "failed": len(result.failures),
         "errors": len(result.errors),
         "skipped": len(result.skipped),
+        "doctest_skip_directives": program.doctest_skip_directives,
         "expected_failures": len(result.expectedFailures),
         "unexpected_successes": len(result.unexpectedSuccesses),
         "collection_errors": len(program.testLoader.errors),
@@ -175,6 +193,8 @@ def coverage_errors(summary: dict) -> list[str]:
     for field in ("skipped", "expected_failures", "unexpected_successes", "collection_errors"):
         if summary[field]:
             errors.append(f"{field}={summary[field]}")
+    if summary.get("doctest_skip_directives", 0):
+        errors.append(f"doctest_skip_directives={summary['doctest_skip_directives']}")
     if summary.get("session_finished", True) is not True:
         errors.append("test session did not finish")
     if summary["tests_run"] != summary["collected"]:

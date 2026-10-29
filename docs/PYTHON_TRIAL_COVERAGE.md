@@ -43,6 +43,16 @@ the framework exit code, and the coverage gate outcome. Unittest's synthetic
 `_FailedTest` on an import error is not counted as an executed project test.
 Pytest collection skips/errors and empty-reason XPASS are recorded too.
 
+For unittest suites containing `doctest.DocTestCase`, the adapter separately
+records `doctest_skip_directives`: selected examples whose effective options
+declare `SKIP`. Older Python versions do not consistently expose these as
+unittest skips, so the strict policy rejects the declarations even when the
+framework reports success with zero skipped test cases. This is a count of
+declared examples, not proof of their execution, and is not added to the
+framework's test-case skip count. A per-example `-SKIP` overrides a suite-wide
+`SKIP`. Arbitrary custom runners and doctest invocations hidden inside ordinary
+test bodies are outside this inspection's scope.
+
 The strict policy rejects zero executed tests, skips, expected failures,
 unexpected successes, collection errors, and incomplete execution of the selected
 tests (including failfast). This deliberately narrow policy is suitable for

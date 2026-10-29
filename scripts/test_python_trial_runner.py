@@ -46,6 +46,33 @@ class TrialControls(unittest.TestCase):
         self.assertEqual(code, 6)
         self.assertEqual(s["skipped"], 1)
 
+    def test_all_skipped_doctest_is_rejected_on_older_unittest(self):
+        body = "import doctest\nsubject.__doc__ = '>>> VALUE # doctest: +SKIP\\n42\\n'\ndef load_tests(loader, tests, pattern): return doctest.DocTestSuite(subject)\n"
+        code, s = self.execute(body)
+        self.assertEqual(code, 6)
+        self.assertEqual(s["framework_exit_code"], 0)
+        self.assertEqual(s["doctest_skip_directives"], 1)
+        self.assertIn("doctest_skip_directives=1", s["gate_errors"])
+
+    def test_partially_skipped_doctest_is_not_complete_coverage(self):
+        body = "import doctest\nsubject.__doc__ = '>>> VALUE\\n42\\n>>> missing_name # doctest: +SKIP\\n'\ndef load_tests(loader, tests, pattern): return doctest.DocTestSuite(subject)\n"
+        code, s = self.execute(body)
+        self.assertEqual(code, 6)
+        self.assertEqual(s["failed"], 0)
+        self.assertEqual(s["doctest_skip_directives"], 1)
+
+    def test_doctest_without_skips_keeps_original_success(self):
+        body = "import doctest\nsubject.__doc__ = '>>> VALUE\\n42\\n'\ndef load_tests(loader, tests, pattern): return doctest.DocTestSuite(subject)\n"
+        code, s = self.execute(body)
+        self.assertEqual(code, 0)
+        self.assertEqual(s["doctest_skip_directives"], 0)
+
+    def test_example_can_disable_suite_default_doctest_skip(self):
+        body = "import doctest\nsubject.__doc__ = '>>> VALUE # doctest: -SKIP\\n42\\n'\ndef load_tests(loader, tests, pattern): return doctest.DocTestSuite(subject, optionflags=doctest.SKIP)\n"
+        code, s = self.execute(body)
+        self.assertEqual(code, 0)
+        self.assertEqual(s["doctest_skip_directives"], 0)
+
     def test_original_failure_is_preserved(self):
         code, s = self.execute("class Tests(unittest.TestCase):\n def test_bad(self): self.fail('original assertion')\n")
         self.assertEqual(code, 1)
