@@ -46,6 +46,14 @@ pub struct ProjectConfig {
     pub test_command: String,
     #[serde(default = "auto_str")]
     pub build_command: String,
+    /// Opt in to installing into a pip-free venv using the pinned image's pip.
+    /// Omission preserves historical config hashes and bootstrap behavior.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub python_image_pip: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 fn auto_str() -> String {
@@ -58,6 +66,7 @@ impl Default for ProjectConfig {
             ecosystem: auto_str(),
             test_command: auto_str(),
             build_command: auto_str(),
+            python_image_pip: false,
         }
     }
 }
@@ -405,6 +414,11 @@ impl Config {
             ));
         }
         self.candidates.runtime.validate_explicit_versions()?;
+        if self.project.python_image_pip && self.project.ecosystem != "python" {
+            return Err(TcError::Config(
+                "project.python_image_pip requires project.ecosystem: python".into(),
+            ));
+        }
         if let Some(versions) = &self.candidates.runtime.versions {
             if !matches!(self.project.ecosystem.as_str(), "auto" | "python") {
                 return Err(TcError::Config(
@@ -518,6 +532,21 @@ mod tests {
         assert!(fail_if.new_future_failure);
         assert!(fail_if.horizon_regression);
         assert_eq!(fail_if.blocked_ratio_above, Some(0.5));
+    }
+
+    #[test]
+    fn image_pip_is_explicit_python_only_and_preserves_legacy_serialization() {
+        let mut config = Config::default();
+        let legacy = serde_json::to_value(&config).unwrap();
+        assert_eq!(legacy["project"].as_object().unwrap().len(), 3);
+        config.project.python_image_pip = true;
+        assert!(config.validate().is_err());
+        config.project.ecosystem = "python".into();
+        config.validate().unwrap();
+        let selected = serde_json::to_value(&config).unwrap();
+        assert_eq!(selected["project"]["python_image_pip"], true);
+        config.project.ecosystem = "node".into();
+        assert!(config.validate().is_err());
     }
 
     #[test]

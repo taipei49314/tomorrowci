@@ -230,6 +230,26 @@ TomorrowCI source identity, the target source identity, the chosen configuration
 and the original test output. A naturally failing third-party test plus a passing
 fix/replay is stronger evidence than a purpose-built demonstration fixture.
 
+## Optional smaller test environments
+
+Pass `--image-pip` to `scripts/prepare_python_trial.py`, or set
+`project.python_image_pip: true` with `project.ecosystem: python`, to create
+the test venv without bootstrapping pip. The pinned official Python image's
+`/usr/local/bin/python -m pip --python <venv>/bin/python` installs the same
+requirements into that venv. This reduces installer files copied on every
+attempt, particularly on Docker Desktop bind mounts. It requires image pip
+22.3 or newer; an unavailable installer blocks preparation instead of silently
+changing modes. See [pip's interpreter option](https://pip.pypa.io/en/stable/topics/python-option/).
+
+This is an explicit environment choice: pip, setuptools and wheel are not
+implicitly installed into the test venv. Declare them in the locked requirements
+if the project or its tests need them. Existing configuration retains the original
+venv bootstrap behavior. Concrete dependency snapshot experiments do not accept
+this option. Requirements directives and hashes remain enforced, and fetch
+commands plus the config hash record the choice. Every test attempt still gets
+a fresh prepared copy, with the seed absent from the target container and network
+disabled. Replay uses its recorded fetch commands, including for older runs.
+
 ## Known upstream regression: Pydub and audioop
 
 `examples/real-regressions/pydub-audioop/` contains a source-pinned reproduction

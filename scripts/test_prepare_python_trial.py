@@ -63,6 +63,15 @@ class PrepareTrialTests(unittest.TestCase):
             trial.prepare(**self.options)
         self.assertEqual(sentinel.read_text(), "keep")
 
+    def test_image_pip_is_opt_in_and_does_not_rewrite_requirements(self):
+        requirements = self.base / "locked.txt"
+        requirements.write_bytes(b"--require-hashes\npip==25.0 --hash=sha256:abc\n")
+        self.options.update(stdlib_only=False, requirements=requirements, image_pip=True)
+        trial.prepare(**self.options)
+        output = self.options["output"]
+        self.assertTrue(json.loads((output / ".tomorrowci.yml").read_text())["project"]["python_image_pip"])
+        self.assertEqual((output / "requirements.txt").read_bytes(), requirements.read_bytes())
+
     def test_subdirectory_source_is_rejected_before_creating_output(self):
         self.options["source"] = self.source / "tests"
         with self.assertRaisesRegex(ValueError, "checkout root"):

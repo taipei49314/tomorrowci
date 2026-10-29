@@ -85,7 +85,7 @@ def prepare(*, source: Path, output: Path, baseline: str, candidate: str,
             framework: str, source_root: str, packages: list[str],
             test_args: list[str], requirements: Path | None = None,
             stdlib_only: bool = False, timeout: int = 300,
-            materialize_file_links: bool = False) -> dict:
+            materialize_file_links: bool = False, image_pip: bool = False) -> dict:
     source, output = source.resolve(), output.resolve()
     if output.exists():
         raise ValueError("Output already exists; choose a new directory")
@@ -146,6 +146,8 @@ def prepare(*, source: Path, output: Path, baseline: str, candidate: str,
                     "cpus": 1, "pids_limit": 256},
         "report": {"html": True, "json": True},
     }
+    if image_pip:
+        config["project"]["python_image_pip"] = True
     # All validation above is read-only. A failed clone stays available for diagnosis.
     output.mkdir(parents=True, exist_ok=False)
     git(source, "clone", "--no-local", "--no-checkout", "--template=", "--", str(source), str(output))
@@ -202,6 +204,8 @@ def main(argv: list[str] | None = None) -> int:
     deps.add_argument("--requirements", type=Path)
     deps.add_argument("--stdlib-only", action="store_true")
     parser.add_argument("--timeout", type=int, default=300)
+    parser.add_argument("--image-pip", action="store_true",
+                        help="Opt in to a pip-free test venv installed by the pinned image's pip >=22.3; declare pip/setuptools explicitly if tests need them")
     parser.add_argument("--materialize-file-links", action="store_true",
                         help="Expand internal links to committed regular-file bytes and record the transformation; link identity is not preserved")
     split = argv.index("--") if "--" in argv else len(argv)

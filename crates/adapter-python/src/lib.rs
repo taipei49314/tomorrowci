@@ -645,6 +645,17 @@ pub fn python_fetch_commands(
     upgrade: bool,
     scenario_id: &str,
 ) -> Result<Vec<CommandSpec>> {
+    python_fetch_commands_with_image_pip(workspace, upgrade, scenario_id, false)
+}
+
+/// The opt-in path leaves pip/setuptools out of the test venv unless explicitly
+/// required. The installer comes from the recorded Python image (pip >= 22.3).
+pub fn python_fetch_commands_with_image_pip(
+    workspace: &Path,
+    upgrade: bool,
+    scenario_id: &str,
+    image_pip: bool,
+) -> Result<Vec<CommandSpec>> {
     if !workspace.join("requirements.txt").exists() {
         return Err(TcError::Unsupported(
             "Python install path requires requirements.txt in this repair milestone (pip only); pyproject-only is UNSUPPORTED".into(),
@@ -684,20 +695,35 @@ pub fn python_fetch_commands(
     }
     let cache = format!("{state}/cache/pip");
     let py = format!("{venv}/bin/python");
-    let mut install = vec![
-        py.clone(),
-        "-m".into(),
-        "pip".into(),
+    let mut install = if image_pip {
+        // PATH points into the new venv, which deliberately has no pip. Select
+        // the official Python image's interpreter explicitly for the installer.
+        vec![
+            "/usr/local/bin/python".into(),
+            "-m".into(),
+            "pip".into(),
+            "--python".into(),
+            py,
+        ]
+    } else {
+        vec![py, "-m".into(), "pip".into()]
+    };
+    install.extend([
         "install".into(),
         "-q".into(),
         "--cache-dir".into(),
         cache,
         "-r".into(),
         "requirements.txt".into(),
-    ];
+    ]);
     if upgrade {
         install.push("--upgrade".into());
     }
+    let mut create = vec!["python".into(), "-m".into(), "venv".into()];
+    if image_pip {
+        create.push("--without-pip".into());
+    }
+    create.push(venv.clone());
     Ok(vec![
         CommandSpec {
             argv: vec!["rm".into(), "-rf".into(), venv.clone()],
@@ -712,7 +738,7 @@ pub fn python_fetch_commands(
             phase: "fetch".into(),
         },
         CommandSpec {
-            argv: vec!["python".into(), "-m".into(), "venv".into(), venv],
+            argv: create,
             cwd: Some("/work".into()),
             network: false,
             phase: "fetch".into(),
@@ -1093,6 +1119,49 @@ FAILED (errors=1)
         assert!(python_fetch_commands(dir.path(), false, "baseline").is_err());
         std::fs::write(dir.path().join("requirements.txt"), [0xff, 0xfe]).unwrap();
         assert!(python_fetch_commands(dir.path(), false, "baseline").is_err());
+    }
+
+    #[test]
+    fn image_pip_targets_the_fresh_venv_and_keeps_requirement_policy() {
+        let dir = tempdir().unwrap();
+        let requirements = "--require-hashes\n-r locked.txt\n";
+        std::fs::write(dir.path().join("requirements.txt"), requirements).unwrap();
+        for upgrade in [false, true] {
+            let commands =
+                python_fetch_commands_with_image_pip(dir.path(), upgrade, "baseline", true)
+                    .unwrap();
+            assert!(commands[2].argv.iter().any(|arg| arg == "--without-pip"));
+            assert_eq!(
+                &commands[3].argv[..5],
+                [
+                    "/usr/local/bin/python",
+                    "-m",
+                    "pip",
+                    "--python",
+                    "/work/.tomorrowci/scenarios/baseline/venv/bin/python",
+                ]
+            );
+            assert!(commands[3]
+                .argv
+                .windows(2)
+                .any(|args| args == ["-r", "requirements.txt"]));
+            assert_eq!(
+                commands[3].argv.iter().any(|arg| arg == "--upgrade"),
+                upgrade
+            );
+            assert!(!commands[3]
+                .argv
+                .iter()
+                .any(|arg| arg == "--system" || arg == "--break-system-packages"));
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("requirements.txt")).unwrap(),
+            requirements
+        );
+        std::fs::write(dir.path().join("requirements.txt"), "# stdlib only\n").unwrap();
+        let commands =
+            python_fetch_commands_with_image_pip(dir.path(), false, "baseline", true).unwrap();
+        assert!(commands.iter().all(|c| !c.network));
     }
 
     #[test]

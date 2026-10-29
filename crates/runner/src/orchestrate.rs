@@ -16,7 +16,7 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tomorrowci_adapter_node::NodeAdapter;
-use tomorrowci_adapter_python::{python_fetch_commands, PythonAdapter};
+use tomorrowci_adapter_python::{python_fetch_commands_with_image_pip, PythonAdapter};
 use tomorrowci_adapter_rust::RustAdapter;
 use tomorrowci_adapters::EcosystemAdapter;
 use tomorrowci_core::{
@@ -349,8 +349,13 @@ fn scan_with_adapter(
         // Command construction is pure planning evidence. Record it even when
         // immutable image resolution later blocks execution.
         let test_commands = build_scenario_commands(adapter, scenario, &config, scenario_work)?;
-        let planned_fetch_commands =
-            build_fetch_commands(eco, scenario, scenario_work, is_scripted);
+        let planned_fetch_commands = build_fetch_commands(
+            eco,
+            scenario,
+            scenario_work,
+            is_scripted,
+            config.project.python_image_pip,
+        );
 
         let image_started = Utc::now();
         let image_request = dependency_experiment
@@ -980,7 +985,13 @@ fn finalize_no_engine_blocked_run(
             Vec::new()
         }
     };
-    let fetch_commands = match build_fetch_commands(detection.ecosystem, scenario, work, false) {
+    let fetch_commands = match build_fetch_commands(
+        detection.ecosystem,
+        scenario,
+        work,
+        false,
+        config.project.python_image_pip,
+    ) {
         Ok(commands) => commands.unwrap_or_default(),
         Err(error) => {
             blocked_detail.push_str(&format!(
@@ -1426,9 +1437,10 @@ pub fn scan_with_executor(
         env.image = tag;
         env.image_digest = Some(executor.ensure_image(env.tag())?);
         let commands = build_scenario_commands(adapter, scenario, &config, &work)?;
-        let fetch_cmds = build_fetch_commands(eco, scenario, &work, true)
-            .ok()
-            .flatten();
+        let fetch_cmds =
+            build_fetch_commands(eco, scenario, &work, true, config.project.python_image_pip)
+                .ok()
+                .flatten();
         let sc_dir = layout.ensure_scenario(&scenario.id)?;
 
         if let Some(ref fcmds) = fetch_cmds {
@@ -1656,7 +1668,11 @@ fn build_fetch_commands(
     scenario: &Scenario,
     work: &Path,
     scripted: bool,
+    image_pip: bool,
 ) -> Result<Option<Vec<CommandSpec>>> {
+    if image_pip && scenario.resolved_dependencies.is_some() {
+        return Err(TcError::Unsupported("python_image_pip applies to requirements-based runtime trials, not concrete dependency snapshots".into()));
+    }
     if let Some(commands) = concrete_dependency_fetch_commands(eco, scenario)? {
         return Ok(Some(commands));
     }
@@ -1673,7 +1689,12 @@ fn build_fetch_commands(
                     phase: "fetch".into(),
                 }]));
             }
-            Ok(Some(python_fetch_commands(work, upgrade, &scenario.id)?))
+            Ok(Some(python_fetch_commands_with_image_pip(
+                work,
+                upgrade,
+                &scenario.id,
+                image_pip,
+            )?))
         }
         Ecosystem::Node => {
             let argv: Vec<String> = if upgrade {
@@ -3249,12 +3270,13 @@ mod hardening_tests {
         let environment = adapter.materialize(scenario, repo.path()).unwrap();
         let commands = adapter.commands(scenario, &config).unwrap();
 
-        let message = match build_fetch_commands(Ecosystem::Python, scenario, repo.path(), false)
-            .unwrap_err()
-        {
-            TcError::Unsupported(message) => message,
-            error => panic!("expected unsupported fetch contract, got {error}"),
-        };
+        let message =
+            match build_fetch_commands(Ecosystem::Python, scenario, repo.path(), false, false)
+                .unwrap_err()
+            {
+                TcError::Unsupported(message) => message,
+                error => panic!("expected unsupported fetch contract, got {error}"),
+            };
         let mut result = blocked_result(scenario, &environment, &commands, &message);
         result.verdict = Verdict::Unsupported;
         assert!(baseline_requires_early_stop(scenario, &result));
