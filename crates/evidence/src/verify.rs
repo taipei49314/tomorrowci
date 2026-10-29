@@ -22,8 +22,8 @@ use tomorrowci_core::{
     ExecutionPlan, ExecutionResult, FailureSignature, PlanDecision, RemoteSourceRecord,
     RepositorySnapshot, ResolvedDependencySet, Result, RunManifest, Scenario,
     SyntheticGitIndexEntry, SyntheticGitIndexRecord, TcError, TestAttemptsSummary,
-    TestExecutionStatus, Verdict, SYNTHETIC_GIT_ENV, SYNTHETIC_GIT_INDEX_KIND,
-    SYNTHETIC_GIT_INDEX_SOURCE,
+    TestExecutionStatus, Verdict, WorkspaceIsolation, WorkspacePreparation, SYNTHETIC_GIT_ENV,
+    SYNTHETIC_GIT_INDEX_KIND, SYNTHETIC_GIT_INDEX_SOURCE,
 };
 
 pub const RUN_REQUIRED: &[&str] = &[
@@ -153,6 +153,8 @@ struct PhaseEvidence {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawResultSummary {
+    #[serde(default)]
+    workspace_preparation: Option<WorkspacePreparation>,
     exit_code: Option<i32>,
     timed_out: bool,
     duration_ms: u64,
@@ -164,6 +166,8 @@ struct RawResultSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReplayDescriptor {
+    #[serde(default)]
+    workspace_isolation: Option<WorkspaceIsolation>,
     scenario_id: String,
     engine: Option<String>,
     engine_version: Option<String>,
@@ -191,6 +195,8 @@ struct ReplayDescriptor {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct ReplayAttemptEvidence {
+    #[serde(default)]
+    workspace_preparation: Option<WorkspacePreparation>,
     scenario_id: String,
     attempt: usize,
     phase: String,
@@ -2819,6 +2825,14 @@ fn verify_current_scenario_semantics(
         errors,
     )?;
     if let Some(summary) = &summary {
+        if replay
+            .as_ref()
+            .is_some_and(|descriptor| descriptor.workspace_isolation != summary.workspace_isolation)
+        {
+            errors.push(format!(
+                "scenario {scenario_id} replay workspace isolation does not match test attempts"
+            ));
+        }
         verify_test_attempts(
             scenario_root,
             scenario_id,
@@ -2888,6 +2902,34 @@ fn verify_replay_descriptor(
     Ok(())
 }
 
+fn verify_workspace_preparation(
+    isolation: Option<WorkspaceIsolation>,
+    preparation: Option<&WorkspacePreparation>,
+    environment: &EnvironmentSpec,
+    duration_ms: u64,
+    scenario_id: &str,
+    errors: &mut Vec<String>,
+) {
+    match (isolation, preparation) {
+        (None, None) => {} // Historical shared-workspace evidence stays historical.
+        (Some(WorkspaceIsolation::FreshPreparedCopyV1), Some(preparation))
+            if preparation.strategy == WorkspaceIsolation::FreshPreparedCopyV1
+                && preparation.seed_mount == "/tomorrowci-seed"
+                && preparation.seed_read_only
+                && preparation.destination_mount == "/work"
+                && environment.workdir == "/work"
+                && preparation.argv == tomorrowci_core::prepared_workspace_copy_argv()
+                && Some(&preparation.image_digest) == environment.image_digest.as_ref()
+                && preparation.network == "none"
+                && preparation.exit_code == Some(0)
+                && !preparation.timed_out
+                && preparation.duration_ms <= duration_ms => {}
+        _ => errors.push(format!(
+            "scenario {scenario_id} workspace preparation does not prove the recorded isolated attempt contract"
+        )),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn verify_test_attempts(
     scenario_root: &Path,
@@ -2908,6 +2950,14 @@ fn verify_test_attempts(
     }
     let mut previous_finished = None;
     for (index, attempt) in summary.attempts.iter().enumerate() {
+        verify_workspace_preparation(
+            summary.workspace_isolation,
+            attempt.workspace_preparation.as_ref(),
+            &result.environment,
+            attempt.duration_ms,
+            scenario_id,
+            errors,
+        );
         let expected = (index + 1) as u32;
         if attempt.attempt != expected {
             errors.push(format!(
@@ -3135,6 +3185,7 @@ fn verify_test_phase_and_result(
     }
     if let Some(raw) = &raw {
         if raw.exit_code != last.exit_code
+            || raw.workspace_preparation != last.workspace_preparation
             || raw.timed_out != last.timed_out
             || raw.duration_ms != last.duration_ms
             || raw.network_used
@@ -3654,6 +3705,11 @@ fn verify_replay_attempt_semantics(
     errors: &mut Vec<String>,
 ) -> Result<()> {
     let replays = safe_join(scenario_root, "replays")?;
+    let summary = read_json_file::<TestAttemptsSummary>(
+        &safe_join(scenario_root, "test-attempts.json")?,
+        &format!("scenario {scenario_id} test-attempts.json"),
+        errors,
+    )?;
     let mut reports = Vec::new();
     if replays.exists() {
         let mut entries: Vec<_> = std::fs::read_dir(&replays)?.collect::<std::io::Result<_>>()?;
@@ -3733,6 +3789,18 @@ fn verify_replay_attempt_semantics(
                     errors.push(format!(
                         "scenario {scenario_id} replay {name} dependency set identity mismatch"
                     ));
+                }
+                if report.phase == "test" && report.error.is_none() {
+                    verify_workspace_preparation(
+                        summary.as_ref().and_then(|s| s.workspace_isolation),
+                        report.workspace_preparation.as_ref(),
+                        &result.environment,
+                        report.duration_ms,
+                        scenario_id,
+                        errors,
+                    );
+                } else if report.workspace_preparation.is_some() {
+                    errors.push(format!("scenario {scenario_id} replay {name} has preparation without a completed test execution"));
                 }
                 let derived_exit_match =
                     report.replay_exit == result.exit_code && report.timed_out == result.timed_out;
@@ -4777,6 +4845,100 @@ mod tests {
     }
 
     #[test]
+    fn rejects_inconsistent_fresh_workspace_receipts() {
+        for mutation in [
+            "none",
+            "missing",
+            "writable-seed",
+            "wrong-copy",
+            "network",
+            "image",
+            "failed",
+            "descriptor",
+            "raw-mirror",
+            "legacy-uplift",
+            "replay-missing",
+        ] {
+            let (_temp, root) = valid_run();
+            let scenario = add_scenario(&root, true);
+            let preparation = serde_json::json!({
+                "strategy": "fresh_prepared_copy_v1", "seed_mount": "/tomorrowci-seed",
+                "seed_read_only": true, "destination_mount": "/work",
+                "argv": tomorrowci_core::prepared_workspace_copy_argv(),
+                "image_digest": format!("sha256:{}", "a".repeat(64)), "network": "none",
+                "exit_code": 0, "timed_out": false, "duration_ms": 0, "stdout": "", "stderr": ""
+            });
+            let update = |name: &str, f: &dyn Fn(&mut serde_json::Value)| {
+                let path = scenario.join(name);
+                let mut value: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                f(&mut value);
+                std::fs::write(path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+            };
+            update("replay.json", &|v| {
+                v["workspace_isolation"] = "fresh_prepared_copy_v1".into()
+            });
+            update("test-attempts.json", &|v| {
+                v["workspace_isolation"] = "fresh_prepared_copy_v1".into();
+                v["attempts"][0]["workspace_preparation"] = preparation.clone();
+            });
+            update("test-result.json", &|v| {
+                v["workspace_preparation"] = preparation.clone()
+            });
+            for name in ["replay-result.json", "replays/attempt-1/result.json"] {
+                update(name, &|v| v["workspace_preparation"] = preparation.clone());
+            }
+            match mutation {
+                "none" => {}
+                "descriptor" => update("replay.json", &|v| {
+                    v["workspace_isolation"] = serde_json::Value::Null
+                }),
+                "raw-mirror" => update("test-result.json", &|v| {
+                    v["workspace_preparation"] = serde_json::Value::Null
+                }),
+                "legacy-uplift" => {
+                    update("replay.json", &|v| {
+                        v["workspace_isolation"] = serde_json::Value::Null
+                    });
+                    update("test-attempts.json", &|v| {
+                        v["workspace_isolation"] = serde_json::Value::Null
+                    });
+                }
+                "replay-missing" => {
+                    for name in ["replay-result.json", "replays/attempt-1/result.json"] {
+                        update(name, &|v| {
+                            v["workspace_preparation"] = serde_json::Value::Null
+                        });
+                    }
+                }
+                other => update("test-attempts.json", &|v| {
+                    let p = &mut v["attempts"][0]["workspace_preparation"];
+                    match other {
+                        "missing" => *p = serde_json::Value::Null,
+                        "writable-seed" => p["seed_read_only"] = false.into(),
+                        "wrong-copy" => {
+                            p["argv"] =
+                                serde_json::json!(["cp", "-L", "/tomorrowci-seed/.", "/work"])
+                        }
+                        "network" => p["network"] = "bridge".into(),
+                        "image" => p["image_digest"] = format!("sha256:{}", "b".repeat(64)).into(),
+                        "failed" => p["exit_code"] = 1.into(),
+                        _ => unreachable!(),
+                    }
+                }),
+            }
+            finalize_run_checksums(&root).unwrap();
+            let report = verify_run_root(&root).unwrap();
+            assert_eq!(
+                report.ok,
+                mutation == "none",
+                "{mutation}: {:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
     fn pre_schema_current_checksum_bundle_requires_explicit_migration() {
         let (_temp, run_root) = valid_run();
         let run_path = run_root.join("run.json");
@@ -5605,6 +5767,7 @@ mod tests {
                 detail: "test".into(),
             };
             let mut raw = RawResultSummary {
+                workspace_preparation: None,
                 exit_code: Some(0),
                 timed_out: false,
                 duration_ms: 1,
@@ -5670,6 +5833,7 @@ mod tests {
             );
 
             let mut replay = ReplayDescriptor {
+                workspace_isolation: None,
                 scenario_id: scenario.id.clone(),
                 engine: environment.engine.clone(),
                 engine_version: environment.engine_version.clone(),

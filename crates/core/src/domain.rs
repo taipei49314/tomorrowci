@@ -1373,8 +1373,44 @@ pub struct ExecutionPlan {
     pub budget_max: u32,
 }
 
+/// Versioned test workspace contract. Older evidence deliberately has no claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceIsolation {
+    FreshPreparedCopyV1,
+}
+
+/// Result of the separate, offline preparation container. The target test never
+/// mounts the seed. Copying inside the image preserves container-local symlinks
+/// without following them on the host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspacePreparation {
+    pub strategy: WorkspaceIsolation,
+    pub seed_mount: String,
+    pub seed_read_only: bool,
+    pub destination_mount: String,
+    pub argv: Vec<String>,
+    pub image_digest: String,
+    pub network: String,
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    pub duration_ms: u64,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+pub fn prepared_workspace_copy_argv() -> Vec<String> {
+    ["cp", "-R", "-P", "/tomorrowci-seed/.", "/work"]
+        .into_iter()
+        .map(String::from)
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawExecutionResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_preparation: Option<WorkspacePreparation>,
     pub exit_code: Option<i32>,
     pub signal: Option<i32>,
     pub duration_ms: u64,
@@ -1410,6 +1446,8 @@ pub struct ExecutionResult {
 /// instead of trusting mirrored verdict files alone.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestAttemptRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_preparation: Option<WorkspacePreparation>,
     pub attempt: u32,
     pub started_at: DateTime<Utc>,
     pub finished_at: DateTime<Utc>,
@@ -1429,6 +1467,9 @@ pub enum TestExecutionStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestAttemptsSummary {
+    /// Absent in historical receipts: those attempts shared a writable workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_isolation: Option<WorkspaceIsolation>,
     pub scenario_id: String,
     pub status: TestExecutionStatus,
     pub attempts: Vec<TestAttemptRecord>,

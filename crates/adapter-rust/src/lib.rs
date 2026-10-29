@@ -533,6 +533,7 @@ mod tests {
     #[test]
     fn declared_msrv_failure_has_stable_signature() {
         let raw = RawExecutionResult {
+            workspace_preparation: None,
             exit_code: Some(101),
             signal: None,
             duration_ms: 1,
@@ -552,6 +553,7 @@ mod tests {
 
     fn failure(stderr: &str) -> FailureSignature {
         RustAdapter.normalize_failure(&RawExecutionResult {
+            workspace_preparation: None,
             exit_code: Some(101),
             signal: None,
             duration_ms: 10,

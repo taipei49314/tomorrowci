@@ -522,6 +522,7 @@ mod tests {
     #[test]
     fn removed_runtime_api_has_a_semantic_stable_signature() {
         let raw = RawExecutionResult {
+            workspace_preparation: None,
             exit_code: Some(1),
             signal: None,
             duration_ms: 1,
@@ -544,6 +545,7 @@ mod tests {
 
     fn failure(stderr: &str) -> FailureSignature {
         NodeAdapter.normalize_failure(&RawExecutionResult {
+            workspace_preparation: None,
             exit_code: Some(1),
             signal: None,
             duration_ms: 10,
@@ -621,6 +623,7 @@ mod tests {
     fn an_earlier_debug_trace_does_not_replace_the_actual_error_frame() {
         let normalize = |file: &str| {
             NodeAdapter.normalize_failure(&RawExecutionResult {
+                workspace_preparation: None,
                 exit_code: Some(1),
                 signal: None,
                 duration_ms: 10,

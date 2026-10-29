@@ -4,7 +4,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
-use tomorrowci_core::{CommandSpec, EnvironmentSpec, RawExecutionResult, Result, Scenario};
+use tomorrowci_core::{
+    prepared_workspace_copy_argv, CommandSpec, EnvironmentSpec, RawExecutionResult, Result,
+    Scenario, TcError, WorkspaceIsolation, WorkspacePreparation,
+};
 use tomorrowci_sandbox::{
     detect_requested_engine, engine_version as sandbox_engine_version, env_spec_to_map,
     resolve_or_pull_digest, run_in_container, RunRequest, SandboxEngine,
@@ -12,6 +15,8 @@ use tomorrowci_sandbox::{
 
 pub struct ExecutionContext<'a> {
     pub workspace: &'a Path,
+    /// A prepared seed to copy offline into the fresh, empty workspace before tests.
+    pub prepared_workspace: Option<&'a Path>,
     pub scenario: &'a Scenario,
     pub environment: &'a EnvironmentSpec,
     pub commands: &'a [CommandSpec],
@@ -30,6 +35,9 @@ pub trait ScenarioExecutor: Send + Sync {
     /// Exact engine build identity recorded with executable evidence.
     fn engine_version(&self) -> Option<String> {
         None
+    }
+    fn isolates_test_attempts(&self) -> bool {
+        false
     }
     fn execute(&self, ctx: &ExecutionContext<'_>) -> Result<RawExecutionResult>;
 }
@@ -72,12 +80,17 @@ impl ScenarioExecutor for ContainerExecutor {
         sandbox_engine_version(self.engine)
     }
 
+    fn isolates_test_attempts(&self) -> bool {
+        true
+    }
+
     fn execute(&self, ctx: &ExecutionContext<'_>) -> Result<RawExecutionResult> {
         let image = ctx.environment.run_image_ref();
-        let req = RunRequest {
+        let mut req = RunRequest {
             engine: self.engine,
             image,
             workspace_host: ctx.workspace.to_path_buf(),
+            prepared_seed_host: None,
             workdir: ctx.environment.workdir.clone(),
             commands: ctx.commands.to_vec(),
             env: env_spec_to_map(ctx.environment),
@@ -94,7 +107,56 @@ impl ScenarioExecutor for ContainerExecutor {
             user: ctx.environment.user.clone(),
             use_shell: true, // multi-step fetch uses &&
         };
-        run_in_container(&req)
+        let Some(seed) = ctx.prepared_workspace else {
+            return run_in_container(&req);
+        };
+        if ctx.network != "none" || ctx.commands.iter().any(|command| command.phase != "test") {
+            return Err(TcError::InvalidState(
+                "fresh prepared workspaces are only valid for offline tests".into(),
+            ));
+        }
+        let mut preparation = req.clone();
+        preparation.prepared_seed_host = Some(seed.to_path_buf());
+        preparation.env.clear();
+        preparation.commands = vec![CommandSpec {
+            argv: prepared_workspace_copy_argv(),
+            cwd: Some("/work".into()),
+            network: false,
+            phase: "workspace-prepare".into(),
+        }];
+        let started = std::time::Instant::now();
+        let prepared = run_in_container(&preparation)?;
+        if prepared.exit_code != Some(0) || prepared.timed_out {
+            return Err(TcError::Blocked(format!(
+                "offline test workspace preparation failed: exit={:?}, timed_out={}, stdout={}, stderr={}",
+                prepared.exit_code, prepared.timed_out, prepared.stdout, prepared.stderr
+            )));
+        }
+        req.timeout = ctx
+            .timeout
+            .checked_sub(started.elapsed())
+            .filter(|left| !left.is_zero())
+            .ok_or_else(|| {
+                TcError::Blocked("test timeout exhausted while preparing fresh workspace".into())
+            })?;
+        // The target container receives only the new copy; never the seed mount.
+        let mut result = run_in_container(&req)?;
+        result.duration_ms = started.elapsed().as_millis() as u64;
+        result.workspace_preparation = Some(WorkspacePreparation {
+            strategy: WorkspaceIsolation::FreshPreparedCopyV1,
+            seed_mount: "/tomorrowci-seed".into(),
+            seed_read_only: true,
+            destination_mount: "/work".into(),
+            argv: prepared_workspace_copy_argv(),
+            image_digest: req.image,
+            network: "none".into(),
+            exit_code: prepared.exit_code,
+            timed_out: prepared.timed_out,
+            duration_ms: prepared.duration_ms,
+            stdout: prepared.stdout,
+            stderr: prepared.stderr,
+        });
+        Ok(result)
     }
 }
 
@@ -136,6 +198,7 @@ impl ScenarioExecutor for ScriptedExecutor {
         // Fetch phase always succeeds in scripted harness (construction is not under test)
         if ctx.commands.iter().all(|c| c.phase == "fetch") {
             return Ok(RawExecutionResult {
+                workspace_preparation: None,
                 exit_code: Some(0),
                 signal: None,
                 duration_ms: 1,
@@ -162,6 +225,7 @@ impl ScenarioExecutor for ScriptedExecutor {
             "ok\n".into()
         };
         Ok(RawExecutionResult {
+            workspace_preparation: None,
             exit_code: Some(code),
             signal: None,
             duration_ms: 5,

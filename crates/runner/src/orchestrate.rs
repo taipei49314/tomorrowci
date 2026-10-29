@@ -25,7 +25,7 @@ use tomorrowci_core::{
     Ecosystem, EnvironmentAxis, EnvironmentSpec, EvidenceGrade, ExecutionPlan, ExecutionResult,
     FailureSignature, ProjectDetection, RawExecutionResult, RemoteSourceRecord, RepositorySnapshot,
     Result, RunIdentity, RunManifest, Scenario, TcError, TestAttemptRecord, TestAttemptsSummary,
-    TestExecutionStatus, Verdict,
+    TestExecutionStatus, Verdict, WorkspaceIsolation,
 };
 use tomorrowci_evidence::{
     metadata_is_alias, validate_existing_ancestors, validate_identifier, write_checksums,
@@ -473,6 +473,7 @@ fn scan_with_adapter(
             let fetch_start = Utc::now();
             let fetch_timeout = Duration::from_secs(env.fetch_timeout_seconds.unwrap_or(600));
             let fr = match executor.execute(&ExecutionContext {
+                prepared_workspace: None,
                 workspace: scenario_work,
                 scenario,
                 environment: &env,
@@ -581,6 +582,10 @@ fn scan_with_adapter(
             fetch_raw = Some(fr);
         }
 
+        // Keep FETCH's prepared state inaccessible to every target attempt.
+        let workspace_isolation = executor
+            .isolates_test_attempts()
+            .then_some(WorkspaceIsolation::FreshPreparedCopyV1);
         // TEST with reruns
         let reruns = if scenario.is_baseline {
             1
@@ -600,14 +605,24 @@ fn scan_with_adapter(
         for attempt in 1..=reruns {
             let attempt_started = Utc::now();
             test_phase_started.get_or_insert(attempt_started);
-            let raw = match executor.execute(&ExecutionContext {
-                workspace: scenario_work,
-                scenario,
-                environment: &env,
-                commands: &test_commands,
-                timeout: test_timeout,
-                network: "none",
-            }) {
+            let raw = match (|| {
+                let fresh_workspace = if workspace_isolation.is_some() {
+                    Some(DisposableWorkspace::empty()?)
+                } else {
+                    None
+                };
+                executor.execute(&ExecutionContext {
+                    prepared_workspace: fresh_workspace.as_ref().map(|_| scenario_work),
+                    workspace: fresh_workspace
+                        .as_ref()
+                        .map_or(scenario_work, DisposableWorkspace::path),
+                    scenario,
+                    environment: &env,
+                    commands: &test_commands,
+                    timeout: test_timeout,
+                    network: "none",
+                })
+            })() {
                 Ok(raw) => raw,
                 Err(error) => {
                     final_attempt_started = Some(attempt_started);
@@ -622,6 +637,7 @@ fn scan_with_adapter(
             attempt_pass.push(pass);
             let attempt_failure = (!pass).then(|| adapter.normalize_failure(&raw));
             attempt_records.push(TestAttemptRecord {
+                workspace_preparation: raw.workspace_preparation.clone(),
                 attempt,
                 started_at: attempt_started,
                 finished_at: attempt_finished,
@@ -671,6 +687,7 @@ fn scan_with_adapter(
                 Some(test_finished),
             )?;
             let summary = TestAttemptsSummary {
+                workspace_isolation,
                 scenario_id: scenario.id.clone(),
                 status: TestExecutionStatus::ExecutionError,
                 attempts: attempt_records,
@@ -772,6 +789,7 @@ fn scan_with_adapter(
             executor.engine_label(),
             failure.as_ref(),
             &TestAttemptsSummary {
+                workspace_isolation,
                 scenario_id: scenario.id.clone(),
                 status: TestExecutionStatus::Completed,
                 attempts: attempt_records,
@@ -1409,6 +1427,7 @@ pub fn scan_with_executor(
 
         if let Some(ref fcmds) = fetch_cmds {
             let _ = executor.execute(&ExecutionContext {
+                prepared_workspace: None,
                 workspace: &work,
                 scenario,
                 environment: &env,
@@ -1427,6 +1446,7 @@ pub fn scan_with_executor(
         let mut last_raw = None;
         for _ in 0..reruns {
             let raw = executor.execute(&ExecutionContext {
+                prepared_workspace: None,
                 workspace: &work,
                 scenario,
                 environment: &env,
@@ -1795,6 +1815,7 @@ fn fr_json(
         "timed_out": raw.timed_out,
         "duration_ms": raw.duration_ms,
         "network_used": raw.network_used,
+        "workspace_preparation": raw.workspace_preparation,
         "started_at": started.to_rfc3339(),
         "finished_at": finished.to_rfc3339(),
     })
@@ -1809,6 +1830,7 @@ fn elapsed_ms(started: chrono::DateTime<Utc>, finished: chrono::DateTime<Utc>) -
 
 fn not_run_summary(scenario: &Scenario, reason: &str) -> TestAttemptsSummary {
     TestAttemptsSummary {
+        workspace_isolation: None,
         scenario_id: scenario.id.clone(),
         status: TestExecutionStatus::NotRun,
         attempts: Vec::new(),
@@ -1872,6 +1894,7 @@ fn persist_scenario_artifacts(
     }
     let replay = serde_json::json!({
         "scenario_id": scenario.id,
+        "workspace_isolation": test_attempts.workspace_isolation,
         "engine": env.engine,
         "engine_version": env.engine_version,
         "image": env.tag(),
@@ -1897,7 +1920,15 @@ fn persist_scenario_artifacts(
         sc_dir.join("replay.json"),
         serde_json::to_string_pretty(&replay)?,
     )?;
-    write_replay_scripts(sc_dir, env, fetch_cmds, test_cmds, scenario, &engine)?;
+    write_replay_scripts(
+        sc_dir,
+        env,
+        fetch_cmds,
+        test_cmds,
+        scenario,
+        &engine,
+        test_attempts.workspace_isolation,
+    )?;
 
     let mut checksums = Vec::new();
     for name in [
@@ -1933,6 +1964,7 @@ fn persist_scenario_artifacts(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_replay_scripts(
     sc_dir: &Path,
     env: &EnvironmentSpec,
@@ -1940,8 +1972,25 @@ fn write_replay_scripts(
     test_cmds: &[CommandSpec],
     scenario: &Scenario,
     engine: &str,
+    workspace_isolation: Option<WorkspaceIsolation>,
 ) -> Result<()> {
     let scenario_id = &scenario.id;
+    if workspace_isolation.is_some() {
+        // The CLI owns disposable preparation, timeout accounting and append-only
+        // receipts. A raw docker script cannot reproduce those guarantees.
+        let run_id = sc_dir
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| TcError::InvalidState("replay script cannot identify run".into()))?;
+        validate_identifier(run_id, "run id").map_err(TcError::InvalidState)?;
+        let sh = format!("#!/usr/bin/env bash\n# Run from the original target repository; the CLI preserves fresh-prepared-copy-v1.\nset -euo pipefail\nexec \"${{TOMORROWCI_BINARY:-tomorrowci}}\" replay '{run_id}' --scenario '{scenario_id}'\n");
+        let ps1 = format!("# Run from the original target repository; the CLI preserves fresh-prepared-copy-v1.\n$Binary = if ($env:TOMORROWCI_BINARY) {{ $env:TOMORROWCI_BINARY }} else {{ 'tomorrowci' }}\n& $Binary replay '{run_id}' --scenario '{scenario_id}'\nexit $LASTEXITCODE\n");
+        std::fs::write(sc_dir.join("replay.sh"), sh)?;
+        std::fs::write(sc_dir.join("replay.ps1"), ps1)?;
+        return Ok(());
+    }
     let fetch_network = dependency_fetch_network(scenario);
     let bin = if engine == "podman" {
         "podman"
@@ -2336,6 +2385,27 @@ struct DisposableWorkspace {
 }
 
 impl DisposableWorkspace {
+    fn empty() -> Result<Self> {
+        let root =
+            std::env::temp_dir().join(format!("tomorrowci-replay-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir(&root)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+        }
+        let disposable = Self {
+            path: root.join("workspace"),
+        };
+        std::fs::create_dir(disposable.path())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(disposable.path(), std::fs::Permissions::from_mode(0o777))?;
+        }
+        Ok(disposable)
+    }
+
     fn capture(recorded_workspace: &Path) -> Result<Self> {
         let root =
             std::env::temp_dir().join(format!("tomorrowci-replay-{}", Uuid::new_v4().simple()));
@@ -2590,6 +2660,7 @@ fn replay_attempt_report(
         "original_exit": original.exit_code,
         "fetch_exit": fetch.and_then(|raw| raw.exit_code),
         "replay_exit": replay.and_then(|raw| raw.exit_code),
+        "workspace_preparation": replay.and_then(|raw| raw.workspace_preparation.as_ref()),
         "timed_out": latest.map(|raw| raw.timed_out).unwrap_or(false),
         "duration_ms": latest.map(|raw| raw.duration_ms).unwrap_or(0),
         "original_signature": original.failure.as_ref().map(|failure| &failure.normalized_hash),
@@ -2825,6 +2896,7 @@ fn replay_scenario_with_verified_evidence(
     let mut fetch_raw = None;
     if !fetch_cmds.is_empty() {
         let fetch_result = executor.execute(&ExecutionContext {
+            prepared_workspace: None,
             workspace: replay_workspace.path(),
             scenario: &scenario,
             environment: &env_run,
@@ -2916,14 +2988,31 @@ fn replay_scenario_with_verified_evidence(
         fetch_raw = Some(fr);
     }
 
-    let test_result = executor.execute(&ExecutionContext {
-        workspace: replay_workspace.path(),
-        scenario: &scenario,
-        environment: &env_run,
-        commands: &test_cmds,
-        timeout: test_to,
-        network: "none",
-    });
+    let test_result = (|| {
+        let test_summary: TestAttemptsSummary =
+            serde_json::from_slice(&std::fs::read(sc_dir.join("test-attempts.json"))?)?;
+        let fresh_workspace = if test_summary.workspace_isolation.is_some() {
+            if !executor.isolates_test_attempts() {
+                return Err(TcError::Blocked(
+                    "executor does not implement recorded fresh workspace contract".into(),
+                ));
+            }
+            Some(DisposableWorkspace::empty()?)
+        } else {
+            None
+        };
+        executor.execute(&ExecutionContext {
+            prepared_workspace: fresh_workspace.as_ref().map(|_| replay_workspace.path()),
+            workspace: fresh_workspace
+                .as_ref()
+                .map_or(replay_workspace.path(), DisposableWorkspace::path),
+            scenario: &scenario,
+            environment: &env_run,
+            commands: &test_cmds,
+            timeout: test_to,
+            network: "none",
+        })
+    })();
     let raw = match test_result {
         Ok(raw) => raw,
         Err(error) => {
@@ -3630,9 +3719,11 @@ mod hardening_tests {
         )
         .unwrap();
         let attempts = TestAttemptsSummary {
+            workspace_isolation: None,
             scenario_id: scenario.id.clone(),
             status: TestExecutionStatus::Completed,
             attempts: vec![TestAttemptRecord {
+                workspace_preparation: None,
                 attempt: 1,
                 started_at: test_started,
                 finished_at: test_finished,
@@ -3694,6 +3785,7 @@ mod hardening_tests {
 
     fn raw_result(code: i32, stdout: &str, stderr: &str) -> RawExecutionResult {
         RawExecutionResult {
+            workspace_preparation: None,
             exit_code: Some(code),
             signal: None,
             duration_ms: 1,
@@ -3753,6 +3845,73 @@ mod hardening_tests {
     }
 
     struct WorkspaceMutatingExecutor;
+
+    struct PreparationFailureExecutor;
+
+    impl ScenarioExecutor for PreparationFailureExecutor {
+        fn name(&self) -> &str {
+            "docker"
+        }
+        fn ensure_image(&self, _: &str) -> Result<String> {
+            Ok(TEST_DIGEST.into())
+        }
+        fn engine_version(&self) -> Option<String> {
+            Some("test-engine-v1".into())
+        }
+        fn isolates_test_attempts(&self) -> bool {
+            true
+        }
+        fn execute(&self, context: &ExecutionContext<'_>) -> Result<RawExecutionResult> {
+            if context.prepared_workspace.is_some() {
+                assert!(std::fs::read_dir(context.workspace)?.next().is_none());
+                return Err(TcError::Blocked("offline test workspace preparation failed: exit=Some(1), stdout=copy started, stderr=copy denied".into()));
+            }
+            assert!(context
+                .commands
+                .iter()
+                .all(|command| command.phase == "fetch"));
+            let mut result = raw_result(0, "fetch ok", "");
+            result.network_used = context.network != "none";
+            Ok(result)
+        }
+    }
+
+    #[test]
+    fn failed_workspace_preparation_is_verifiable_blocked_without_test_attempts() {
+        let repo = tempdir().unwrap();
+        write_python_fixture(repo.path());
+        let mut config = Config::default();
+        config.baseline.runtime = "3.11".into();
+        let outcome = scan_local_with_executor_into(
+            repo.path(),
+            repo.path(),
+            config,
+            &PreparationFailureExecutor,
+        )
+        .unwrap();
+        assert_eq!(outcome.manifest.results.len(), 1);
+        let result = &outcome.manifest.results[0];
+        assert_eq!(result.verdict, Verdict::Blocked);
+        assert_eq!(result.attempt, 0);
+        let summary: TestAttemptsSummary = serde_json::from_slice(
+            &std::fs::read(
+                outcome
+                    .evidence_root
+                    .join("scenarios/baseline/test-attempts.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            summary.workspace_isolation,
+            Some(WorkspaceIsolation::FreshPreparedCopyV1)
+        );
+        assert_eq!(summary.status, TestExecutionStatus::ExecutionError);
+        assert!(summary.attempts.is_empty());
+        assert!(summary.error.unwrap().contains("copy denied"));
+        let verification = tomorrowci_evidence::verify_run_root(&outcome.evidence_root).unwrap();
+        assert!(verification.ok, "{:?}", verification.errors);
+    }
 
     impl ScenarioExecutor for WorkspaceMutatingExecutor {
         fn name(&self) -> &str {

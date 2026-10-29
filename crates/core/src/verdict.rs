@@ -236,6 +236,7 @@ mod tests {
     fn failed_attempt(hash: &str) -> TestAttemptRecord {
         let now = Utc::now();
         TestAttemptRecord {
+            workspace_preparation: None,
             attempt: 1,
             started_at: now,
             finished_at: now,

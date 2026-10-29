@@ -51,6 +51,10 @@ For your target repository:
 The test phase has no network access. Tests that require external services need
 a project-specific offline setup before this workflow is useful.
 
+For an explicit subset that should execute without skips, use the optional
+[strict coverage adapter](PYTHON_TRIAL_COVERAGE.md). It preserves original
+assertions, checks source import origins, and emits structured test counts.
+
 ## Configure one runtime comparison
 
 Create `.tomorrowci.yml` at the target repository root:
@@ -162,6 +166,24 @@ It re-executes the recorded scenario and compares its outcome. Copying only
 run to another machine does not guarantee replay: platform/image availability,
 engine version and pip fetch requirements can still block execution. A Docker
 upgrade can therefore leave evidence verifiable while replay is blocked.
+
+New container scans use `fresh_prepared_copy_v1`: after dependency preparation,
+each test attempt receives a new copy of the prepared workspace. A separate
+network-disabled preparation container reads the seed read-only; the test
+container cannot see that seed mount. Source files, installed dependencies and
+generated files modified by one test attempt therefore do not carry into the
+next. Copying preserves container-local symlinks and does not re-download
+dependencies between retries. Preparation time shares the test timeout budget;
+preparation errors are `BLOCKED`, not project test failures.
+
+Attempt and replay receipts record the copy contract, image, network policy and
+preparation result. `verify` checks consistency across those records. This is
+auditable execution evidence, not independent cryptographic attestation that a
+container executed. Historical receipts without the isolation field remain
+historical shared-workspace observations and are not upgraded to the new claim.
+Generated replay scripts for new receipts delegate to the CLI so the same
+preparation and receipt path is used; set `TOMORROWCI_BINARY` to the matching
+executable when it is not on PATH.
 
 This recovery also changes failure fingerprints to preserve concrete exception
 causes and source identity. Use a fresh scan from this checkout before replay;

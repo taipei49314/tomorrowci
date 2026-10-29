@@ -16,7 +16,7 @@ No breakage claim without replayable evidence.
 
 ## Product status (evidence-based)
 
-**Current checkout: local recovery, 2026-10-28.** Start with the bounded
+**Current checkout: local trials, 2026-10-29.** Start with the bounded
 [Python Docker trial](docs/PYTHON_TRIAL.md): choose the baseline and candidate
 versions explicitly, run your own tests, verify the evidence, then replay.
 This checkout is not a new published release. The historical GitHub repositories
@@ -36,6 +36,14 @@ scenario budget. It proves an observed **1-minimal** failing subset when the
 required addition/subtraction checks complete; it does not claim a globally
 smallest set or treat a blocked installation as proof of causality. The original
 vendored-tree v1 protocol remains available for historical fixtures.
+
+For explicit Python trial subsets, the optional [coverage adapter](docs/PYTHON_TRIAL_COVERAGE.md)
+checks checkout import origins and records framework test counts. It rejects
+zero-test and skipped-feature successes while preserving original test failures.
+It also documents baseline-only observations when no natural update is available.
+New container test attempts each use a fresh prepared workspace copy; replay
+preserves that contract, and historical shared-workspace evidence stays labelled
+by its original contract. See the trial guide for limits and receipt semantics.
 
 ### Historical qualification (not a validation of this checkout)
 

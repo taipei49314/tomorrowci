@@ -766,6 +766,7 @@ mod tests {
 
     fn python_failure(stderr: &str) -> FailureSignature {
         PythonAdapter.normalize_failure(&RawExecutionResult {
+            workspace_preparation: None,
             exit_code: Some(1),
             signal: None,
             duration_ms: 10,
@@ -988,6 +989,7 @@ FAILED (errors=1)
     #[test]
     fn timeout_is_not_reclassified_by_a_prior_logged_exception() {
         let signature = PythonAdapter.normalize_failure(&RawExecutionResult {
+            workspace_preparation: None,
             exit_code: None,
             signal: None,
             duration_ms: 300_000,

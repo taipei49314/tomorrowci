@@ -274,6 +274,8 @@ pub struct RunRequest {
     /// Prefer immutable ref `image@sha256:...` when available.
     pub image: String,
     pub workspace_host: PathBuf,
+    /// Only the trusted preparation command may mount this seed read-only.
+    pub prepared_seed_host: Option<PathBuf>,
     pub workdir: String,
     pub commands: Vec<CommandSpec>,
     pub env: HashMap<String, String>,
@@ -540,6 +542,13 @@ pub fn run_in_container(req: &RunRequest) -> Result<RawExecutionResult> {
         "-w".into(),
         req.workdir.clone(),
     ];
+    if let Some(seed) = &req.prepared_seed_host {
+        let seed = validate_prepared_seed(req, seed, &workspace)?;
+        docker_args.extend([
+            "-v".into(),
+            format!("{}:/tomorrowci-seed:ro", mount_source(&seed)),
+        ]);
+    }
     if req.read_only_root {
         docker_args.push("--read-only".into());
         docker_args.push("--tmpfs".into());
@@ -627,6 +636,7 @@ pub fn run_in_container(req: &RunRequest) -> Result<RawExecutionResult> {
     }
 
     Ok(RawExecutionResult {
+        workspace_preparation: None,
         exit_code: if timed_out { None } else { status.code() },
         signal: None,
         duration_ms,
@@ -635,6 +645,44 @@ pub fn run_in_container(req: &RunRequest) -> Result<RawExecutionResult> {
         stderr,
         network_used: req.network != "none",
     })
+}
+
+fn validate_prepared_seed(req: &RunRequest, seed: &Path, workspace: &Path) -> Result<PathBuf> {
+    if req.network != "none"
+        || req.workdir != "/work"
+        || req.commands.len() != 1
+        || req.commands[0].phase != "workspace-prepare"
+        || req.commands[0].argv != tomorrowci_core::prepared_workspace_copy_argv()
+        || req.commands[0].network
+        || req.commands[0].cwd.as_deref() != Some("/work")
+    {
+        return Err(TcError::InvalidState(
+            "invalid offline prepared-workspace copy contract".into(),
+        ));
+    }
+    for path in [seed, workspace] {
+        for ancestor in path.ancestors() {
+            let metadata = std::fs::symlink_metadata(ancestor)?;
+            if metadata_is_alias(&metadata) || !metadata.is_dir() {
+                return Err(TcError::InvalidState(
+                    "prepared workspace roots must have plain directory ancestors".into(),
+                ));
+            }
+        }
+    }
+    let seed = std::fs::canonicalize(seed)?;
+    let workspace = std::fs::canonicalize(workspace)?;
+    if seed.starts_with(&workspace) || workspace.starts_with(&seed) {
+        return Err(TcError::InvalidState(
+            "prepared seed and test destination must not overlap".into(),
+        ));
+    }
+    if std::fs::read_dir(&workspace)?.next().is_some() {
+        return Err(TcError::InvalidState(
+            "prepared test destination must be empty".into(),
+        ));
+    }
+    Ok(seed)
 }
 
 fn needs_shell(argv: &[String]) -> bool {
@@ -913,6 +961,47 @@ mod tests {
         let s = redact_secrets("export password=supersecret rest");
         assert!(s.contains("***REDACTED***"));
         assert!(!s.contains("supersecret"));
+    }
+
+    #[test]
+    fn preparation_rejects_overlap_dirty_destinations_and_target_commands() {
+        let seed = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let mut request = RunRequest {
+            engine: SandboxEngine::Docker,
+            image: format!("sha256:{}", "a".repeat(64)),
+            workspace_host: destination.path().into(),
+            prepared_seed_host: Some(seed.path().into()),
+            workdir: "/work".into(),
+            commands: vec![CommandSpec {
+                argv: tomorrowci_core::prepared_workspace_copy_argv(),
+                cwd: Some("/work".into()),
+                network: false,
+                phase: "workspace-prepare".into(),
+            }],
+            env: HashMap::new(),
+            memory_mb: 256,
+            cpus: 1.0,
+            pids_limit: 64,
+            network: "none".into(),
+            timeout: Duration::from_secs(60),
+            read_only_root: true,
+            user: Some("65534:65534".into()),
+            use_shell: true,
+        };
+        assert!(validate_prepared_seed(&request, seed.path(), destination.path()).is_ok());
+        assert!(validate_prepared_seed(&request, seed.path(), seed.path()).is_err());
+        let child = seed.path().join("child");
+        std::fs::create_dir(&child).unwrap();
+        assert!(validate_prepared_seed(&request, seed.path(), &child).is_err());
+        std::fs::write(destination.path().join("old-attempt"), "mutation").unwrap();
+        assert!(validate_prepared_seed(&request, seed.path(), destination.path()).is_err());
+        std::fs::remove_file(destination.path().join("old-attempt")).unwrap();
+        request.network = "bridge".into();
+        assert!(validate_prepared_seed(&request, seed.path(), destination.path()).is_err());
+        request.network = "none".into();
+        request.commands[0].argv = vec!["python".into(), "untrusted.py".into()];
+        assert!(validate_prepared_seed(&request, seed.path(), destination.path()).is_err());
     }
 
     #[cfg(windows)]

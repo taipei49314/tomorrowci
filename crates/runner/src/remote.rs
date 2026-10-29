@@ -866,6 +866,7 @@ mod tests {
                 .all(|command| command.phase == "fetch");
             let failed = !fetch && !context.scenario.is_baseline;
             Ok(RawExecutionResult {
+                workspace_preparation: None,
                 exit_code: Some(if failed { 1 } else { 0 }),
                 signal: None,
                 duration_ms: 1,
