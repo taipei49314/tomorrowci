@@ -69,6 +69,59 @@ class PrepareTrialTests(unittest.TestCase):
             trial.prepare(**self.options)
         self.assertFalse(self.options["output"].exists())
 
+    def add_link(self, name, target):
+        trial.git(self.source, "config", "core.symlinks", "false")
+        path = self.source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(target.encode("utf-8"))
+        trial.git(self.source, "add", name)
+        blob = trial.git(self.source, "hash-object", "-w", "--", name)
+        trial.git(self.source, "update-index", "--add", "--cacheinfo", "120000," + blob + "," + name)
+        trial.git(self.source, "commit", "-m", "file link fixture")
+
+    def test_opt_in_materializes_committed_bytes_and_records_transformation(self):
+        payload = b"binary\x00\xff\n"
+        (self.source / "payload.bin").write_bytes(payload)
+        self.commit()
+        self.add_link("docs/payload", "../payload.bin")
+        head = trial.git(self.source, "rev-parse", "HEAD")
+        result = trial.prepare(**self.options, materialize_file_links=True)
+        self.assertEqual((self.options["output"] / "docs/payload").read_bytes(), payload)
+        record = result["materialized_file_links"]["docs/payload"]
+        self.assertEqual(record["materialized_sha256"], trial.digest(payload))
+        self.assertEqual(record["final_sha256"], trial.digest(payload))
+        self.assertEqual(record["resolved_path"], "payload.bin")
+        self.assertEqual(result["source_sha"], head)
+        self.assertFalse(result["symlink_identity_preserved"])
+        self.assertEqual(trial.git(self.source, "status", "--porcelain=v1"), "")
+        self.assertEqual((self.source / "docs/payload").read_text(), "../payload.bin")
+
+    def test_materialization_rejects_escaping_absolute_or_uncommitted_targets(self):
+        for index, target in enumerate(("../../outside", "/etc/passwd", "C:/secret", "..\\secret", "../.git/config", "../untracked", "../tests")):
+            with self.subTest(target=target):
+                self.add_link("docs/link" + str(index), target)
+                with self.assertRaises(ValueError):
+                    trial.prepare(**self.options, materialize_file_links=True)
+                self.assertFalse(self.options["output"].exists())
+                trial.git(self.source, "rm", "docs/link" + str(index))
+                trial.git(self.source, "commit", "-m", "remove link fixture")
+
+    def test_materialization_rejects_link_chains(self):
+        self.add_link("link-a", "subject.py")
+        self.add_link("link-b", "link-a")
+        with self.assertRaisesRegex(ValueError, "directly to a committed regular file"):
+            trial.prepare(**self.options, materialize_file_links=True)
+        self.assertFalse(self.options["output"].exists())
+
+    def test_requirements_link_reads_committed_content_instead_of_stub(self):
+        (self.source / "deps.txt").write_bytes(b"pytest==8.4.2\n")
+        self.commit()
+        self.add_link("requirements.txt", "deps.txt")
+        self.options.update(stdlib_only=False, framework="pytest")
+        result = trial.prepare(**self.options, materialize_file_links=True)
+        self.assertEqual((self.options["output"] / "requirements.txt").read_bytes(), b"pytest==8.4.2\n")
+        self.assertEqual(result["requirements_sha256"], trial.digest(b"pytest==8.4.2\n"))
+
     def test_dirty_or_untracked_source_is_rejected(self):
         for path in (self.source / "untracked.txt", self.source / "subject.py"):
             original = path.read_bytes() if path.exists() else None

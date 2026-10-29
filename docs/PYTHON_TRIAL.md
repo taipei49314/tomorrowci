@@ -32,8 +32,14 @@ directory with your TomorrowCI executable, then inspect counts, verify and repla
 as described below. Existing output directories, dirty sources, symlinks,
 submodules, pre-existing TomorrowCI configurations and whitespace inside test
 arguments are rejected. A preparation failure retains its output for diagnosis;
-choose a fresh output path after correcting the cause. The original repo is
-unchanged. Image availability and target test outcomes remain unverified until
+choose a fresh output path after correcting the cause. With the explicit
+`--materialize-file-links` option, links pointing directly to committed regular
+files inside the repository are expanded to those Git blob bytes. The profile
+records each link, target, blob identity and output hash; symlink identity is
+not preserved. This is a declared source transformation, useful for documentation
+links such as `docs/CONTRIBUTING.md`. Link chains, directory links, escaping paths
+and submodules remain unsupported. The original repo is unchanged.
+Image availability and target test outcomes remain unverified until
 the actual container scan.
 
 ## Prepare the source checkout and target
