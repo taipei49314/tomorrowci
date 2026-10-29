@@ -406,9 +406,8 @@ fn drain_stream_bounded<R: Read>(
     let mut retained = Vec::with_capacity(limit.min(STREAM_READ_CHUNK_BYTES));
     let head_limit = limit / 2;
     let tail_limit = limit - head_limit;
-    let mut tail = std::collections::VecDeque::<u8>::with_capacity(
-        tail_limit.min(STREAM_READ_CHUNK_BYTES),
-    );
+    let mut tail =
+        std::collections::VecDeque::<u8>::with_capacity(tail_limit.min(STREAM_READ_CHUNK_BYTES));
     let mut discarded_bytes = 0_u64;
     let mut chunk = [0_u8; STREAM_READ_CHUNK_BYTES];
     loop {
@@ -931,7 +930,10 @@ mod tests {
 
     #[test]
     fn bounded_capture_preserves_exact_head_tail_across_read_boundaries() {
-        struct Fragmented<'a> { bytes: &'a [u8], chunk: usize }
+        struct Fragmented<'a> {
+            bytes: &'a [u8],
+            chunk: usize,
+        }
         impl Read for Fragmented<'_> {
             fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
                 let n = self.chunk.min(buffer.len()).min(self.bytes.len());
@@ -943,7 +945,14 @@ mod tests {
         let input = b"0123456789abcdefghijklmnopqrstuvwxyz";
         for limit in [0, 1, 2, 3, 9, 35, 36, 37, 100] {
             for chunk in [1, 2, 7, 36] {
-                let capture = drain_stream_bounded(Fragmented { bytes: input, chunk }, limit).unwrap();
+                let capture = drain_stream_bounded(
+                    Fragmented {
+                        bytes: input,
+                        chunk,
+                    },
+                    limit,
+                )
+                .unwrap();
                 if limit >= input.len() {
                     assert_eq!(capture.retained, input);
                     assert_eq!(capture.render(limit), std::str::from_utf8(input).unwrap());
@@ -951,7 +960,10 @@ mod tests {
                 } else {
                     let head = limit / 2;
                     let tail = limit - head;
-                    assert_eq!(capture.retained, [&input[..head], &input[input.len()-tail..]].concat());
+                    assert_eq!(
+                        capture.retained,
+                        [&input[..head], &input[input.len() - tail..]].concat()
+                    );
                     assert_eq!(capture.discarded_bytes, (input.len() - limit) as u64);
                     assert!(capture.render(limit).contains("truncated middle"));
                 }

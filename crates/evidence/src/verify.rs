@@ -3003,12 +3003,15 @@ fn verify_test_attempts(
                 errors,
             )?;
         }
-        if attempt.failure.as_ref().is_some_and(|failure| {
-            failure.kind == tomorrowci_core::COVERAGE_FAILURE_KIND
-        }) {
+        if attempt
+            .failure
+            .as_ref()
+            .is_some_and(|failure| failure.kind == tomorrowci_core::COVERAGE_FAILURE_KIND)
+        {
             let log = |prefix| -> Result<String> {
                 Ok(std::fs::read_to_string(safe_join(
-                    scenario_root, &format!("{prefix}.attempt{}.log", attempt.attempt),
+                    scenario_root,
+                    &format!("{prefix}.attempt{}.log", attempt.attempt),
                 )?)?)
             };
             let raw = tomorrowci_core::RawExecutionResult {
@@ -3069,7 +3072,11 @@ fn verify_test_attempts(
                     ));
                 }
             }
-            let expected_verdict = if summary.attempts.iter().all(tomorrowci_core::is_coverage_attempt) {
+            let expected_verdict = if summary
+                .attempts
+                .iter()
+                .all(tomorrowci_core::is_coverage_attempt)
+            {
                 Verdict::CoverageIncomplete
             } else if scenario.is_baseline {
                 if passes.iter().any(|passed| *passed) {

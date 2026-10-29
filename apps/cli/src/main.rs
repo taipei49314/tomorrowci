@@ -288,7 +288,7 @@ fn finish_scan(
                     Verdict::Blocked
                         | Verdict::Unsupported
                         | Verdict::Inconclusive
-                    | Verdict::CoverageIncomplete
+                        | Verdict::CoverageIncomplete
                         | Verdict::BaselineInvalid
                         | Verdict::Flaky
                 )
@@ -311,7 +311,12 @@ fn finish_scan(
             println!("run_id: {}", out.manifest.run_id);
             // Never promote BLOCKED to success: non-zero exit for infra/construction blocks
             if any_blocked {
-                if out.manifest.results.iter().any(|r| r.verdict == Verdict::CoverageIncomplete) {
+                if out
+                    .manifest
+                    .results
+                    .iter()
+                    .any(|r| r.verdict == Verdict::CoverageIncomplete)
+                {
                     println!("verdict: INCONCLUSIVE (COVERAGE_INCOMPLETE)");
                 } else {
                     println!("verdict: BLOCKED");
@@ -500,7 +505,10 @@ fn require_observed_gate_inputs(
         if let Some(result) = manifest.results.iter().find(|result| {
             matches!(
                 result.verdict,
-                Verdict::Unsupported | Verdict::Inconclusive | Verdict::Flaky | Verdict::CoverageIncomplete
+                Verdict::Unsupported
+                    | Verdict::Inconclusive
+                    | Verdict::Flaky
+                    | Verdict::CoverageIncomplete
             )
         }) {
             bail!(

@@ -392,7 +392,7 @@ fn verdict_label(verdict: Verdict) -> &'static str {
         Verdict::Blocked => "BLOCKED",
         Verdict::Unsupported => "UNSUPPORTED",
         Verdict::Inconclusive => "INCONCLUSIVE",
-            Verdict::CoverageIncomplete => "COVERAGE_INCOMPLETE",
+        Verdict::CoverageIncomplete => "COVERAGE_INCOMPLETE",
     }
 }
 
