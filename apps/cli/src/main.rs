@@ -550,10 +550,21 @@ fn cmd_metrics(run_id: &str) -> Result<()> {
 }
 
 fn cmd_init_action(out: &Path) -> Result<()> {
+    use std::io::Write;
     if let Some(p) = out.parent() {
         std::fs::create_dir_all(p)?;
     }
-    std::fs::write(out, include_str!("../../../action/workflow-template.yml"))?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(out)
+        .with_context(|| {
+            format!(
+                "cannot create new workflow at {}; existing files are not overwritten",
+                out.display()
+            )
+        })?;
+    file.write_all(include_bytes!("../../../action/workflow-template.yml"))?;
     println!("wrote {}", out.display());
     Ok(())
 }
@@ -1282,6 +1293,33 @@ mod tests {
     fn local_scan_rejects_remote_commit_authority() {
         let error = cmd_scan(".", None, Some(&"a".repeat(40))).unwrap_err();
         assert!(error.to_string().contains("only valid"));
+    }
+
+    #[test]
+    fn init_action_preserves_existing_workflow_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("workflow.yml");
+        let existing = b"# user-owned workflow\nname: important\n";
+        std::fs::write(&path, existing).unwrap();
+        assert!(cmd_init_action(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("existing files are not overwritten"));
+        assert_eq!(std::fs::read(path).unwrap(), existing);
+    }
+
+    #[test]
+    fn init_action_creates_a_new_workflow_and_refuses_a_second_write() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(".github/workflows/tomorrowci.yml");
+        cmd_init_action(&path).unwrap();
+        let contents = std::fs::read(&path).unwrap();
+        assert_eq!(
+            contents,
+            include_bytes!("../../../action/workflow-template.yml")
+        );
+        assert!(cmd_init_action(&path).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), contents);
     }
 
     #[test]
