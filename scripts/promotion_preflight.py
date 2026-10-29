@@ -569,7 +569,7 @@ def inspect_promotion_workflow_run(
         "head_branch": "master",
         "head_sha": source_sha,
         "id": expected_id,
-        "path": ".github/workflows/protected-exact-byte-promotion.yml",
+        "path": ".github/workflows/protected-exact-byte-promotion-v2.yml",
         "run_attempt": expected_attempt,
         "status": "in_progress",
     }

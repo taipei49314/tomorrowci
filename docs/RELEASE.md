@@ -95,6 +95,20 @@ The historical `release.yml` workflow is retired and disabled. Candidate work
 uses a new workflow path that did not exist at any published historical tag,
 so `workflow_dispatch` cannot select old tag-controlled publishing code.
 
+Protected promotion now uses `protected-exact-byte-promotion-v2.yml`. The prior
+`protected-exact-byte-promotion.yml` path appears in `v0.2.0-alpha.1` and is
+removed from the development tree. The run verifier rejects that retired path;
+the historical-tag guard remains in force, and CI fetches complete history so
+the guard cannot pass merely because no tags were fetched. If a later release
+contains the new path, rotate it again before subsequent promotion work.
+
+Removing a local workflow file does not disable its historical GitHub workflow
+ID. Before enabling or dispatching v2, disable the old promotion workflow ID
+and independently read back its disabled state, just as for `release.yml`.
+This local migration has not verified that remote retirement and does not
+authorize publication. Keep the shared `protected-exact-byte-promotion`
+concurrency group across generations.
+
 The protected dispatch carries its six CI, candidate, and platform run
 coordinates in the `run_coordinates` string input so the workflow remains
 within GitHub's ten-input limit. The value must be canonical JSON with exactly

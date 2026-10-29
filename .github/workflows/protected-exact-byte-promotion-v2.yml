@@ -1,4 +1,4 @@
-name: protected-exact-byte-promotion
+name: protected-exact-byte-promotion-v2
 
 on:
   workflow_dispatch:

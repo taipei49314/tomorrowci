@@ -127,7 +127,7 @@ class PromotionStateTests(unittest.TestCase):
             "head_repository": {"full_name": "owner/repo"},
             "head_sha": source,
             "id": 123,
-            "path": ".github/workflows/protected-exact-byte-promotion.yml",
+            "path": ".github/workflows/protected-exact-byte-promotion-v2.yml",
             "repository": {"full_name": "owner/repo"},
             "run_attempt": 2,
             "status": "in_progress",
@@ -140,6 +140,16 @@ class PromotionStateTests(unittest.TestCase):
             run_id="123",
             run_attempt="2",
         )
+        retired = copy.deepcopy(run)
+        retired["path"] = ".github/workflows/protected-exact-byte-promotion.yml"
+        with self.assertRaisesRegex(ValueError, "path mismatch"):
+            preflight.inspect_promotion_workflow_run(
+                retired,
+                repository="owner/repo",
+                source_sha=source,
+                run_id="123",
+                run_attempt="2",
+            )
         environment = {
             "deployment_branch_policy": {
                 "custom_branch_policies": False,
@@ -341,7 +351,7 @@ class PromotionDispatchInputTests(unittest.TestCase):
 
 class PromotionWorkflowStaticTests(unittest.TestCase):
     ROOT = Path(__file__).resolve().parents[1]
-    WORKFLOW = ROOT / ".github/workflows/protected-exact-byte-promotion.yml"
+    WORKFLOW = ROOT / ".github/workflows/protected-exact-byte-promotion-v2.yml"
 
     def test_workflow_path_did_not_exist_at_any_historical_tag(self) -> None:
         tags = subprocess.run(
@@ -350,6 +360,7 @@ class PromotionWorkflowStaticTests(unittest.TestCase):
             capture_output=True,
             text=True,
         ).stdout.splitlines()
+        self.assertTrue(tags, "Fetch complete tag history before checking workflow retirement")
         relative = self.WORKFLOW.relative_to(self.ROOT).as_posix()
         for tag in tags:
             result = subprocess.run(
@@ -358,6 +369,11 @@ class PromotionWorkflowStaticTests(unittest.TestCase):
                 capture_output=True,
             )
             self.assertNotEqual(result.returncode, 0, f"workflow exists at {tag}")
+
+    def test_retired_promotion_path_is_not_reintroduced(self) -> None:
+        self.assertFalse(
+            (self.ROOT / ".github/workflows/protected-exact-byte-promotion.yml").exists()
+        )
 
     def test_permissions_concurrency_roll_forward_and_isolated_ghcr_gate(self) -> None:
         text = self.WORKFLOW.read_text(encoding="utf-8")
