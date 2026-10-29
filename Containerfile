@@ -10,7 +10,7 @@ FROM docker.io/library/debian@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613
 
 ARG TCI_VERSION
 ARG TCI_REVISION
-ARG TCI_SOURCE=https://github.com/taipei49314/tomorrowci-lab
+ARG TCI_SOURCE=https://github.com/taipei49314/tomorrowci
 
 LABEL org.opencontainers.image.title="TomorrowCI" \
       org.opencontainers.image.description="Evidence-first compatibility frontier scanner" \

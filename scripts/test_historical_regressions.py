@@ -35,7 +35,7 @@ class HistoricalRegressionTests(unittest.TestCase):
     def test_generated_consumer_invokes_an_immutable_action(self) -> None:
         template = (ROOT / "action/workflow-template.yml").read_text(encoding="utf-8")
         match = re.search(
-            r"uses:\s*taipei49314/tomorrowci-lab/action@([0-9a-f]{40})$",
+            r"uses:\s*taipei49314/tomorrowci/action@([0-9a-f]{40})$",
             template,
             flags=re.MULTILINE,
         )

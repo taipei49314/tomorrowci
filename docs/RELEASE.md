@@ -107,11 +107,13 @@ ID. Before enabling or dispatching v2, disable the old promotion workflow ID
 and independently read back its disabled state, just as for `release.yml`.
 The original `taipei49314/tomorrowci` and `taipei49314/tomorrowci-lab` repositories
 were backed up and deleted in the human-run T-457 cleanup on 2026-09-26.
-Their authenticated repository endpoints still returned 404 on 2026-10-29;
-the local origin URLs are historical. There is no extant workflow to disable
-in those retired repositories. This does not authorize recreating a repository
-or publishing. Before using any future repository, independently check its
-workflow inventory and retire any old publishing paths there. Keep the shared
+Their authenticated repository endpoints still returned 404 on 2026-10-29.
+The human subsequently authorized restoring public source at
+`taipei49314/tomorrowci` on 2026-10-30. The restored source uses `master`;
+historical release assets and tags are not imported, and Actions remain disabled
+at restoration. Public source restoration does not grant release or promotion
+authority. Before enabling any workflow, independently check its inventory
+and retire any old publishing paths there. Keep the shared
 `protected-exact-byte-promotion` concurrency group across generations.
 
 The protected dispatch carries its six CI, candidate, and platform run

@@ -16,12 +16,26 @@ No breakage claim without replayable evidence.
 
 ## Product status (evidence-based)
 
-**Current checkout: local trials, 2026-10-29.** Start with the bounded
+**Public source recovery, 2026-10-30.** Start with the bounded
 [Python Docker trial](docs/PYTHON_TRIAL.md): choose the baseline and candidate
 versions explicitly, run your own tests, verify the evidence, then replay.
-This checkout is not a new published release. The historical GitHub repositories
-returned 404 during the recovery audit; the release links below are historical
-references, not verified current download locations.
+The canonical source repository is [`taipei49314/tomorrowci`](https://github.com/taipei49314/tomorrowci).
+This is source distribution, not a new binary release or platform qualification.
+Historical release links below refer to the retired repositories; their tags,
+release assets and workflows have not been republished as current releases.
+
+Try the [Pydub audioop regression](docs/PYTHON_TRIAL.md#known-upstream-regression-pydub-and-audioop):
+eight fixed PCM tests pass on Python 3.11 and fail on 3.14 before a conditional
+dependency fix; the identical tests then pass on both versions with matching
+replays. This reproduces an existing upstream issue, not a new discovery or a
+claim that the entire Pydub suite passes. The example includes the exact source
+SHA, dependency hash, patch and preparation command.
+
+Recent project-operated Linux-container observations also cover Mistune's
+1,327 tests and pyparsing's 1,958 selected tests on Python 3.11/3.14. Packaging's
+selected baseline executed 53,613 passing tests and skipped two version-specific
+tests, so its candidate was not run and the observation remains coverage-incomplete.
+These local observations are not independent adoption or full platform support.
 
 The recovery rejects mixed runtime/concrete-dependency experiments instead of
 running a candidate under the baseline image. Python/Node/Rust failure fingerprints
@@ -105,6 +119,8 @@ trial. Start in the supplied source checkout; see [the trial guide](docs/PYTHON_
 to scan your own repository. Historical platform qualifications remain separate.
 
 ```bash
+git clone https://github.com/taipei49314/tomorrowci.git
+cd tomorrowci
 cargo build -p tomorrowci-cli --release --locked
 
 ./target/release/tomorrowci doctor
