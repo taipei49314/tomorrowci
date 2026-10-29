@@ -382,25 +382,33 @@ struct BoundedStreamCapture {
 
 impl BoundedStreamCapture {
     fn render(&self, limit: usize) -> String {
-        let mut rendered = String::from_utf8_lossy(&self.retained).into_owned();
         if self.discarded_bytes > 0 {
-            rendered.push_str(&format!(
-                "\n...[truncated after {limit} bytes; discarded {} bytes]...\n",
-                self.discarded_bytes
-            ));
+            let (head, tail) = self.retained.split_at(limit / 2);
+            return format!(
+                "{}\n...[truncated middle; retained {limit} bytes; discarded {} bytes]...\n{}",
+                String::from_utf8_lossy(head),
+                self.discarded_bytes,
+                String::from_utf8_lossy(tail),
+            );
         }
-        rendered
+        String::from_utf8_lossy(&self.retained).into_owned()
     }
 }
 
-/// Retain at most `limit` bytes while continuing to read until EOF. Continuing
-/// to drain is required because stopping at the retention limit can deadlock a
+/// Retain the head and tail (at most `limit` bytes) while reading until EOF.
+/// The tail preserves final test summaries and tracebacks in noisy output.
+/// Continuing to drain is required because stopping at the retention limit can deadlock a
 /// child whose pipe buffer becomes full.
 fn drain_stream_bounded<R: Read>(
     mut reader: R,
     limit: usize,
 ) -> std::io::Result<BoundedStreamCapture> {
     let mut retained = Vec::with_capacity(limit.min(STREAM_READ_CHUNK_BYTES));
+    let head_limit = limit / 2;
+    let tail_limit = limit - head_limit;
+    let mut tail = std::collections::VecDeque::<u8>::with_capacity(
+        tail_limit.min(STREAM_READ_CHUNK_BYTES),
+    );
     let mut discarded_bytes = 0_u64;
     let mut chunk = [0_u8; STREAM_READ_CHUNK_BYTES];
     loop {
@@ -408,11 +416,21 @@ fn drain_stream_bounded<R: Read>(
         if read == 0 {
             break;
         }
-        let remaining = limit.saturating_sub(retained.len());
+        let remaining = head_limit.saturating_sub(retained.len());
         let keep = remaining.min(read);
         retained.extend_from_slice(&chunk[..keep]);
-        discarded_bytes = discarded_bytes.saturating_add((read - keep) as u64);
+        let rest = &chunk[keep..read];
+        let excess = (tail.len() + rest.len()).saturating_sub(tail_limit);
+        discarded_bytes = discarded_bytes.saturating_add(excess as u64);
+        if rest.len() >= tail_limit {
+            tail.clear();
+            tail.extend(&rest[rest.len() - tail_limit..]);
+        } else {
+            tail.drain(..excess);
+            tail.extend(rest);
+        }
     }
+    retained.extend(tail);
     Ok(BoundedStreamCapture {
         retained,
         discarded_bytes,
@@ -892,15 +910,57 @@ mod tests {
     fn oversized_streams_are_fully_drained_but_retained_memory_is_bounded() {
         for limit in [MAX_CONTAINER_STDOUT_BYTES, MAX_CONTAINER_STDERR_BYTES] {
             let excess = 31_337;
-            let input = vec![b'x'; limit + excess];
-            let capture = drain_stream_bounded(std::io::Cursor::new(input), limit).unwrap();
+            let mut input = vec![b'x'; limit + excess];
+            let summary = b"\nTOMORROWCI_TRIAL_SUMMARY={\"coverage_valid\":true}\n";
+            input[..5].copy_from_slice(b"START");
+            let offset = input.len() - summary.len();
+            input[offset..].copy_from_slice(summary);
+            let mut reader = std::io::Cursor::new(input);
+            let capture = drain_stream_bounded(&mut reader, limit).unwrap();
+            assert_eq!(reader.position(), (limit + excess) as u64);
             assert_eq!(capture.retained.len(), limit);
             assert_eq!(capture.discarded_bytes, excess as u64);
             let rendered = capture.render(limit);
-            assert!(rendered.ends_with(&format!(
-                "\n...[truncated after {limit} bytes; discarded {excess} bytes]...\n"
+            assert!(rendered.starts_with("START"));
+            assert!(rendered.ends_with(std::str::from_utf8(summary).unwrap()));
+            assert!(rendered.contains(&format!(
+                "\n...[truncated middle; retained {limit} bytes; discarded {excess} bytes]...\n"
             )));
         }
+    }
+
+    #[test]
+    fn bounded_capture_preserves_exact_head_tail_across_read_boundaries() {
+        struct Fragmented<'a> { bytes: &'a [u8], chunk: usize }
+        impl Read for Fragmented<'_> {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.chunk.min(buffer.len()).min(self.bytes.len());
+                buffer[..n].copy_from_slice(&self.bytes[..n]);
+                self.bytes = &self.bytes[n..];
+                Ok(n)
+            }
+        }
+        let input = b"0123456789abcdefghijklmnopqrstuvwxyz";
+        for limit in [0, 1, 2, 3, 9, 35, 36, 37, 100] {
+            for chunk in [1, 2, 7, 36] {
+                let capture = drain_stream_bounded(Fragmented { bytes: input, chunk }, limit).unwrap();
+                if limit >= input.len() {
+                    assert_eq!(capture.retained, input);
+                    assert_eq!(capture.render(limit), std::str::from_utf8(input).unwrap());
+                    assert_eq!(capture.discarded_bytes, 0);
+                } else {
+                    let head = limit / 2;
+                    let tail = limit - head;
+                    assert_eq!(capture.retained, [&input[..head], &input[input.len()-tail..]].concat());
+                    assert_eq!(capture.discarded_bytes, (input.len() - limit) as u64);
+                    assert!(capture.render(limit).contains("truncated middle"));
+                }
+            }
+        }
+        let empty = drain_stream_bounded(std::io::empty(), 0).unwrap();
+        assert_eq!(empty.render(0), "");
+        let binary = drain_stream_bounded(std::io::Cursor::new([0xff; 20]), 3).unwrap();
+        assert!(binary.render(3).contains("truncated middle"));
     }
 
     #[cfg(unix)]
