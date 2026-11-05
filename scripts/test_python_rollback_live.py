@@ -22,17 +22,17 @@ def fixture(folder: Path, mode: str, image: str) -> Path:
     project = folder / "project"
     project.mkdir(parents=True)
     changes = []
-    for name in ("tc-primary", "tc-secondary"):
+    primary = "tc-z-primary" if mode == "dependency-conflict" else "tc-primary"
+    for name in (primary, "tc-secondary"):
         before = make_wheel(project, name, "1.0.0", module_source="VALUE = 1\n")
-        broken = name == "tc-primary" or mode == "independent-failure"
-        requires = ("tc-primary>=2",) if mode == "dependency-conflict" and name == "tc-secondary" else ()
+        broken = name == primary or mode == "independent-failure"
+        requires = (primary + ">=2",) if mode == "dependency-conflict" and name == "tc-secondary" else ()
         after = make_wheel(project, name, "2.0.0", requires=requires,
                            module_source=f"VALUE = {2 if broken else 1}\n")
         # Let the canonical deletion search reach the same-failure singleton
         # before it sees the incompatible complement. The conflict must be
         # observed by rollback, not stop diagnosis before it proves minimality.
-        change_id = "tc-z-primary" if mode == "dependency-conflict" and name == "tc-primary" else name
-        changes.append({"id": change_id, "name": name, "before": before, "after": after})
+        changes.append({"id": name, "name": name, "before": before, "after": after})
     if mode == "nothing-retained":
         changes = changes[:1]
     write_json(project / ".tomorrowci-dependencies.json", {
@@ -56,7 +56,7 @@ def fixture(folder: Path, mode: str, image: str) -> Path:
     })
     (project / "requirements.txt").write_text("# Closure is declared in the manifest.\n", encoding="utf-8")
     (project / "test_target.py").write_text(
-        "import unittest\nimport tc_primary\n"
+        "import unittest\n" + f"import {primary.replace('-', '_')} as tc_primary\n"
         + ("import tc_secondary\n" if mode != "nothing-retained" else "")
         + "class UpgradeTest(unittest.TestCase):\n"
         + "    def test_original_commands(self):\n"
