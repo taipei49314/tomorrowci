@@ -41,7 +41,7 @@ MAX_UNPACKED_BYTES = 512 * 1024 * 1024
 MAX_LOG_BYTES = 4 * 1024 * 1024
 NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
 PIN = re.compile(rf"^({NAME})\s*==\s*([A-Za-z0-9][A-Za-z0-9.!+_-]*)(.*)$")
-IMAGE = re.compile(r"^[a-z0-9]+(?:[._/:\-][a-z0-9]+)*@sha256:[0-9a-f]{64}$")
+IMAGE = re.compile(r"^(?:[a-z0-9]+(?:[._/:\-][a-z0-9]+)*@)?sha256:[0-9a-f]{64}$")
 URL = re.compile(r"https?://[^\s<>\"']+")
 
 
@@ -397,7 +397,7 @@ def import_dependencies(*, target: Path, before: Path, after: Path, runtime: str
         raise ImportErrorDetail("target must be an existing plain checkout directory")
     target = target.resolve(strict=True)
     if not re.fullmatch(r"3\.(?:[1-9][0-9]*)", runtime) or not IMAGE.fullmatch(image):
-        raise ImportErrorDetail("require canonical Python 3.minor and an immutable image@sha256 digest")
+        raise ImportErrorDetail("require canonical Python 3.minor and an immutable image@sha256 digest or local sha256 image ID")
     if not 1 <= timeout_seconds <= 1800:
         raise ImportErrorDetail("timeout-seconds must be between 1 and 1800")
     manifest_path = target / MANIFEST
@@ -549,7 +549,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--before", type=Path, required=True, help="complete baseline exact pin snapshot")
     parser.add_argument("--after", type=Path, required=True, help="complete candidate exact pin snapshot")
     parser.add_argument("--runtime", required=True, help="canonical Python major.minor, e.g. 3.11")
-    parser.add_argument("--image", required=True, help="locally loaded immutable image@sha256 digest")
+    parser.add_argument("--image", required=True, help="locally loaded immutable image@sha256 digest or sha256 image ID")
     parser.add_argument("--output-dir", default="vendor/python-dependencies", help="new workspace-relative artifact directory")
     parser.add_argument("--wheelhouse", type=Path, help="bounded flat offline wheel directory; skips Docker/downloads")
     parser.add_argument("--require-hashes", action="store_true", help="require SHA256 locks for every before/after pin")

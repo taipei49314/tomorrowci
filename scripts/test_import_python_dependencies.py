@@ -47,6 +47,12 @@ def make_wheel(directory: Path, name: str, version: str, *, payload: str = "valu
 
 
 class PinTests(unittest.TestCase):
+    def test_local_image_ids_remain_immutable_and_tags_are_refused(self) -> None:
+        self.assertIsNotNone(importer.IMAGE.fullmatch("sha256:" + "a" * 64))
+        self.assertIsNotNone(importer.IMAGE.fullmatch(IMAGE))
+        for mutable in ("python:3.11", "local-image:latest", "sha256:" + "a" * 63, "sha256:" + "A" * 64):
+            self.assertIsNone(importer.IMAGE.fullmatch(mutable))
+
     def test_normalized_exact_pins_and_hash_continuations(self) -> None:
         sha = "a" * 64
         pins = importer.parse_pins(
