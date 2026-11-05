@@ -28,7 +28,11 @@ def fixture(folder: Path, mode: str, image: str) -> Path:
         requires = ("tc-primary>=2",) if mode == "dependency-conflict" and name == "tc-secondary" else ()
         after = make_wheel(project, name, "2.0.0", requires=requires,
                            module_source=f"VALUE = {2 if broken else 1}\n")
-        changes.append({"id": name, "name": name, "before": before, "after": after})
+        # Let the canonical deletion search reach the same-failure singleton
+        # before it sees the incompatible complement. The conflict must be
+        # observed by rollback, not stop diagnosis before it proves minimality.
+        change_id = "tc-z-primary" if mode == "dependency-conflict" and name == "tc-primary" else name
+        changes.append({"id": change_id, "name": name, "before": before, "after": after})
     if mode == "nothing-retained":
         changes = changes[:1]
     write_json(project / ".tomorrowci-dependencies.json", {
@@ -67,6 +71,8 @@ def main() -> int:
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--image", required=True)
+    cases = ("verified-repair", "independent-failure", "dependency-conflict", "nothing-retained", "budget-exhaustion")
+    parser.add_argument("--case", choices=cases, action="append", dest="cases")
     args = parser.parse_args()
     binary, output = args.binary.resolve(), args.work_dir.absolute()
     if not binary.is_file() or not IMAGE_PATTERN.fullmatch(args.image) or output.exists():
@@ -79,7 +85,7 @@ def main() -> int:
                "script_sha256": digest(Path(__file__).read_bytes()), "image": args.image,
                "host_target_execution": False, "cases": [], "status": "RUNNING"}
     write_json(output / "summary.json", summary)
-    for mode in ("verified-repair", "independent-failure", "dependency-conflict", "nothing-retained", "budget-exhaustion"):
+    for mode in args.cases or cases:
         print(f"[{mode}] scan, rollback, independent verification", flush=True)
         record = {"case": mode, "status": "FAIL"}
         folder = output / mode
