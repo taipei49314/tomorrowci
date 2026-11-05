@@ -17,8 +17,9 @@ use tomorrowci_report::{
     write_json_report, write_sarif_stub,
 };
 use tomorrowci_runner::{
-    load_and_explain, render_terminal_summary_from_root, replay_scenario, scan_local,
-    scan_remote_github, ScanOptions, ScanOutcome,
+    load_and_explain, render_rollback_summary, render_terminal_summary_from_root, replay_scenario,
+    scan_local, scan_remote_github, validate_python_rollback, verify_python_rollback,
+    RollbackStatus, ScanOptions, ScanOutcome,
 };
 use tomorrowci_sandbox::{detect_engines, SecurityPolicy};
 
@@ -55,6 +56,18 @@ enum Commands {
         run_id: String,
         #[arg(long)]
         scenario: String,
+    },
+    /// Test a diagnosed dependency rollback in a separate new directory
+    Rollback {
+        run_id: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Verify the diagnosis, rollback experiment, replay and repair files
+    VerifyRollback {
+        run_id: String,
+        #[arg(long)]
+        out: PathBuf,
     },
     Explain {
         run_id: String,
@@ -109,6 +122,24 @@ fn real_main() -> Result<()> {
         } => cmd_scan(&target, config.as_deref(), commit.as_deref()),
         Commands::Show { run_id } => cmd_show(&run_id),
         Commands::Verify { run_id } => cmd_verify(&run_id),
+        Commands::Rollback { run_id, out } => {
+            validate_cli_identifier(&run_id, "run_id")?;
+            let root = find_run_dir(&std::env::current_dir()?, &run_id);
+            let record = validate_python_rollback(&root, &out)?;
+            print!("{}", render_rollback_summary(&record, &out));
+            if record.status != RollbackStatus::VerifiedCommandsPass {
+                bail!("rollback is not a verified repair; inspect retained evidence");
+            }
+            Ok(())
+        }
+        Commands::VerifyRollback { run_id, out } => {
+            validate_cli_identifier(&run_id, "run_id")?;
+            let root = find_run_dir(&std::env::current_dir()?, &run_id);
+            let record = verify_python_rollback(&root, &out)?;
+            print!("{}", render_rollback_summary(&record, &out));
+            println!("verify-rollback: PASS");
+            Ok(())
+        }
         Commands::Replay { run_id, scenario } => {
             validate_cli_identifier(&run_id, "run_id")?;
             validate_cli_identifier(&scenario, "scenario_id")?;
