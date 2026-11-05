@@ -337,7 +337,8 @@ pub fn resolve_image_digest(engine: SandboxEngine, image: &str) -> Option<String
     }
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if explicit_id {
-        return (s == image).then(|| image.to_string());
+        return (normalized_local_image_id(&s).as_deref() == Some(image))
+            .then(|| image.to_string());
     }
     if s.is_empty() || s == "<no value>" {
         return None;
@@ -353,6 +354,16 @@ pub fn resolve_image_digest(engine: SandboxEngine, image: &str) -> Option<String
     } else {
         None
     }
+}
+
+fn normalized_local_image_id(value: &str) -> Option<String> {
+    let normalized = if value.len() == 64 && value.bytes().all(|c| c.is_ascii_hexdigit()) {
+        format!("sha256:{}", value.to_ascii_lowercase())
+    } else {
+        value.to_owned()
+    };
+    (normalized.starts_with("sha256:") && validate_image_digest(&normalized).is_ok())
+        .then_some(normalized)
 }
 
 pub fn pull_image(engine: SandboxEngine, image: &str) -> Result<()> {
@@ -886,6 +897,17 @@ pub const MAX_SCENARIO_ARTIFACTS: usize = 64;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_image_ids_accept_docker_and_podman_inspection_spellings() {
+        let id = "a".repeat(64);
+        assert_eq!(normalized_local_image_id(&id), Some(format!("sha256:{id}")));
+        assert_eq!(
+            normalized_local_image_id(&format!("sha256:{id}")),
+            Some(format!("sha256:{id}"))
+        );
+        assert!(normalized_local_image_id(&format!("repo@sha256:{id}")).is_none());
+        assert!(normalized_local_image_id("sha256:short").is_none());
+    }
 
     #[test]
     fn safe_defaults() {
