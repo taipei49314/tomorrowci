@@ -8,13 +8,16 @@ import json
 import os
 import posixpath
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
+from python_steps_runner import MAX_PLAN_BYTES, validate_steps
+
 HERE = Path(__file__).resolve().parent
 RESERVED = (".tomorrowci.yml", ".tomorrowci-trial.py", ".tomorrowci-trial-profile.json",
-            ".tomorrowci-dependencies.json")
+            ".tomorrowci-dependencies.json", ".tomorrowci-steps.json", ".tomorrowci-steps.py")
 
 
 def digest(data: bytes) -> str:
@@ -81,9 +84,29 @@ def minor(value: str) -> tuple[int, int]:
     return tuple(map(int, value.split(".")))
 
 
+def parse_test_steps(commands: list[str]) -> tuple[list[list[str]], bytes]:
+    steps = []
+    for command in commands:
+        if not isinstance(command, str) or any(c in command for c in "\n\r\x00|&;<>`$"):
+            raise ValueError("Test steps are argv commands; shell operators, redirection and expansion are unsupported")
+        try:
+            argv = shlex.split(command, posix=True)
+        except ValueError as error:
+            raise ValueError("Invalid quoted test step: " + str(error)) from error
+        if any(arg.startswith("~") for arg in argv):
+            raise ValueError("Shell home-directory expansion is unsupported in test steps")
+        steps.append(argv)
+    validate_steps(steps)
+    plan_bytes = (json.dumps({"schema_version": 1, "steps": steps}, indent=2) + "\n").encode("utf-8")
+    if len(plan_bytes) > MAX_PLAN_BYTES:
+        raise ValueError("Test step plan exceeds 256 KiB")
+    return steps, plan_bytes
+
+
 def prepare(*, source: Path, output: Path, baseline: str, candidate: str,
-            framework: str, source_root: str, packages: list[str],
-            test_args: list[str], requirements: Path | None = None,
+            framework: str | None = None, source_root: str | None = None,
+            packages: list[str] | None = None, test_args: list[str] | None = None,
+            test_steps: list[str] | None = None, requirements: Path | None = None,
             stdlib_only: bool = False, timeout: int = 300,
             materialize_file_links: bool = False, image_pip: bool = False) -> dict:
     source, output = source.resolve(), output.resolve()
@@ -93,27 +116,37 @@ def prepare(*, source: Path, output: Path, baseline: str, candidate: str,
         raise ValueError("Source and output directories must not overlap")
     if minor(candidate) <= minor(baseline):
         raise ValueError("Candidate must be later than baseline")
-    if framework not in ("unittest", "pytest"):
-        raise ValueError("Framework must be unittest or pytest")
-    if not packages or any(not re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", p)
-                           for p in packages):
-        raise ValueError("At least one valid source package is required")
-    root = PurePosixPath(source_root)
-    if root.is_absolute() or ".." in root.parts or "\\" in source_root or ":" in source_root:
-        raise ValueError("Source root must be a checkout-relative POSIX path")
-    if not (source / source_root).is_dir():
-        raise ValueError("Source root directory does not exist")
-    command_parts = ["python", ".tomorrowci-trial.py", "--framework", framework,
-                     "--source-root", str(root)]
-    for package in packages:
-        command_parts.extend(["--source-package", package])
-    command_parts.extend(["--", *test_args])
-    if not test_args or any(not arg or any(c.isspace() for c in arg) for arg in command_parts):
-        raise ValueError("Provide test arguments after --; arguments containing whitespace are unsupported")
+    step_mode = test_steps is not None
+    if step_mode:
+        if framework is not None or source_root is not None or packages is not None or test_args:
+            raise ValueError("--test-step cannot be mixed with framework, source-package, source-root or arguments after --")
+        steps, plan_bytes = parse_test_steps(test_steps)
+        source_root = "."
+        root = PurePosixPath(".")
+        command_parts = ["python", ".tomorrowci-steps.py"]
+    else:
+        source_root = source_root if source_root is not None else "."
+        if framework not in ("unittest", "pytest"):
+            raise ValueError("Framework must be unittest or pytest")
+        if not packages or any(not re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", p)
+                               for p in packages):
+            raise ValueError("At least one valid source package is required")
+        root = PurePosixPath(source_root)
+        if root.is_absolute() or ".." in root.parts or "\\" in source_root or ":" in source_root:
+            raise ValueError("Source root must be a checkout-relative POSIX path")
+        if not (source / source_root).is_dir():
+            raise ValueError("Source root directory does not exist")
+        command_parts = ["python", ".tomorrowci-trial.py", "--framework", framework,
+                         "--source-root", str(root)]
+        for package in packages:
+            command_parts.extend(["--source-package", package])
+        command_parts.extend(["--", *(test_args or [])])
+        if not test_args or any(not arg or any(c.isspace() for c in arg) for arg in command_parts):
+            raise ValueError("Provide test arguments after --; arguments containing whitespace are unsupported")
     if timeout < 1 or timeout > 3600:
         raise ValueError("Timeout must be between 1 and 3600 seconds")
-    if stdlib_only and (requirements is not None or framework != "unittest"):
-        raise ValueError("stdlib-only requires unittest and no requirements argument")
+    if stdlib_only and (requirements is not None or (not step_mode and framework != "unittest")):
+        raise ValueError("stdlib-only requires no requirements argument and unittest in strict framework mode")
     if git(source, "rev-parse", "--show-prefix"):
         raise ValueError("Source must be the Git checkout root; use --source-root to select a package directory")
     head = git(source, "rev-parse", "HEAD")
@@ -133,7 +166,7 @@ def prepare(*, source: Path, output: Path, baseline: str, candidate: str,
         req_bytes = file_links[relative_req]["contents"] if relative_req in file_links else req_path.read_bytes()
         req_bytes.decode("utf-8")
         req_origin = str(req_path)
-    wrapper_bytes = (HERE / "python_trial_runner.py").read_bytes()
+    wrapper_bytes = (HERE / ("python_steps_runner.py" if step_mode else "python_trial_runner.py")).read_bytes()
     config = {
         "version": 1,
         "project": {"ecosystem": "python", "test_command": " ".join(command_parts)},
@@ -167,7 +200,9 @@ def prepare(*, source: Path, output: Path, baseline: str, candidate: str,
         destination.write_bytes(link["contents"])
         destination.chmod(0o755 if link["target_mode"] == "100755" else 0o644)
     (output / ".tomorrowci.yml").write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-    (output / ".tomorrowci-trial.py").write_bytes(wrapper_bytes)
+    (output / (".tomorrowci-steps.py" if step_mode else ".tomorrowci-trial.py")).write_bytes(wrapper_bytes)
+    if step_mode:
+        (output / ".tomorrowci-steps.json").write_bytes(plan_bytes)
     (output / "requirements.txt").write_bytes(req_bytes)
     result = {
         "schema_version": 1, "status": "PREPARED_NOT_EXECUTED",
@@ -186,20 +221,30 @@ def prepare(*, source: Path, output: Path, baseline: str, candidate: str,
         "symlink_identity_preserved": not bool(file_links),
         "next_command": {"cwd": str(output), "argv": ["tomorrowci", "scan", ".", "--config", ".tomorrowci.yml"]},
     }
+    if step_mode:
+        for key in ("framework", "source_root", "source_packages", "test_args", "wrapper_sha256"):
+            result.pop(key)
+        result.update(mode="ordered_python_steps", steps=steps,
+                      steps_plan_sha256=digest(plan_bytes), steps_driver_sha256=digest(wrapper_bytes),
+                      counts_contract="advisory pytest terminal summaries; no strict coverage gate")
     (output / ".tomorrowci-trial-profile.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return result
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    parser = argparse.ArgumentParser(description=__doc__, epilog="Pass the project's existing test arguments after --.")
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog="Use repeatable --test-step for existing Python commands, or --framework/--source-package with test arguments after --.")
     parser.add_argument("source", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--baseline", required=True)
     parser.add_argument("--candidate", required=True)
-    parser.add_argument("--framework", choices=["unittest", "pytest"], required=True)
-    parser.add_argument("--source-root", default=".")
-    parser.add_argument("--source-package", action="append", required=True, dest="packages")
+    parser.add_argument("--framework", choices=["unittest", "pytest"])
+    parser.add_argument("--source-root")
+    parser.add_argument("--source-package", action="append", dest="packages")
+    parser.add_argument("--test-step", action="append", dest="test_steps",
+                        help="Repeat for ordered Python/pytest commands, e.g. --test-step 'python -m pytest'; no shell syntax")
     deps = parser.add_mutually_exclusive_group()
     deps.add_argument("--requirements", type=Path)
     deps.add_argument("--stdlib-only", action="store_true")
@@ -212,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
     args = vars(parser.parse_args(argv[:split]))
     args["test_args"] = argv[split + 1:]
     try:
+        if args["test_steps"] is not None and split < len(argv):
+            raise ValueError("--test-step cannot be mixed with the -- argument separator")
         print(json.dumps(prepare(**args), indent=2))
         return 0
     except (ValueError, OSError) as exc:

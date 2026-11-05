@@ -14,6 +14,13 @@ compatibility or prove that a failure was caused by CPython itself.
 
 ## Prepare a trial with one command
 
+For an existing multi-step test job, use repeated `--test-step` arguments instead
+of `--framework`, for example `--test-step "python -m pytest" --test-step "python -m pytest --cov=example --cov-report=xml"`.
+The [short workflow](PYTHON_UPGRADE.md#2-prepare-an-isolated-trial) describes the
+generated ordered runner, failure-stop behavior and framework-reported summaries.
+No handwritten wrapper or configuration is needed. The strict single-framework
+coverage path below remains a separate opt-in mode.
+
 The preparation helper creates a new isolated Git checkout at your clean source
 HEAD, copies the strict coverage adapter, and writes the runtime configuration.
 It does not import target code, install dependencies, or execute tests on the

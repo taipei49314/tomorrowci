@@ -1,8 +1,10 @@
 //! Report generation: JSON / SARIF / accessible HTML (no untrusted raw HTML).
 
 mod model;
+mod test_steps;
 
 pub use model::{ReportModel, REPORT_MODEL_SCHEMA};
+pub use test_steps::*;
 
 use model::build_report_model;
 use serde_json::json;
@@ -54,8 +56,21 @@ pub fn write_json_report(manifest: &RunManifest, out: &Path) -> Result<()> {
 }
 
 pub fn write_github_job_summary(manifest: &RunManifest, out: &Path) -> Result<()> {
+    write_github_job_summary_from_verified_root(
+        manifest,
+        out.parent().unwrap_or(&manifest.evidence_root),
+        out,
+    )
+}
+
+pub fn write_github_job_summary_from_verified_root(
+    manifest: &RunManifest,
+    run_root: &Path,
+    out: &Path,
+) -> Result<()> {
     let mut md = String::new();
     md.push_str("## TomorrowCI\n\n");
+    md.push_str(&format!("{}\n\n", upgrade_observation(manifest)));
     md.push_str(&format!("- **Run:** `{}`\n", manifest.run_id));
     md.push_str(&format!(
         "- **Ecosystem:** {:?}\n",
@@ -76,6 +91,14 @@ pub fn write_github_job_summary(manifest: &RunManifest, out: &Path) -> Result<()
         ));
     }
     md.push_str("\n_BLOCKED/UNSUPPORTED/INCONCLUSIVE are never treated as PASS._\n");
+    md.push_str(&format!(
+        "\nBreakage-frontier grade: {:?}; this is separate from per-version results.\n",
+        manifest.frontier.grade
+    ));
+    md.push_str(&format!(
+        "\n<pre>{}</pre>\n",
+        escape_html(&render_test_steps(manifest, run_root))
+    ));
     if let Some(p) = out.parent() {
         std::fs::create_dir_all(p)?;
     }
@@ -250,6 +273,12 @@ fn write_html_report_with_replay_root(
     let escaped_run = escape_html(&manifest.run_id);
     let escaped_ecosystem = escape_html(&format!("{:?}", manifest.detection.ecosystem));
     let escaped_tool = escape_html(&manifest.tool_version);
+    let upgrade_summary = escape_html(&upgrade_observation(manifest));
+    let step_summary = replay_root
+        .map(|root| render_test_steps(manifest, root))
+        .unwrap_or_else(|| "Test steps/counts: UNKNOWN (evidence directory unavailable).".into());
+    let step_summary = escape_html(&step_summary);
+    let frontier_grade = escape_html(&format!("{:?}", manifest.frontier.grade));
     let replay_count = report_model.replay_attempts.len().to_string();
     let html = render_html_template_once(&[
         ("{{REPORT_UI_CSS}}", REPORT_UI_CSS),
@@ -258,6 +287,9 @@ fn write_html_report_with_replay_root(
         ("{{RUN}}", &escaped_run),
         ("{{ECO}}", &escaped_ecosystem),
         ("{{TOOL}}", &escaped_tool),
+        ("{{UPGRADE_SUMMARY}}", &upgrade_summary),
+        ("{{STEP_SUMMARY}}", &step_summary),
+        ("{{FRONTIER_GRADE}}", &frontier_grade),
         ("{{FRONTIER}}", &frontier),
         ("{{MATRIX}}", &matrix),
         ("{{ROWS}}", &rows),
@@ -318,6 +350,12 @@ const HTML_TEMPLATE: &str = r##"<!DOCTYPE html>
 <style>{{REPORT_UI_CSS}}</style>
 </head>
 <body>
+<section class="shell" aria-labelledby="upgrade-observation">
+  <h2 id="upgrade-observation">Upgrade observation</h2>
+  <p>{{UPGRADE_SUMMARY}}</p>
+  <p>Breakage-frontier grade: {{FRONTIER_GRADE}}. This describes the breakage boundary, separately from per-version results.</p>
+  <details open><summary>Test steps and framework-reported counts</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">{{STEP_SUMMARY}}</pre></details>
+</section>
 <div id="report-root"></div>
 <noscript>
 <style>#report-root { display: none; }</style>

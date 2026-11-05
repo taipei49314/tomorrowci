@@ -13,8 +13,10 @@ file and test arguments before running either version.
 
 The short path supports unittest or pytest, pip requirements, and tests that
 can run offline in Linux containers. Python versions are explicit, such as
-`3.12` and `3.14`; check their official images are available. A `src` layout
-uses `--source-root src`. The source package must be imported from the checkout.
+`3.12` and `3.14`; check their official images are available. Step mode preserves
+the existing job's import setup. With the optional strict framework adapter,
+a `src` layout uses `--source-root src`, and the source package must be imported
+from the checkout.
 
 If the job needs Poetry/uv-only setup, custom build commands, external services,
 directory links or submodules, record that setup gap first. Do not replace the
@@ -38,6 +40,26 @@ Record the TomorrowCI commit too. On PowerShell the executable is
 `.\target\release\tomorrowci.exe`. Save its absolute path for later commands.
 Tool installation, build and Docker setup belong in first-use cost; a successful
 `doctor` is not a successful upgrade test.
+
+To keep an existing job's commands, repeat `--test-step` in their original order:
+
+```sh
+python scripts/prepare_python_trial.py /path/to/clean/repo --output /path/to/new/trial --baseline 3.11 --candidate 3.14 --requirements /path/to/test-requirements.txt --test-step "python -m pytest" --test-step "python -m pytest --cov=example --cov-report=xml"
+```
+
+The helper writes the configuration and step runner for you. Each command runs
+in a fresh Python process inside the same scenario workspace, as separate CI
+steps would. The first failing command stops the sequence; remaining commands
+are recorded as `NOT_RUN`. A scenario retry or replay gets a fresh workspace.
+`python`, `python3` and `pytest` entry points are supported, including an existing
+Python script. Arguments are quoted argv, not shell code: pipelines, redirection,
+environment assignments and shell expansion are unsupported. Choose explicit
+dependencies (`--requirements`, an existing root requirements.txt, or
+`--stdlib-only`). This mode preserves the commands' own test/warning policy;
+it does not add the strict coverage adapter or infer package imports.
+
+For the optional strict single-framework coverage adapter, use the original
+`--framework` path below instead; it cannot be mixed with `--test-step`.
 
 Example for an existing pytest job (replace the paths, versions, package and
 test arguments with your project's actual values):
@@ -72,6 +94,14 @@ path with `& "C:\path\to\tomorrowci.exe"`. Inspect the retained test output and
 report under `.tomorrowci/runs/<run-id>/`; `verify` checks record consistency,
 not that your chosen tests establish compatibility.
 
+`scan` and `show` present the upgrade observation separately from the breakage
+frontier. With `--test-step`, they list each command, exit, completion state,
+framework-reported pytest counts and raw-log location. Counts are per step:
+running the same 941 tests twice does not mean 1,882 distinct tests. Custom
+scripts, missing/truncated/ambiguous summaries and incomplete executions show
+`UNKNOWN` counts. These display-only counts never change original verdicts or
+become independent coverage proof. HTML and job summaries expose the same detail.
+
 Before drawing a conclusion, check which tests each version actually ran,
 from which checkout, and whether the planned scope was reached. Record test,
 failure, error and skip counts, including zero when collection could not start.
@@ -103,6 +133,12 @@ and compare its actual environment and test result with the original. Retain
 the complete run directory, original test logs, source identities and dependency
 input. Replay has the [recorded preparation contract](PYTHON_TRIAL.md#run-inspect-and-replay);
 unpinned or unavailable dependencies can prevent an exact reconstruction.
+
+Replay prints the recorded step results, a comparison of commands/statuses/exits
+and framework-reported counts, links to original/replay logs, and total operation
+time separately from the test phase. The count comparison is advisory and does
+not compare test IDs; a missing count is `UNKNOWN`, never a match. The existing
+replay PASS still means only exit and failure-signature agreement.
 
 For a worked known failure use the [Pydub audioop example](PYTHON_TRIAL.md#known-upstream-regression-pydub-and-audioop).
 For all options and limitations use [the reference](PYTHON_TRIAL.md).

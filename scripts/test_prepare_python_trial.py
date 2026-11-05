@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Preparation must preserve original source and never import target code."""
 import json
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -188,6 +190,75 @@ class PrepareTrialTests(unittest.TestCase):
                 "--source-package", "subject", "--stdlib-only"]
         self.assertEqual(trial.main(argv), 2)
         self.assertEqual(trial.main(argv + ["--", "discover", "-s", "tests", "-v"]), 0)
+
+    def step_options(self):
+        return {key: value for key, value in self.options.items()
+                if key not in ("framework", "source_root", "packages", "test_args")}
+
+    def test_ordered_steps_preserve_source_and_hash_generated_plan_and_driver(self):
+        original = (self.source / "subject.py").read_bytes()
+        head = trial.git(self.source, "rev-parse", "HEAD")
+        result = trial.prepare(**self.step_options(), test_steps=[
+            "python -m pytest", "python -m pytest --cov=subject --cov-report=xml"])
+        output = self.options["output"]
+        plan = (output / ".tomorrowci-steps.json").read_bytes()
+        driver = (output / ".tomorrowci-steps.py").read_bytes()
+        self.assertEqual(json.loads(plan), {"schema_version": 1, "steps": [
+            ["python", "-m", "pytest"],
+            ["python", "-m", "pytest", "--cov=subject", "--cov-report=xml"]]})
+        self.assertEqual(result["steps_plan_sha256"], trial.digest(plan))
+        self.assertEqual(result["steps_driver_sha256"], trial.digest(driver))
+        self.assertEqual(result["mode"], "ordered_python_steps")
+        self.assertFalse(result["target_code_executed"])
+        self.assertFalse(result["dependencies_resolved"])
+        self.assertNotIn("framework", result)
+        self.assertEqual(json.loads((output / ".tomorrowci.yml").read_text())["project"],
+                         {"ecosystem": "python", "test_command": "python .tomorrowci-steps.py"})
+        self.assertFalse((output / ".tomorrowci-trial.py").exists())
+        self.assertEqual((output / "subject.py").read_bytes(), original)
+        self.assertEqual((self.source / "subject.py").read_bytes(), original)
+        self.assertEqual(trial.git(output, "rev-parse", "HEAD"), head)
+        self.assertEqual(trial.git(self.source, "status", "--porcelain=v1"), "")
+
+    def test_step_mode_rejects_strict_options_and_shell_syntax_without_output(self):
+        options = {**self.step_options(), "test_steps": ["python -m pytest"]}
+        for change in ({"framework": "pytest"}, {"source_root": "."},
+                       {"packages": ["subject"]}, {"test_args": ["tests"]},
+                       {"test_steps": []}, {"test_steps": ["node test.js"]},
+                       {"test_steps": ["python"]}, {"test_steps": ["python -m pytest && echo ok"]},
+                       {"test_steps": ["python -m pytest | cat"]},
+                       {"test_steps": ["python -m pytest > result"]},
+                       {"test_steps": ["python test.py $HOME"]},
+                       {"test_steps": ["python test.py ~/data"]},
+                       {"test_steps": ["python test.py 'unclosed"]}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                trial.prepare(**{**options, **change})
+            self.assertFalse(self.options["output"].exists())
+
+    def test_step_cli_keeps_quoted_arguments_without_framework_or_separator(self):
+        argv = [str(self.source), "--output", str(self.options["output"]),
+                "--baseline", "3.12", "--candidate", "3.14", "--stdlib-only",
+                "--test-step", 'python3 "tests/a file.py" "argument with spaces"',
+                "--test-step", "pytest -q"]
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(trial.main(argv + ["--"]), 2)
+            self.assertFalse(self.options["output"].exists())
+            self.assertEqual(trial.main(argv), 0)
+        plan = json.loads((self.options["output"] / ".tomorrowci-steps.json").read_text())
+        self.assertEqual(plan["steps"], [["python3", "tests/a file.py", "argument with spaces"],
+                                         ["pytest", "-q"]])
+
+    def test_step_overlay_names_are_reserved_before_clone(self):
+        for name in (".tomorrowci-steps.json", ".tomorrowci-steps.py"):
+            with self.subTest(name=name):
+                (self.source / name).write_text("original contents", encoding="utf-8")
+                self.commit()
+                with self.assertRaisesRegex(ValueError, "already contains"):
+                    trial.prepare(**self.step_options(), test_steps=["python -m unittest"])
+                self.assertFalse(self.options["output"].exists())
+                self.assertEqual((self.source / name).read_text(), "original contents")
+                trial.git(self.source, "rm", name)
+                trial.git(self.source, "commit", "-m", "remove reserved fixture")
 
 
 if __name__ == "__main__":

@@ -2080,6 +2080,11 @@ $Work = if ($env:TOMORROWCI_WORKSPACE) {{ $env:TOMORROWCI_WORKSPACE }} else {{ $
 }
 
 pub fn render_terminal_summary(m: &RunManifest) -> String {
+    render_terminal_summary_from_root(m, &m.evidence_root)
+}
+
+/// Use the actual verified root when a saved run has been relocated.
+pub fn render_terminal_summary_from_root(m: &RunManifest, run_root: &Path) -> String {
     let mut out = String::new();
     out.push_str(&format!("TomorrowCI run {}\n", m.run_id));
     out.push_str(&format!(
@@ -2087,6 +2092,8 @@ pub fn render_terminal_summary(m: &RunManifest) -> String {
         m.repository.source,
         m.repository.commit_sha.as_deref().unwrap_or("unknown")
     ));
+    out.push_str(&tomorrowci_report::upgrade_observation(m));
+    out.push('\n');
     for r in &m.results {
         let sc = m.plan.scenarios.iter().find(|s| s.id == r.scenario_id);
         let label = sc
@@ -2118,6 +2125,7 @@ pub fn render_terminal_summary(m: &RunManifest) -> String {
             out.push_str(&format!("  digest: {d}\n"));
         }
     }
+    out.push_str(&tomorrowci_report::render_test_steps(m, run_root));
     out.push('\n');
     let planned_candidates = m.plan.scenarios.iter().filter(|s| !s.is_baseline).count();
     let tested_candidates = m
@@ -2162,8 +2170,14 @@ pub fn render_terminal_summary(m: &RunManifest) -> String {
             out.push_str(&format!("note: {n}\n"));
         }
     }
-    out.push_str(&format!("Evidence: {}\n", m.evidence_root.display()));
-    out.push_str(&format!("Evidence grade: {:?}\n", m.frontier.grade));
+    out.push_str(&format!("Evidence: {}\n", run_root.display()));
+    out.push_str(&format!(
+        "Breakage-frontier evidence grade: {:?}\n",
+        m.frontier.grade
+    ));
+    if !m.frontier.observed {
+        out.push_str("The frontier grade describes the absence of an observed breakage boundary; per-version results are listed above.\n");
+    }
     out
 }
 
@@ -2173,7 +2187,7 @@ pub fn load_and_explain(repo: &Path, run_id: &str) -> Result<String> {
     verify_evidence_for_operation(&root, false)?;
     let _lock = EvidenceOperationLock::acquire(&root, "explain")?;
     let m = load_stable_verified_manifest(&root, false)?;
-    Ok(render_terminal_summary(&m))
+    Ok(render_terminal_summary_from_root(&m, &root))
 }
 
 fn verify_replay_evidence(root: &Path) -> Result<()> {
@@ -2772,6 +2786,7 @@ fn restore_optional_file(path: &Path, contents: Option<&[u8]>) -> Result<()> {
 
 /// Exact replay: recorded digest, fetch+test, compare exit + failure signature.
 pub fn replay_scenario(repo: &Path, run_id: &str, scenario_id: &str) -> Result<String> {
+    let wall_started = Instant::now();
     validate_identifier(run_id, "run_id").map_err(TcError::InvalidState)?;
     validate_identifier(scenario_id, "scenario_id").map_err(TcError::InvalidState)?;
     let root = repo.join(".tomorrowci/runs").join(run_id);
@@ -2794,7 +2809,12 @@ pub fn replay_scenario(repo: &Path, run_id: &str, scenario_id: &str) -> Result<S
         TcError::Blocked("recorded replay environment has no authoritative engine".into())
     })?;
     let executor = ContainerExecutor::detect_requested(recorded_engine)?;
-    replay_scenario_with_verified_evidence(&root, scenario_id, &executor)
+    let mut output = replay_scenario_with_verified_evidence(&root, scenario_id, &executor)?;
+    output.push_str(&format!(
+        "Replay total wall_ms={} (verification, preparation and tests; excludes CLI startup).\n",
+        wall_started.elapsed().as_millis()
+    ));
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -3160,9 +3180,39 @@ fn replay_scenario_with_verified_evidence(
     )?;
 
     let mut out = format!(
-        "replay {scenario_id}: exit={:?} timed_out={} duration_ms={}\n",
+        "replay {scenario_id}: exit={:?} timed_out={} test_phase_ms={}\n",
         raw.exit_code, raw.timed_out, raw.duration_ms
     );
+    let replay_dir = sc_dir.join("replays").join(format!("attempt-{attempt_n}"));
+    let original_steps = tomorrowci_report::read_step_observation(
+        root,
+        &sc_dir,
+        original.exit_code,
+        original.timed_out,
+    );
+    let replay_steps =
+        tomorrowci_report::read_step_observation(root, &replay_dir, raw.exit_code, raw.timed_out);
+    out.push_str(&tomorrowci_report::render_step_observation(
+        replay_steps.as_ref(),
+    ));
+    out.push_str(&format!(
+        "Step comparison: {}\n",
+        tomorrowci_report::compare_step_observations(
+            original_steps.as_ref(),
+            replay_steps.as_ref()
+        )
+    ));
+    out.push_str(&format!(
+        "Original logs: {}\nReplay logs: {}\n",
+        sc_dir.display(),
+        replay_dir.display()
+    ));
+    if let Some(fetch) = &fetch_raw {
+        out.push_str(&format!(
+            "Preparation fetch_phase_ms={} (separate from test_phase_ms).\n",
+            fetch.duration_ms
+        ));
+    }
     out.push_str(&format!(
         "original_exit={:?} signature_match={sig_match} exit_match={exit_match}\n",
         original.exit_code
@@ -3175,7 +3225,7 @@ fn replay_scenario_with_verified_evidence(
     }
     if !ok {
         return Err(TcError::Other(format!(
-            "replay divergence for {scenario_id}: exit_match={exit_match} sig_match={sig_match}"
+            "replay divergence for {scenario_id}: exit_match={exit_match} sig_match={sig_match}\n{out}"
         )));
     }
     out.push_str("replay: PASS (exit + failure signature match)\n");

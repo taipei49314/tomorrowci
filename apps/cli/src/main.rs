@@ -13,11 +13,12 @@ use tomorrowci_evidence::{
 };
 use tomorrowci_metrics::{run_trust_audit, ClaimLedger, ClaimStatus, ScanMetrics, TrustVerdict};
 use tomorrowci_report::{
-    write_github_job_summary, write_html_report_from_verified_root, write_json_report,
-    write_sarif_stub,
+    write_github_job_summary_from_verified_root, write_html_report_from_verified_root,
+    write_json_report, write_sarif_stub,
 };
 use tomorrowci_runner::{
-    load_and_explain, replay_scenario, scan_local, scan_remote_github, ScanOptions, ScanOutcome,
+    load_and_explain, render_terminal_summary_from_root, replay_scenario, scan_local,
+    scan_remote_github, ScanOptions, ScanOutcome,
 };
 use tomorrowci_sandbox::{detect_engines, SecurityPolicy};
 
@@ -363,12 +364,10 @@ fn cmd_show(run_id: &str) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let root = find_run_dir(&cwd, run_id);
     let verified = load_verified_manifest(&root, "show", false)?;
-    let m = &verified.manifest;
-    println!("run: {}", m.run_id);
-    for r in &m.results {
-        println!("  {} => {:?}", r.scenario_id, r.verdict);
-    }
-    println!("frontier.observed: {}", m.frontier.observed);
+    print!(
+        "{}",
+        render_terminal_summary_from_root(&verified.manifest, &root)
+    );
     Ok(())
 }
 
@@ -739,7 +738,9 @@ fn write_report_format(
     match format {
         "html" => write_html_report_from_verified_root(manifest, verified_run_root, output)?,
         "sarif" => write_sarif_stub(manifest, output)?,
-        "summary" => write_github_job_summary(manifest, output)?,
+        "summary" => {
+            write_github_job_summary_from_verified_root(manifest, verified_run_root, output)?
+        }
         _ => write_json_report(manifest, output)?,
     }
     Ok(())
@@ -992,7 +993,12 @@ mod tests {
         write_json_report(&manifest, &layout.run_root.join("report.json")).unwrap();
         tomorrowci_report::write_html_report(&manifest, &layout.run_root.join("report.html"))
             .unwrap();
-        write_github_job_summary(&manifest, &layout.run_root.join("job-summary.md")).unwrap();
+        write_github_job_summary_from_verified_root(
+            &manifest,
+            &layout.run_root,
+            &layout.run_root.join("job-summary.md"),
+        )
+        .unwrap();
         std::fs::write(layout.run_root.join("summary.txt"), "focused summary\n").unwrap();
         finalize_and_verify_run(&layout.run_root).unwrap();
         layout.run_root
