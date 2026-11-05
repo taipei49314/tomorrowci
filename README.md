@@ -67,6 +67,11 @@ with a separate full-complement run and fresh replay before publishing hashed
 repair pins. The verifier binds both runs, unchanged source/tests, the exact
 retained upgrades and every recorded repair replay.
 
+The [natural batch rehearsal](docs/PYTHON_ROLLBACK_REHEARSAL_20261105.md) compares
+one real dependency repair with a local matrix plus AI and depsect. The repair
+and replay pass; lower effort is not established, and native uv lock output
+remains missing.
+
 For explicit Python trial subsets, the optional [coverage adapter](docs/PYTHON_TRIAL_COVERAGE.md)
 checks checkout import origins and records framework test counts. It rejects
 zero-test and skipped-feature successes while preserving original test failures.

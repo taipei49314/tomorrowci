@@ -47,6 +47,13 @@ closure and runtime. It does not prove compatibility outside that scope, equal
 test IDs, or a globally minimal repair. Existing strict test-coverage contracts
 remain unchanged.
 
+The [2026-11-05 natural batch rehearsal](PYTHON_ROLLBACK_REHEARSAL_20261105.md)
+compares this workflow with a local matrix plus AI and depsect. It verifies one
+repair, while recording native uv integration and unmeasured effort as gaps.
+This checkout also binds unambiguous pytest failure blocks to test IDs before
+normalizing parallel output order. Rescan older failures before comparing or
+replaying evidence produced with the earlier fingerprint algorithm.
+
 ## Live regression
 
 ```sh
