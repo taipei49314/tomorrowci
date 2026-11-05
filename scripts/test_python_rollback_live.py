@@ -72,6 +72,7 @@ def main() -> int:
     if not binary.is_file() or not IMAGE_PATTERN.fullmatch(args.image) or output.exists():
         parser.error("require existing binary, digest-pinned image, and new output directory")
     output.mkdir(parents=True)
+    output = output.resolve()
     summary = {"kind": "synthetic_engineering_regression", "hostname": platform.node(),
                "execution_label": "HUMAN_AUTHORIZED_LOCAL_PJU_NOT_EC_POOL",
                "started_at": utc_now(), "binary_sha256": digest(binary.read_bytes()),
