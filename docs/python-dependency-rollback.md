@@ -7,8 +7,8 @@ upgrade. A second independent failure or a dependency conflict can remain.
 After a wheel-backed Python dependency scan:
 
 ```sh
-tomorrowci rollback RUN_ID --out ../rollback-evidence
-tomorrowci verify-rollback RUN_ID --out ../rollback-evidence
+tomorrowci rollback RUN_ID --out rollback-evidence
+tomorrowci verify-rollback RUN_ID --out rollback-evidence
 ```
 
 Run both commands from the original diagnosis workspace so `RUN_ID` resolves to

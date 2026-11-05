@@ -62,6 +62,11 @@ required addition/subtraction checks complete; it does not claim a globally
 smallest set or treat a blocked installation as proof of causality. The original
 vendored-tree v1 protocol remains available for historical fixtures.
 
+A minimal failure is not yet a repair. [Validate a Python rollback](docs/python-dependency-rollback.md)
+with a separate full-complement run and fresh replay before publishing hashed
+repair pins. The verifier binds both runs, unchanged source/tests, the exact
+retained upgrades and every recorded repair replay.
+
 For explicit Python trial subsets, the optional [coverage adapter](docs/PYTHON_TRIAL_COVERAGE.md)
 checks checkout import origins and records framework test counts. It rejects
 zero-test and skipped-feature successes while preserving original test failures.
@@ -158,6 +163,8 @@ tomorrowci scan <path> [--config .tomorrowci.yml]
 tomorrowci verify <run-id>
 tomorrowci show <run-id>
 tomorrowci replay <run-id> --scenario <id>
+tomorrowci rollback <run-id> --out rollback-evidence
+tomorrowci verify-rollback <run-id> --out rollback-evidence
 tomorrowci explain <run-id>
 tomorrowci report <run-id> --format html|json|sarif|summary
 tomorrowci metrics <run-id>
