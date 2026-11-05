@@ -620,20 +620,22 @@ pub fn run_in_container(req: &RunRequest) -> Result<RawExecutionResult> {
     // Windows CreateProcess limits the entire command line to 32767 UTF-16
     // units. Large exact dependency closures exceed it. Feed the same quoted
     // compound command through stdin, without placing a script in target files.
-    let via_stdin = shell_cmd.encode_utf16().count() > 16 * 1024;
+    let shell_mode = req.use_shell
+        || req.commands.len() > 1
+        || req
+            .commands
+            .iter()
+            .any(|c| c.argv.len() > 1 && needs_shell(&c.argv));
+    // Windows shell arguments can nearly double when CreateProcess escaping
+    // quotes/backslashes. Always stream its shell route; conservatively stream
+    // large direct argv too. Small direct execution retains its existing path.
+    let via_stdin = (cfg!(windows) && shell_mode) || shell_cmd.encode_utf16().count() > 8 * 1024;
     if via_stdin {
         docker_args.push("-i".into());
     }
     docker_args.push(req.image.clone());
 
-    if via_stdin
-        || req.use_shell
-        || req.commands.len() > 1
-        || req
-            .commands
-            .iter()
-            .any(|c| c.argv.len() > 1 && needs_shell(&c.argv))
-    {
+    if via_stdin || shell_mode {
         docker_args.push("sh".into());
         if via_stdin {
             docker_args.push("-s".into());
@@ -1212,6 +1214,9 @@ fn live_large_argv_preserves_bytes_exit_status_and_local_image_identity() {
     let result = run_in_container(&request).unwrap();
     assert_eq!(result.exit_code, Some(0), "{}", result.stderr);
     assert!(result.stdout.contains("EXACT_ARGV_PASS"));
+    request.commands[0].argv[2] = "import sys; assert sys.argv[1] == chr(34) * 16375".into();
+    request.commands[0].argv[3] = "\"".repeat(16375);
+    assert_eq!(run_in_container(&request).unwrap().exit_code, Some(0));
     request.commands[0].argv[2] = "raise SystemExit(23)".into();
     request.commands.push(CommandSpec {
         argv: vec!["echo".into(), "MUST_NOT_RUN".into()],
@@ -1222,4 +1227,10 @@ fn live_large_argv_preserves_bytes_exit_status_and_local_image_identity() {
     let result = run_in_container(&request).unwrap();
     assert_eq!(result.exit_code, Some(23));
     assert!(!result.stdout.contains("MUST_NOT_RUN"));
+    request.commands.truncate(1);
+    request.commands[0].argv[2] = "import time; time.sleep(60)".into();
+    request.timeout = Duration::from_secs(1);
+    let result = run_in_container(&request).unwrap();
+    assert!(result.timed_out);
+    assert_eq!(result.exit_code, None);
 }
