@@ -1,5 +1,11 @@
 # TomorrowCI
 
+**Product development paused — 2026-11-05, by the owner's decision.**
+The completed rehearsal did not establish lower effort than a local matrix plus
+AI. Existing code and evidence are preserved; native uv integration and other
+new features are not active work. See the [decision and restart conditions](docs/PRODUCT_PAUSE_20261105.md).
+The capability descriptions below document the preserved implementation.
+
 **Check one Python upgrade with your existing tests, then inspect and rerun the result.**
 
 Choose one baseline and one later Python minor version. TomorrowCI runs the

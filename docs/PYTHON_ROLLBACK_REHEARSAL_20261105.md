@@ -1,5 +1,8 @@
 # Python rollback rehearsal — 2026-11-05
 
+**Subsequent decision:** [product development is paused](PRODUCT_PAUSE_20261105.md).
+The next acceptance boundary below is a historical proposal, not active work.
+
 The rollback workflow repaired one natural batch update and replayed the repair.
 This rehearsal does **not** establish lower preparation or human effort than a
 local CI matrix plus an AI operator. Native uv lock integration remains missing.
