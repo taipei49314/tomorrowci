@@ -1,0 +1,1 @@
+case_id,operator_kind,arm,arm_order,start_state,phase,start_utc,end_utc,active_seconds,wait_seconds,break_seconds,elapsed_seconds,status,help_requests,retries,evidence_ref,notes

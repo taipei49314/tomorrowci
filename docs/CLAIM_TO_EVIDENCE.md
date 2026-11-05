@@ -2,6 +2,20 @@
 
 Statuses: **PASS** / **FAIL** / **BLOCKED** / **NOT_RUN** only.
 
+## Python upgrade workflow: developer effort
+
+| Claim | Status | Evidence boundary |
+|---|---|---|
+| Less active developer time than adding a Python version to existing CI | **NOT_RUN** | [Comparison protocol](PYTHON_UPGRADE_COMPARISON.md) and blank recording forms only; no paired user observations yet |
+| Easier same-commit rerun or handoff than GitHub Actions | **NOT_RUN** | Native Actions rerun is an eligible baseline; no measured comparison yet |
+
+The existing [image-pip observation](../examples/benchmarks/python-image-pip.json)
+compares two TomorrowCI environment-preparation modes on a project-operated
+fixture. Its scan-time reduction is not a matrix comparison, human effort
+measurement, independent adoption result or platform qualification.
+
+## Historical qualification
+
 Version `0.2.0-alpha.1` is distributed as an immutable, project-operated
 external-testing prerelease. It does not supersede the bounded alpha.2
 observations, and its frozen candidate manifest is not a formal release or

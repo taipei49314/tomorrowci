@@ -1,5 +1,11 @@
 # Try one Python runtime upgrade on your own repository
 
+For the short first-use path, start with [Python upgrade](PYTHON_UPGRADE.md).
+This page is the detailed configuration and limitations reference. To evaluate
+developer effort against an existing CI matrix, use the separate
+[comparison protocol](PYTHON_UPGRADE_COMPARISON.md); runtime timings below are
+not measurements of that comparison.
+
 This alpha answers a bounded question: does the test command that passes on your
 baseline Python also pass on the exact later Python versions you select? Start
 with one baseline and one candidate, using Docker and pip. A completed scan is

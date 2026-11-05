@@ -1,0 +1,48 @@
+# Reference for a consumer repository; deliberately outside .github/workflows.
+# Prefer editing that repository's existing job. This example assumes a root
+# requirements.txt and an existing unittest suite under tests/. Adapt both
+# steps to the agreed job before starting the comparison; never shrink its scope.
+name: Python upgrade comparison
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.14']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Record source and Python
+        run: |
+          git rev-parse HEAD
+          python --version
+          python -m pip --version
+      - name: Install the agreed dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Record installed dependencies
+        run: python -m pip freeze --all
+      - name: Run the existing test job
+        # For a pytest project use its existing pytest command and dependency.
+        # Check collection/counts in logs; zero tests can exit successfully.
+        run: python -m unittest discover -s tests -v
+
+# Native job logs and Re-run jobs are enough for the common comparison task.
+# Keep existing JUnit/artifact uploads if the consumer job already has them.
+# No continue-on-error, forced green exit, or synthetic replacement tests.

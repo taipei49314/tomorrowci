@@ -1,13 +1,24 @@
 # TomorrowCI
 
-> **Continuous Integration Against the Future.**
+**Check one Python upgrade with your existing tests, then inspect and rerun the result.**
 
-TomorrowCI aims to find the earliest **concrete** future environment in which a
-repository stops building or passing tests, isolate the smallest
-breakage-inducing change, and emit **replayable evidence**. The currently
-demonstrated public slices are the Python, Node, and Rust runtime paths plus a
-bounded Linux Docker dependency-reduction path for pip, npm, and cargo; wider
-product surfaces remain explicit qualification work.
+Choose one baseline and one later Python minor version. TomorrowCI runs the
+selected tests in Linux Docker containers and keeps the source, configuration,
+logs and scenario records together. It reports observed results for those
+inputs; it does not certify future compatibility or discover the first failing
+Python version automatically.
+
+**Start with the [Python upgrade walkthrough](docs/PYTHON_UPGRADE.md).**
+The current entry point needs a Rust source build, a running Linux Docker
+daemon and an explicit test/dependency setup. These are real setup costs.
+Whether this saves developer effort over adding a version to an existing CI
+matrix is **not yet measured**. The [comparison kit](docs/PYTHON_UPGRADE_COMPARISON.md)
+defines the same task for both approaches and includes a normal matrix example.
+
+The broader research direction, "Continuous Integration Against the Future,"
+also includes Python/Node/Rust runtime paths and bounded pip/npm/cargo
+dependency reduction. Those existing capabilities and historical observations
+remain below; this first-use workflow focuses on one Python upgrade.
 
 ```text
 No forecast without an executable scenario.
