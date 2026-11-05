@@ -1,0 +1,67 @@
+name: Python upgrade rehearsal
+
+# Bounded engineering experiment; this branch only, no PR or release trigger.
+on:
+  push:
+    branches: [codex/rehearsal-python-upgrade-20261105]
+    paths:
+      - .github/workflows/python-upgrade-rehearsal.yml
+      - examples/python-upgrade-comparison/mistune-v3.0.2/**
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    name: Mistune Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.14']
+    steps:
+      - name: Read the frozen comparison inputs
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: harness
+          persist-credentials: false
+      - name: Check out the unchanged historical target
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lepture/mistune
+          ref: f997c86335d8a5d8435aac08b66ed3cba9381b51
+          path: subject
+          persist-credentials: false
+      - name: Apply and check the common experiment inputs
+        shell: bash
+        run: |
+          cp harness/examples/python-upgrade-comparison/mistune-v3.0.2/requirements.txt subject/requirements.txt
+          cp harness/examples/python-upgrade-comparison/mistune-v3.0.2/ci_upgrade_tests.py subject/ci_upgrade_tests.py
+          git -C subject -c core.autocrlf=false add -- requirements.txt ci_upgrade_tests.py
+          tree=$(git -C subject write-tree)
+          echo "target_upstream=f997c86335d8a5d8435aac08b66ed3cba9381b51"
+          echo "target_overlay_tree=$tree"
+          test "$tree" = 10bf899d05ddded8583c9d70b786acf12793bc69
+          sha256sum subject/requirements.txt subject/ci_upgrade_tests.py
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: subject/requirements.txt
+      - name: Install the common test dependencies
+        working-directory: subject
+        run: python -m pip install -r requirements.txt
+      - name: Record the actual environment
+        working-directory: subject
+        run: |
+          python --version
+          python -m pip freeze --all
+          uname -a
+      - name: Original full suite
+        working-directory: subject
+        run: python -m pytest
+      - name: Original full suite with coverage
+        working-directory: subject
+        run: python -m pytest --cov=mistune --cov-report=xml

@@ -1,0 +1,9 @@
+--require-hashes
+--only-binary=:all:
+coverage==7.17.2 --hash=sha256:01303d9e68b6e6bdc5459b54e3bd0e3539c94c25b50ac7362b7cbcacbc815fbc --hash=sha256:34e5c7a2da36804c6e6f10b368eae01ad56f5a4ac5ecce7297300a3d46fdef2a
+iniconfig==2.3.1 --hash=sha256:9121e2c1fdb355232495be3194c8dfe87ccc2d5dee45947b78e68f499790d7a7
+packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+pluggy==1.7.0 --hash=sha256:7dd7b0d8832ba3cb632c306926ded123429211b83641b35dc5c41ad2d34f9bec
+pygments==2.21.0 --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9
+pytest-cov==7.1.0 --hash=sha256:a0461110b7865f9a271aa1b51e516c9a95de9d696734a2f71e3e78f46e1d4678
+pytest==9.2.0 --hash=sha256:07acdcf88ec174f907dc01af70bf52d49b014bbab03faeeade31c96b18c2e588

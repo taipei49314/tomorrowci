@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "project": {
+    "ecosystem": "python",
+    "test_command": "python ci_upgrade_tests.py"
+  },
+  "baseline": {
+    "runtime": "3.11",
+    "dependencies": "locked"
+  },
+  "candidates": {
+    "runtime": {
+      "channels": [
+        "stable"
+      ],
+      "versions": [
+        "3.14"
+      ],
+      "max_versions": 1
+    },
+    "dependencies": {
+      "latest_allowed": false,
+      "prerelease": false
+    }
+  },
+  "execution": {
+    "max_scenarios": 2,
+    "timeout_seconds": 300,
+    "reruns_on_failure": 2,
+    "max_parallel": 1
+  },
+  "sandbox": {
+    "engine": "docker",
+    "network": "fetch-only",
+    "memory_mb": 2048,
+    "cpus": 1,
+    "pids_limit": 256
+  },
+  "report": {
+    "html": true,
+    "json": true
+  }
+}
