@@ -1,6 +1,7 @@
 name: Python upgrade rehearsal
 
 # Bounded engineering experiment; this branch only, no PR or release trigger.
+# Retrigger after the user-authorized temporary Actions enablement on 2026-11-05.
 on:
   push:
     branches: [codex/rehearsal-python-upgrade-20261105]
