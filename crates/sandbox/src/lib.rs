@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc;
@@ -311,12 +311,23 @@ pub fn resolve_image_digest(engine: SandboxEngine, image: &str) -> Option<String
             .is_ok()
             .then(|| image.to_string());
     }
+    // An explicit local image ID must keep its identity even when the engine
+    // also knows repository digests for that object. Dependency manifests bind
+    // this exact reference; substituting a different spelling changes it.
+    let explicit_id = image.starts_with("sha256:");
+    if explicit_id && validate_image_digest(image).is_err() {
+        return None;
+    }
     let out = Command::new(bin)
         .args([
             "image",
             "inspect",
             "--format",
-            "{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}",
+            if explicit_id {
+                "{{.Id}}"
+            } else {
+                "{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}"
+            },
             image,
         ])
         .output()
@@ -325,6 +336,9 @@ pub fn resolve_image_digest(engine: SandboxEngine, image: &str) -> Option<String
         return None;
     }
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if explicit_id {
+        return (s == image).then(|| image.to_string());
+    }
     if s.is_empty() || s == "<no value>" {
         return None;
     }
@@ -583,24 +597,39 @@ pub fn run_in_container(req: &RunRequest) -> Result<RawExecutionResult> {
         docker_args.push("-e".into());
         docker_args.push(format!("{k}={v}"));
     }
+    if req.commands.is_empty() {
+        return Err(TcError::InvalidState("no commands to execute".into()));
+    }
+    let shell_cmd = req
+        .commands
+        .iter()
+        .map(|c| shell_join(&c.argv))
+        .collect::<Vec<_>>()
+        .join(" && ");
+    // Windows CreateProcess limits the entire command line to 32767 UTF-16
+    // units. Large exact dependency closures exceed it. Feed the same quoted
+    // compound command through stdin, without placing a script in target files.
+    let via_stdin = shell_cmd.encode_utf16().count() > 16 * 1024;
+    if via_stdin {
+        docker_args.push("-i".into());
+    }
     docker_args.push(req.image.clone());
 
-    if req.use_shell
+    if via_stdin
+        || req.use_shell
         || req.commands.len() > 1
         || req
             .commands
             .iter()
             .any(|c| c.argv.len() > 1 && needs_shell(&c.argv))
     {
-        let shell_cmd = req
-            .commands
-            .iter()
-            .map(|c| shell_join(&c.argv))
-            .collect::<Vec<_>>()
-            .join(" && ");
         docker_args.push("sh".into());
-        docker_args.push("-c".into());
-        docker_args.push(shell_cmd);
+        if via_stdin {
+            docker_args.push("-s".into());
+        } else {
+            docker_args.push("-c".into());
+            docker_args.push(shell_cmd.clone());
+        }
     } else if let Some(cmd) = req.commands.first() {
         // Direct argv — recorded argv matches executed argv
         for a in &cmd.argv {
@@ -613,10 +642,28 @@ pub fn run_in_container(req: &RunRequest) -> Result<RawExecutionResult> {
     let start = Instant::now();
     let mut child = Command::new(bin)
         .args(&docker_args)
+        .stdin(if via_stdin {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| TcError::Blocked(format!("container spawn failed: {e}")))?;
+
+    let stdin_receiver = if via_stdin {
+        let mut stdin = child.stdin.take().expect("large command stdin is piped");
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = stdin.write_all(format!("{shell_cmd}\n").as_bytes());
+            drop(stdin);
+            let _ = sender.send(result);
+        });
+        Some(receiver)
+    } else {
+        None
+    };
 
     let stdout_pipe = child
         .stdout
@@ -638,6 +685,16 @@ pub fn run_in_container(req: &RunRequest) -> Result<RawExecutionResult> {
         None
     };
     let status = child_status_with_timeout(&mut child, PIPE_DRAIN_TIMEOUT, "container client")?;
+    if let Some(receiver) = stdin_receiver {
+        let sent = receiver.recv_timeout(PIPE_DRAIN_TIMEOUT).map_err(|error| {
+            TcError::Blocked(format!("container command input did not close: {error}"))
+        })?;
+        if status.success() && !timed_out {
+            sent.map_err(|error| {
+                TcError::Blocked(format!("container command input was incomplete: {error}"))
+            })?;
+        }
+    }
 
     let stdout_capture = receive_bounded_capture(stdout_receiver, "stdout")?;
     let stderr_capture = receive_bounded_capture(stderr_receiver, "stderr")?;
@@ -1088,4 +1145,59 @@ mod tests {
             r"\\server\share\repo"
         );
     }
+}
+#[test]
+#[ignore = "requires Docker and TOMORROWCI_TEST_IMAGE set to a locally loaded immutable image ID"]
+fn live_large_argv_preserves_bytes_exit_status_and_local_image_identity() {
+    let image = std::env::var("TOMORROWCI_TEST_IMAGE").expect("set an immutable local image ID");
+    assert!(image.starts_with("sha256:"));
+    assert_eq!(
+        resolve_image_digest(SandboxEngine::Docker, &image),
+        Some(image.clone())
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let payload = "a'\" $() ; & x".repeat(4000);
+    let mut request = RunRequest {
+        engine: SandboxEngine::Docker,
+        image,
+        workspace_host: dir.path().to_path_buf(),
+        prepared_seed_host: None,
+        workdir: "/work".into(),
+        commands: vec![CommandSpec {
+            argv: vec![
+                "python".into(),
+                "-c".into(),
+                format!(
+                    "import sys; assert sys.argv[1] == {:?} * 4000; print('EXACT_ARGV_PASS')",
+                    "a'\" $() ; & x"
+                ),
+                payload,
+            ],
+            cwd: Some("/work".into()),
+            network: false,
+            phase: "test".into(),
+        }],
+        env: HashMap::new(),
+        memory_mb: 512,
+        cpus: 1.0,
+        pids_limit: 128,
+        network: "none".into(),
+        timeout: Duration::from_secs(60),
+        read_only_root: true,
+        user: Some("65534:65534".into()),
+        use_shell: true,
+    };
+    let result = run_in_container(&request).unwrap();
+    assert_eq!(result.exit_code, Some(0), "{}", result.stderr);
+    assert!(result.stdout.contains("EXACT_ARGV_PASS"));
+    request.commands[0].argv[2] = "raise SystemExit(23)".into();
+    request.commands.push(CommandSpec {
+        argv: vec!["echo".into(), "MUST_NOT_RUN".into()],
+        cwd: Some("/work".into()),
+        network: false,
+        phase: "test".into(),
+    });
+    let result = run_in_container(&request).unwrap();
+    assert_eq!(result.exit_code, Some(23));
+    assert!(!result.stdout.contains("MUST_NOT_RUN"));
 }
