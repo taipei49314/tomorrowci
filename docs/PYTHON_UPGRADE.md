@@ -5,6 +5,9 @@ on the later version I selected?** Keep the result so it can be inspected and
 rerun. This is an experimental source-based workflow, not a compatibility
 certificate.
 
+The [Mistune follow-up](PYTHON_UPGRADE_REHEARSAL_STEPS_20261105.md) records an
+actual two-step trial, replay and before/after preparation comparison.
+
 ## 1. Choose the existing test job
 
 Use a clean, committed Python repository and the test scope you already run.
