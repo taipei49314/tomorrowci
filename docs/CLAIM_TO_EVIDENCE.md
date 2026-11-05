@@ -6,8 +6,9 @@ Statuses: **PASS** / **FAIL** / **BLOCKED** / **NOT_RUN** only.
 
 | Claim | Status | Evidence boundary |
 |---|---|---|
-| Less active developer time than adding a Python version to existing CI | **NOT_RUN** | [Comparison protocol](PYTHON_UPGRADE_COMPARISON.md) and blank recording forms only; no paired user observations yet |
-| Easier same-commit rerun or handoff than GitHub Actions | **NOT_RUN** | Native Actions rerun is an eligible baseline; no measured comparison yet |
+| Less active developer time than adding a Python version to existing CI | **NOT_RUN** | [One agent rehearsal](PYTHON_UPGRADE_REHEARSAL_20261105.md) completed; no measured human effort or paired user observations |
+| Easier same-commit rerun or handoff than GitHub Actions | **NOT_RUN** | Both native Actions rerun and TomorrowCI replay completed in the rehearsal; no ease or human-time advantage established |
+| One fixed historical Mistune case: both arms complete the two original test commands and candidate rerun | **PASS** | [Bounded rehearsal](PYTHON_UPGRADE_REHEARSAL_20261105.md): each stage 941 passed; different baseline patch/hosts; not a general compatibility, effort, adoption or release claim |
 
 The existing [image-pip observation](../examples/benchmarks/python-image-pip.json)
 compares two TomorrowCI environment-preparation modes on a project-operated

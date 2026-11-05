@@ -1,6 +1,8 @@
 # Does one Python upgrade take less developer effort?
 
-Status: **NOT_RUN — protocol and blank recording kit; no user result.**
+Status: **One agent-operated passing-case rehearsal completed; human pilot NOT_RUN.**
+See the [2026-11-05 rehearsal](PYTHON_UPGRADE_REHEARSAL_20261105.md) for the
+unchanged full-suite case, both candidate reruns, friction and measurement limits.
 Scope: one Python repository, one baseline, one later minor version and the
 existing test job. This study is a product decision aid, not a release gate.
 
@@ -174,5 +176,5 @@ Keep it as runtime evidence; do not relabel it as the result of this study.
 - [setup-python and dependency caching](https://github.com/actions/setup-python)
 
 An engineering rehearsal, a human pilot, published package qualification and
-independent adoption are separate claims. This kit currently establishes none
-of their outcomes.
+independent adoption are separate claims. One passing-case rehearsal is recorded;
+known-failure interpretation, the human pilot and effort advantages remain unmeasured.
