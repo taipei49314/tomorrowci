@@ -280,7 +280,7 @@ impl EcosystemAdapter for PythonAdapter {
                 "execution timed out".into(),
             )
         } else {
-            python_failure_identity(&blob)
+            python_pytest_failure_set(&blob).unwrap_or_else(|| python_failure_identity(&blob))
         };
         // The namespace deliberately prevents old wrapper-only receipts from
         // authorizing a replay under this stronger diagnostic contract.
@@ -638,6 +638,103 @@ fn python_failure_identity(blob: &str) -> (String, String, Option<String>, Strin
     }
 }
 
+/// xdist reports completed failures in arrival order. Bind each complete failure
+/// body to its full summary test ID before sorting; sorting individual messages
+/// would lose which test produced which exception. Ambiguous/incomplete block-ID
+/// sets, bounded-capture truncation, or an extra exception outside the sections retain the existing
+/// conservative text identity.
+fn python_pytest_failure_set(blob: &str) -> Option<(String, String, Option<String>, String)> {
+    if blob.contains("...[truncated middle; retained ") {
+        return None;
+    }
+    let mut active = false;
+    let mut heading: Option<String> = None;
+    let mut body = Vec::new();
+    let mut blocks = Vec::new();
+    let mut ids = Vec::new();
+    let mut extra_exception = false;
+    for raw in blob.lines() {
+        let line = raw.trim();
+        let diagnostic = line.strip_prefix("E ").map(str::trim_start).unwrap_or(line);
+        if let Some(id) = python_pytest_test_id(line) {
+            ids.push(id);
+        }
+        if line.starts_with("===") && line.ends_with("===") {
+            if let Some(name) = heading.take() {
+                blocks.push((name, body.join("\n")));
+                body.clear();
+            }
+            active = matches!(line.trim_matches('=').trim(), "FAILURES" | "ERRORS");
+            continue;
+        }
+        if active && line.starts_with("___") && line.ends_with("___") {
+            if let Some(name) = heading.take() {
+                blocks.push((name, body.join("\n")));
+                body.clear();
+            }
+            heading = Some(line.trim_matches('_').trim().to_owned());
+        } else if active && heading.is_some() {
+            body.push(raw);
+        } else if diagnostic == "Traceback (most recent call last):"
+            || python_exception_kind(diagnostic, true).is_some()
+        {
+            extra_exception = true;
+        }
+    }
+    if let Some(name) = heading {
+        blocks.push((name, body.join("\n")));
+    }
+    ids.sort();
+    if extra_exception
+        || blocks.is_empty()
+        || blocks.len() != ids.len()
+        || ids.windows(2).any(|pair| pair[0] == pair[1])
+    {
+        return None;
+    }
+    let mut failures = std::collections::BTreeMap::new();
+    for (heading, body) in blocks {
+        let matching: Vec<_> = ids
+            .iter()
+            .filter(|id| {
+                id.split_once("::")
+                    .is_some_and(|(_, test)| test.replace("::", ".") == heading)
+            })
+            .collect();
+        if matching.len() != 1 {
+            return None;
+        }
+        let id = matching[0];
+        let (kind, summary, frame, detail) = python_failure_identity(&body);
+        if kind == "TestFailure" || failures.contains_key(id) {
+            return None;
+        }
+        failures.insert(id.clone(), (kind, summary, frame, detail));
+    }
+    let (first_id, first) = failures.first_key_value()?;
+    let kind = if failures.values().all(|value| value.0 == first.0) {
+        first.0.clone()
+    } else {
+        "MultipleFailures".into()
+    };
+    let detail = failures
+        .iter()
+        .map(|(id, (kind, _, frame, detail))| {
+            format!(
+                "pytest test: {id}\nkind: {kind}\nframe: {}\n{detail}",
+                frame.as_deref().unwrap_or("")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Some((
+        kind,
+        format!("{} pytest failures; {}", failures.len(), first.1),
+        Some(first_id.clone()),
+        format!("pytest-failure-set-v1\n{detail}"),
+    ))
+}
+
 /// Fetch phase: create a scenario-local venv, installing pip requirements when
 /// the file contains more than blank/comment lines.
 pub fn python_fetch_commands(
@@ -810,6 +907,58 @@ mod tests {
             stderr: stderr.into(),
             network_used: false,
         })
+    }
+
+    fn pytest_pair(reverse: bool, swap_messages: bool) -> String {
+        let message_a = if swap_messages { "beta" } else { "alpha" };
+        let message_b = if swap_messages { "alpha" } else { "beta" };
+        let a = format!("________ test_a ________\n[gw0] linux -- Python 3.11\nE ValueError: {message_a}\ntests/a.py:10: ValueError\n");
+        let b = format!("________ test_b ________\n[gw1] linux -- Python 3.11\nE ValueError: {message_b}\ntests/b.py:20: ValueError\n");
+        let summaries = if reverse {
+            "FAILED tests/b.py::test_b - ValueError\nFAILED tests/a.py::test_a - ValueError"
+        } else {
+            "FAILED tests/a.py::test_a - ValueError\nFAILED tests/b.py::test_b - ValueError"
+        };
+        format!("======== FAILURES ========\n{}{}======== short test summary info ========\n{summaries}\n======== 2 failed in 0.12s ========", if reverse { &b } else { &a }, if reverse { &a } else { &b })
+    }
+
+    #[test]
+    fn pytest_parallel_arrival_order_preserves_test_bound_failure_identity() {
+        let first = python_failure(&pytest_pair(false, false));
+        let reversed = python_failure(&pytest_pair(true, false));
+        assert_eq!(first.normalized_hash, reversed.normalized_hash);
+        assert_eq!(first.primary_frame, reversed.primary_frame);
+        let swapped = python_failure(&pytest_pair(false, true));
+        assert_ne!(
+            first.normalized_hash, swapped.normalized_hash,
+            "the same message set attached to different tests is not the same failure"
+        );
+    }
+
+    #[test]
+    fn pytest_failure_set_refuses_missing_duplicate_and_extra_diagnostics() {
+        let full = pytest_pair(false, false);
+        assert!(python_pytest_failure_set(&full).is_some());
+        assert!(python_pytest_failure_set(
+            &(full.clone() + "\n...[truncated middle; retained 10 bytes; discarded 20 bytes]...\n")
+        )
+        .is_none());
+        assert!(python_pytest_failure_set(
+            &full.replace("FAILED tests/b.py::test_b - ValueError", "")
+        )
+        .is_none());
+        assert!(python_pytest_failure_set(
+            &full.replace("tests/b.py::test_b", "tests/a.py::test_a")
+        )
+        .is_none());
+        assert!(python_pytest_failure_set(
+            &(full.clone() + "\nRuntimeError: unrelated wrapper failure\n")
+        )
+        .is_none());
+        assert!(python_pytest_failure_set(
+            &(full + "\nE   RuntimeError: unrelated wrapper failure\n")
+        )
+        .is_none());
     }
 
     fn unittest_import_failure(module: &str) -> String {
