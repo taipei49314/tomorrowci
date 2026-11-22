@@ -2,6 +2,20 @@
 
 > **Continuous Integration Against the Future.**
 
+**Archived (2026-11-22) — Product development paused on 2026-11-05 by owner decision.**
+
+This repository is archived as read-only; it is no longer maintained and does
+not accept issues or pull requests. In the 2026-11-05 natural
+dependency-upgrade comparison rehearsal (recorded in
+[`docs/PRODUCT_PAUSE_20261105.md`](https://github.com/taipei49314/tomorrowci/blob/codex/dependency-rollback-20261105/docs/PRODUCT_PAUSE_20261105.md)
+on the `codex/dependency-rollback-20261105` branch), TomorrowCI did not
+demonstrate a clear human-effort advantage over a local CI matrix plus AI
+workflow. Product development was therefore stopped, and the existing code,
+branches, and rehearsal evidence are preserved here as a read-only public
+record.
+
+---
+
 TomorrowCI aims to find the earliest **concrete** future environment in which a
 repository stops building or passing tests, isolate the smallest
 breakage-inducing change, and emit **replayable evidence**. The currently
@@ -62,9 +76,9 @@ by its original contract. See the trial guide for limits and receipt semantics.
 ### Historical qualification (not a validation of this checkout)
 
 **TomorrowCI is an experimental pre-alpha architecture. The exact
-[`v0.2.0-alpha.1`](https://github.com/taipei49314/tomorrowci-lab/releases/tag/v0.2.0-alpha.1)
-candidate was distributed as an immutable, project-operated prerelease for
-external testing; broader product qualification was incomplete.**
+`v0.2.0-alpha.1` (historical prerelease from the retired `tomorrowci-lab`
+repository) candidate was distributed as an immutable, project-operated
+prerelease for external testing; broader product qualification was incomplete.**
 
 The prerelease contains the deterministic candidate built from exact source
 `f83d43235c4d03ea9a95fc048d3edbd582e8f438`, plus bounded M2/M3 Linux Docker
